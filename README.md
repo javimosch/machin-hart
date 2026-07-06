@@ -3,14 +3,14 @@
 > Publish self-contained HTML to a live, shareable URL — from **any** terminal agent, on **your**
 > infrastructure, in one CLI call. Claude Artifacts, unbundled and made universal.
 
-`hart` (HTML ARTifacts) is an **agent-first, CLI-only** micro-SaaS built as one static
-**MFL / [machin](https://github.com/javimosch/machin)** binary — it is both the client (`hart
-publish …`) and the hosting daemon (`hart serve`). Fully **BYOK** (bring your own storage +
-domain), open-core, self-hostable. It's the *show* to grepapi's *find*, bland-cli's *call*, and
-crm-cli's *remember*.
+`hart` (HTML ARTifacts) is an **agent-first, CLI-only, open-source, self-hosted** artifact host
+built as one static **MFL / [machin](https://github.com/javimosch/machin)** binary — it is both
+the client (`hart publish …`) and the hosting daemon (`hart serve`). Self-hostable, BYO
+everything. It's the *show* to grepapi's *find*, bland-cli's *call*, and crm-cli's *remember*.
 
-> **Status: pre-M0.** This repo currently holds the design docs. See [VISION.md](VISION.md) and
-> [ROADMAP.md](ROADMAP.md). The next agent implements M0 (see the bottom of the roadmap).
+> **Status: live.** M0–M2 shipped + a live instance at **[hart.intrane.fr](https://hart.intrane.fr)**
+> (free/open, rate-limited). Publish HTML or JSX → a versioned, sandboxed, rollback-able URL;
+> push **data** to a template to update it. Not a hosted SaaS — run your own. See [ROADMAP.md](ROADMAP.md).
 
 ---
 
