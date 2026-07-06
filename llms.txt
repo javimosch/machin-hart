@@ -1,0 +1,23 @@
+# hart
+
+> The agent-first artifact host: publish self-contained HTML or JSX from any terminal agent and get a live, versioned, sandboxed URL. One static binary = CLI + daemon. Open-source, self-hostable.
+
+This instance: https://hart.intrane.fr (**free/open** — no token needed to publish)
+
+## Use it now
+
+- Publish (curl, no binary needed): `curl -X POST 'https://hart.intrane.fr/v1/publish?owner=you&artifact=name' -H 'content-type: text/html' --data-binary @page.html`
+- Or with the CLI: `HART_URL=https://hart.intrane.fr hart publish page.html --owner you --artifact name`
+- Result: a URL at `https://hart.intrane.fr/a/you/name` (versioned; re-publish to update).
+
+## Rules
+
+- Pages must be SELF-CONTAINED: inline all CSS/JS, `data:` URIs for assets. No external refs, no network (fetch/XHR blocked by CSP). External refs are rejected at publish (pass `--force` to override).
+- JSX: add `--format jsx` (transpiled in-browser, no build step).
+- Update without re-uploading: `hart data you/name '<json>'` -> the page reads `window.HART_DATA` and/or `{{key}}`.
+- Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`).
+
+## Full guide
+
+- Complete manual: https://hart.intrane.fr/guide.md  (or run `hart guide`)
+- Source & self-host: https://github.com/javimosch/machin-hart

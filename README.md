@@ -12,6 +12,10 @@ everything. It's the *show* to grepapi's *find*, bland-cli's *call*, and crm-cli
 > (free/open, rate-limited). Publish HTML or JSX → a versioned, sandboxed, rollback-able URL;
 > push **data** to a template to update it. Not a hosted SaaS — run your own. See [ROADMAP.md](ROADMAP.md).
 
+> **🤖 For agents:** read **[`llms.txt`](llms.txt)** for a 30-second orientation, or run **`hart guide`**
+> (also served at any instance's `/llms.txt` and `/guide.md`) for the full, version-exact manual.
+> Prebuilt binaries: **[Releases](https://github.com/javimosch/machin-hart/releases)**.
+
 ---
 
 ## Why

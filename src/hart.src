@@ -639,6 +639,62 @@ func serve_owner(req, owner) (res) {
     res = r
 }
 
+// guide_md — the embedded operator/agent manual (version-exact). `base` = this instance's URL;
+// `authline` describes whether publishing needs a token. Shared by `hart guide` and /guide.md.
+func guide_md(base, authline) (g) {
+    g = "# hart — agent guide\n\n"
+    g = g + "The agent-first artifact host. Publish self-contained **HTML or JSX** and get a live, versioned, sandboxed URL. One static binary is BOTH the CLI (`hart <cmd>`) and the daemon (`hart serve`).\n\n"
+    g = g + "This instance: `" + base + "` — " + authline + "\n\n"
+    g = g + "## Use an existing instance (fastest)\n\n"
+    g = g + "```sh\nexport HART_URL=" + base + "\n# publish a finished, self-contained page:\nhart publish page.html --owner you --artifact my-page\n# -> {\"url\":\"" + base + "/a/you/my-page\", ...}\n```\n\n"
+    g = g + "No `hart` binary? Every write is just an HTTP POST — you can curl it:\n\n"
+    g = g + "```sh\ncurl -X POST '" + base + "/v1/publish?owner=you&artifact=my-page' \\\n  -H 'content-type: text/html' --data-binary @page.html\n```\n\n"
+    g = g + "## Self-host in 30s\n\n```sh\ngit clone https://github.com/javimosch/machin-hart && cd machin-hart\n./runtime/fetch.sh          # seed the JSX runtime (react/babel)\n./build.sh                  # needs `machin` on PATH -> ./hart\n./hart serve 8799 &         # free/open by default\n```\nGate publishing with `HART_TOKEN=<secret>`; expose publicly behind any reverse proxy and set `HART_PUBLIC=https://your.domain`.\n\n"
+    g = g + "## The publish contract (important)\n\nhart hosts **self-contained** pages — inline ALL CSS/JS, embed images/fonts as `data:` URIs. The daemon wraps your body in a doctype skeleton and serves it under a strict CSP: **no external scripts/styles/fonts, no network** (`fetch`/XHR/WebSocket are blocked). A publish-time linter rejects external refs + network calls (HTTP 422) unless you pass `--force`. Use `--dry-run` to lint without storing.\n\n"
+    g = g + "## Versioning\n\nRe-publishing the same `--owner/--artifact` appends a version; `latest` tracks newest, old versions are immutably pinned.\n- `" + base + "/a/<owner>/<artifact>` or `/latest` -> newest\n- `.../v<n>` -> a pinned version\n- `hart rollback <id> <v>` re-points latest (non-destructive)\n\n"
+    g = g + "## Template + data (update without re-uploading)\n\nPublish a template once, then push just the data — it re-renders. Two mechanisms:\n- `{{key}}` placeholders in the markup\n- `window.HART_DATA` — a JS global your script/JSX reads\n\n```sh\nhart publish chart.html --owner you --artifact sales\nhart data you/sales '{\"points\":[3,1,4,1,5]}'   # re-renders, same URL\n```\n\n"
+    g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
+    g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). Anonymous (no-owner) artifacts get a random id.\n\n"
+    g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
+    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `explore [query]` | public discovery feed (JSON) |\n| `serve [port]` | run the daemon |\n| `guide` | this manual |\n\n"
+    g = g + "## Env\n\n`HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key) · `HART_READ_KEY` (read key for a private artifact). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.\n\nSource + releases: https://github.com/javimosch/machin-hart\n"
+}
+
+// llms_txt — the concise /llms.txt (the llms.txt convention): an at-a-glance orientation + links.
+func llms_txt(base, authline) (t) {
+    t = "# hart\n\n> The agent-first artifact host: publish self-contained HTML or JSX from any terminal agent and get a live, versioned, sandboxed URL. One static binary = CLI + daemon. Open-source, self-hostable.\n\n"
+    t = t + "This instance: " + base + " (" + authline + ")\n\n"
+    t = t + "## Use it now\n\n"
+    t = t + "- Publish (curl, no binary needed): `curl -X POST '" + base + "/v1/publish?owner=you&artifact=name' -H 'content-type: text/html' --data-binary @page.html`\n"
+    t = t + "- Or with the CLI: `HART_URL=" + base + " hart publish page.html --owner you --artifact name`\n"
+    t = t + "- Result: a URL at `" + base + "/a/you/name` (versioned; re-publish to update).\n\n"
+    t = t + "## Rules\n\n"
+    t = t + "- Pages must be SELF-CONTAINED: inline all CSS/JS, `data:` URIs for assets. No external refs, no network (fetch/XHR blocked by CSP). External refs are rejected at publish (pass `--force` to override).\n"
+    t = t + "- JSX: add `--format jsx` (transpiled in-browser, no build step).\n"
+    t = t + "- Update without re-uploading: `hart data you/name '<json>'` -> the page reads `window.HART_DATA` and/or `{{key}}`.\n"
+    t = t + "- Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`).\n\n"
+    t = t + "## Full guide\n\n"
+    t = t + "- Complete manual: " + base + "/guide.md  (or run `hart guide`)\n"
+    t = t + "- Source & self-host: https://github.com/javimosch/machin-hart\n"
+}
+
+func auth_line() (s) {
+    s = "**free/open** — no token needed to publish"
+    if env("HART_TOKEN") != "" { s = "publishing requires a token (operator-configured `HART_TOKEN`)" }
+}
+
+func serve_guide(req) (res) {
+    r := response("200 OK", "text/markdown; charset=utf-8", guide_md(pubbase(req), auth_line()))
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'")
+    res = r
+}
+
+func serve_llms(req) (res) {
+    r := response("200 OK", "text/plain; charset=utf-8", llms_txt(pubbase(req), auth_line()))
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'")
+    res = r
+}
+
 // the root page — the product landing (OSS, self-hosted). Served from HART_LANDING (default
 // ./landing.html); falls back to a one-line notice if the file isn't deployed.
 func serve_landing() (res) {
@@ -656,6 +712,8 @@ func hart_route(req) (res) {
     qi := index(p, "?")
     if qi >= 0 { p = substr(p, 0, qi) }
     if p == "/" { return serve_landing() }
+    if p == "/llms.txt" { return serve_llms(req) }
+    if p == "/guide.md" || p == "/guide" { return serve_guide(req) }
     if p == "/_health" { return ok_json("{\"ok\":true,\"service\":\"hart\"}") }
     if req.method == "GET" && has_prefix(p, "/_hart/runtime/") { return serve_runtime(substr(p, 15, len(p))) }
     if req.method == "POST" && p == "/v1/publish" { return h_publish(req) }
@@ -776,6 +834,12 @@ func cmd_explore(a) {
     say(resp)
 }
 
+// hart guide — print the embedded manual (markdown). Uses HART_URL as the example base.
+func cmd_guide() {
+    al := "set HART_TOKEN on the daemon to require a publish token; unset = free/open"
+    say(guide_md(hart_url(), al))
+}
+
 func cmd_get(a) {
     if len(a) < 3 { die(80, "usage: hart get <id>  (metadata + versions)") }
     status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers(), "")
@@ -884,6 +948,7 @@ func main() {
     if cmd == "rollback" { cmd_rollback(a); return }
     if cmd == "visibility" { cmd_visibility(a); return }
     if cmd == "explore" { cmd_explore(a); return }
+    if cmd == "guide" { cmd_guide(); return }
     if cmd == "rm" { cmd_rm(a); return }
     write(2, "{\"ok\":false,\"error\":\"unknown command: " + cmd + "\"}\n")
     exit(80)
