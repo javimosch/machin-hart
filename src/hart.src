@@ -12,6 +12,7 @@ type VerRow struct { version int  format string  created int }
 type HtmlRow struct { html string  format string  title string }
 type SumRow struct { s int }
 type CntRow struct { n int }
+type OwnerRow struct { owner string  key_hash string  created int }
 
 // the strict render sandbox — same envelope idea as Claude artifacts: renders the page while
 // neutering it as an exfiltration/attack vector. No external anything; no network.
@@ -44,6 +45,27 @@ func opendb() (db) {
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN data TEXT DEFAULT ''", []string{})   // the template's live data (window.HART_DATA + {{key}})
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS versions(artifact_id TEXT, version INTEGER, title TEXT, format TEXT, html TEXT, hash TEXT, created INTEGER, PRIMARY KEY(artifact_id, version))", []string{})
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS hits(ip TEXT, ts INTEGER)", []string{})   // per-IP submit rate window
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS owners(owner TEXT PRIMARY KEY, key_hash TEXT DEFAULT '', created INTEGER)", []string{})   // namespace claim keys
+}
+
+// owner_authorized — the namespace claim model (works even when the instance is free/tokenless):
+// first mutation to a NEW owner claims it (with a key if the client sent one, else open); once an
+// owner is claimed with a key, all further mutations to it require that key (X-Hart-Owner-Key).
+// Anonymous artifacts (owner == "") have no namespace to protect. Returns 1 if allowed to write.
+func owner_authorized(db, owner, req) (ok) {
+    ok = 0
+    if owner == "" { return 1 }
+    provided := ""
+    k := header(req, "x-hart-owner-key")
+    if k != "" { provided = to_hex(sha256_bytes(bytes(k))) }
+    rows := sqlite_query(db, "SELECT owner, key_hash, created FROM owners WHERE owner = ?", []string{owner})
+    os := parse(rows, []OwnerRow{})
+    if len(os) == 0 {
+        sqlite_exec(db, "INSERT INTO owners(owner, key_hash, created) VALUES(?,?,?)", []string{owner, provided, str(now())})
+        return 1
+    }
+    if os[0].key_hash == "" { return 1 }
+    if provided == os[0].key_hash { return 1 }
 }
 
 // ---- abuse limits (customizable; the daemon is otherwise open/free) --------
@@ -169,6 +191,7 @@ func h_publish(req) (res) {
         sqlite_close(db)
         return response("422 Unprocessable Entity", "application/json", "{\"ok\":false,\"error\":\"content-security violations — self-contained pages only; inline assets or pass --force\",\"lint\":" + report + "}")
     }
+    if owner_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + owner + "' is claimed — pass the owner key (--owner-key / HART_OWNER_KEY)\"}") }
     n := now()
     ver := 1
     arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
@@ -208,6 +231,7 @@ func h_data(req) (res) {
     arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact — publish the template first\"}") }
+    if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
     sqlite_exec(db, "UPDATE artifacts SET data = ?, updated = ? WHERE id = ?", []string{body, str(now()), id})
     sqlite_close(db)
     base := pubbase(req)
@@ -245,6 +269,7 @@ func h_delete(req, id) (res) {
     orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if owner_authorized(db, oa[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + oa[0].owner + "' is claimed — pass the owner key\"}") }
     sqlite_exec(db, "DELETE FROM versions WHERE artifact_id = ?", []string{id})
     sqlite_exec(db, "DELETE FROM artifacts WHERE id = ?", []string{id})
     sqlite_close(db)
@@ -259,6 +284,7 @@ func h_rollback(req, id, target) (res) {
     orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if owner_authorized(db, oa[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + oa[0].owner + "' is claimed — pass the owner key\"}") }
     vrows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(target)})
     vs := parse(vrows, []VerRow{})
     if len(vs) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such version — see hart versions <id>\"}") }
@@ -520,11 +546,11 @@ func cmd_publish(a) {
     headers := []string{"content-type: text/html; charset=utf-8"}
     tok := client_token()
     if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
+    ok := owner_key_of(a)
+    if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
     status, resp, err := http_request("POST", url, headers, html)
     if err != "" { die(100, "cannot reach hart daemon at " + hart_url() + " (is `hart serve` running? set HART_URL): " + err) }
-    if status == 401 { die(80, "not authenticated — hart login <token> (or run the daemon with HART_OPEN=1)") }
-    if status == 422 { write(1, resp + "\n"); exit(80) }
-    if status != 200 { die(100, "publish failed (" + str(status) + "): " + resp) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }   // server already returns clean JSON
     say(resp)
 }
 
@@ -559,10 +585,11 @@ func cmd_data(a) {
     headers := []string{"content-type: application/json"}
     tok := client_token()
     if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
+    ok := owner_key_of(a)
+    if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
     status, resp, err := http_request("POST", url, headers, json)
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
-    if status == 404 { die(90, "no such artifact — publish the template first") }
-    if status != 200 { die(100, "data update failed (" + str(status) + "): " + resp) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }
     say(resp)
 }
 
@@ -578,6 +605,14 @@ func auth_headers() (h) {
     h = []string{}
     tok := client_token()
     if tok != "" { h = append(h, "authorization: Bearer " + tok) }
+    ok := env("HART_OWNER_KEY")
+    if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
+}
+
+// owner_key_flag — --owner-key on the command overrides HART_OWNER_KEY for this call.
+func owner_key_of(a) (k) {
+    k = flagv(a, "--owner-key", "")
+    if k == "" { k = env("HART_OWNER_KEY") }
 }
 
 func cmd_login(a) {
