@@ -124,3 +124,22 @@ Legend: 🎯 goal · 📦 deliverable · ✅ done-when.
 CSP-wrapped `/a/<id>`) and a `publish` subcommand (POST a file, print `{url}`). Prove the loop,
 then grow into M1's contract + CLI surface. Read the `machin-backend` skill first; vendor
 `framework/machweb.src`.
+
+---
+
+## Founder notes (2026-07-06)
+
+Two directives folded in, pulled earlier than their original milestone:
+
+1. **Versioning from M0, not M2.** Every publish to the same id mints the next version —
+   `v1, v2, v3, …` — and **`latest` always resolves to the newest**. URLs:
+   `/a/<id>` and `/a/<id>/latest` → newest; `/a/<id>/v<n>` → pinned. So an agent's workflow is
+   *create once, then submit updates*: `hart publish x.html` (→ v1) then `hart publish --id <id>
+   x.html` (→ v2, latest moves). Rollback = re-point latest at an older version. M0 ships this.
+
+2. **JSX as a first-class source format.** Agents author React/JSX, not just raw HTML.
+   `hart publish app.jsx --format jsx` → the daemon transpiles+wraps into a self-contained,
+   CSP-safe page (inline runtime, no CDN). M0 stores `format` on every version and serves HTML
+   verbatim; **JSX transpile lands in M1** (the transpiler is the load-bearing piece — likely a
+   vendored inline Babel-standalone-equivalent or a minimal JSX→JS pass, TBD in the open
+   questions). The contract is: *source in (html|jsx) → self-contained sandboxed page out*.
