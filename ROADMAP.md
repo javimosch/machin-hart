@@ -190,3 +190,21 @@ M1 COMPLETE:
   computed). Path-traversal guarded.
 - **Origin isolation** — serve artifacts from a dedicated origin (deploy-time; pairs with M3 hosting).
 - **Signed sessions** — M1 uses opaque bearer tokens; `machweb set_session` cookies optional later.
+
+---
+
+## M2 scope decisions (2026-07-06, founder)
+
+- **Rollback ✅ SHIPPED** — `hart rollback <id> <version>` re-points `latest` at an existing
+  older version; non-destructive (versions stay immutable, next publish still appends MAX+1).
+  Fixed the latent bug where `next = latest+1` would collide after a rollback (now MAX+1).
+- **Custom domains — DEFERRED ("too soon").** Relative same-origin URLs (`/a/<id>`) under the one
+  `hart.intrane.fr` (or a self-hoster's own domain via HART_PUBLIC) are far enough for now.
+- **MCP — REJECTED.** We ship a **CLI** like grepapi — that *is* the agent interface. An
+  agent-first CLI (JSON I/O, exit codes, composable) beats an MCP server; no MCP.
+- **BYO-S3 — NOTED FOR LATER (not now).** Idea parked: let a hosted/self-host deployment back the
+  blob store with the operator's own S3 bucket instead of SQLite, for durability/scale. Revisit
+  when artifact volume or the hosted tier (M3) needs it.
+
+**So M2 = rollback (done).** Next real work is **M3** (hosted tier + Stripe = the micro-SaaS)
+when there's demand; until then hart is a complete, self-hostable, live agent-first artifact host.

@@ -117,7 +117,10 @@ func h_publish(req) (res) {
             sqlite_close(db)
             return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"that id belongs to another account\"}")
         }
-        ver = ars[0].latest + 1
+        // next version = highest ever + 1 (NOT latest+1 — rollback can move latest backward)
+        mrows := sqlite_query(db, "SELECT COALESCE(MAX(version),0) AS m FROM versions WHERE artifact_id = ?", []string{id})
+        mraw, _ := json_get(mrows, "[0].m")
+        ver = parse_int(mraw) + 1
         sqlite_exec(db, "UPDATE artifacts SET latest = ?, title = COALESCE(NULLIF(?,''), title), updated = ? WHERE id = ?", []string{str(ver), title, str(n), id})
     } else {
         if id == "" { id = nid() }
@@ -163,6 +166,24 @@ func h_delete(req, id) (res) {
     sqlite_exec(db, "DELETE FROM artifacts WHERE id = ?", []string{id})
     sqlite_close(db)
     res = ok_json("{\"ok\":true,\"deleted\":\"" + id + "\"}")
+}
+
+// h_rollback — re-point `latest` at an existing older version (owner only). Non-destructive:
+// versions stay immutable; publishing afterwards still appends MAX+1.
+func h_rollback(req, id, target) (res) {
+    db := opendb()
+    aid, ok := bearer_account(db, req)
+    if ok == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"bad or missing token\"}") }
+    orows := sqlite_query(db, "SELECT id, account_id, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    oa := parse(orows, []ArtRow{})
+    if len(oa) == 0 || (oa[0].account_id != aid && env("HART_OPEN") != "1") { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    vrows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(target)})
+    vs := parse(vrows, []VerRow{})
+    if len(vs) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such version — see hart versions <id>\"}") }
+    sqlite_exec(db, "UPDATE artifacts SET latest = ?, updated = ? WHERE id = ?", []string{str(target), str(now()), id})
+    sqlite_close(db)
+    base := pubbase(req)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"latest\":" + str(target) + ",\"url\":\"" + base + "/a/" + id + "\"}")
 }
 
 // ---- the publish contract linter ------------------------------------------
@@ -295,6 +316,12 @@ func hart_route(req) (res) {
         db := opendb()
         return h_versions(db, req, id)
     }
+    if req.method == "POST" && has_prefix(p, "/v1/artifacts/") && has_suffix(p, "/rollback") {
+        id := substr(p, 14, len(p))
+        si := index(id, "/")
+        if si >= 0 { id = substr(id, 0, si) }
+        return h_rollback(req, id, parse_int(query(req, "to")))
+    }
     if req.method == "DELETE" && has_prefix(p, "/v1/artifacts/") {
         id := substr(p, 14, len(p))
         si := index(id, "/")
@@ -378,6 +405,14 @@ func cmd_rm(a) {
     say(resp)
 }
 
+func cmd_rollback(a) {
+    if len(a) < 4 { die(80, "usage: hart rollback <id> <version>  (re-point latest at an older version)") }
+    status, resp, err := http_request("POST", hart_url() + "/v1/artifacts/" + a[2] + "/rollback?to=" + a[3], auth_headers(), "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(90, "rollback failed (" + str(status) + "): " + resp) }
+    say(resp)
+}
+
 func auth_headers() (h) {
     h = []string{}
     tok := client_token()
@@ -425,7 +460,7 @@ func cmd_versions(a) {
 }
 
 func cmd_help() {
-    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_PORT, HART_PUBLIC, HART_OPEN=1 for single-user)\",\"grant\":\"grant <email> (admin, on the daemon host: mint an account+token)\",\"login\":\"login <token> (store creds in ~/.hart-token)\",\"publish\":\"publish <file> [--id <id>] [--title <t>] [--format html|jsx] [--dry-run] [--force] -> {url,version}. Re-publish with --id => next version.\",\"get\":\"get <id> (versions)\",\"list\":\"list (your artifacts)\",\"versions\":\"versions <id>\",\"rm\":\"rm <id>\"},\"env\":{\"HART_URL\":\"daemon (default http://127.0.0.1:8799)\",\"HART_TOKEN\":\"bearer token (or hart login)\"},\"urls\":{\"latest\":\"/a/<id> or /a/<id>/latest\",\"pinned\":\"/a/<id>/v<n>\"},\"contract\":\"self-contained HTML only — inline CSS/JS, data: URIs; external refs + network are linted (errors block, pass --force)\"}")
+    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_PORT, HART_PUBLIC, HART_OPEN=1 for single-user)\",\"grant\":\"grant <email> (admin, on the daemon host: mint an account+token)\",\"login\":\"login <token> (store creds in ~/.hart-token)\",\"publish\":\"publish <file> [--id <id>] [--title <t>] [--format html|jsx] [--dry-run] [--force] -> {url,version}. Re-publish with --id => next version.\",\"get\":\"get <id> (versions)\",\"list\":\"list (your artifacts)\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version> (re-point latest at an older version; non-destructive)\",\"rm\":\"rm <id>\"},\"env\":{\"HART_URL\":\"daemon (default http://127.0.0.1:8799)\",\"HART_TOKEN\":\"bearer token (or hart login)\"},\"urls\":{\"latest\":\"/a/<id> or /a/<id>/latest\",\"pinned\":\"/a/<id>/v<n>\"},\"contract\":\"self-contained HTML only — inline CSS/JS, data: URIs; external refs + network are linted (errors block, pass --force)\"}")
 }
 
 func main() {
@@ -440,6 +475,7 @@ func main() {
     if cmd == "get" { cmd_get(a); return }
     if cmd == "list" { cmd_list(); return }
     if cmd == "versions" { cmd_versions(a); return }
+    if cmd == "rollback" { cmd_rollback(a); return }
     if cmd == "rm" { cmd_rm(a); return }
     write(2, "{\"ok\":false,\"error\":\"unknown command: " + cmd + "\"}\n")
     exit(80)
