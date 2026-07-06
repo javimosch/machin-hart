@@ -36,17 +36,17 @@ lock-in.
 # 1. build (needs `machin` on PATH; vendors framework/machweb.src)
 ./build.sh                       # → ./hart
 
-# 2. run the host daemon (SQLite store, your box)
-HART_DB=~/.hart.db ./hart serve 8080 &
+# 2. run the host daemon (SQLite store, your box). Free/open by default; set HART_TOKEN to gate publishing.
+HART_DB=~/.hart.db HART_RUNTIME_DIR=./runtime ./hart serve 8080 &
 
-# 3. point the client at it + get a token
+# 3. point the client at it (+ token only if the daemon set one)
 export HART_URL=http://localhost:8080
-./hart grant you@example.com     # → prints a token (operator-only, on the daemon host)
-./hart login <token>
+# ./hart login <token>            # only if this instance requires a token
 
-# 4. publish
-./hart publish report.html --title "Q3 report"
-# → {"ok":true,"id":"…","url":"http://localhost:8080/a/…"}
+# 4. publish — owner + artifact = a stable, legible URL
+./hart publish report.html --owner alice --artifact q3-report --title "Q3 report"
+# → {"ok":true,"id":"alice/q3-report","url":"http://localhost:8080/a/alice/q3-report"}
+./hart publish report.html --owner alice --artifact q3-report   # re-publish → v2, latest moves
 ```
 
 For a public host, put `hart serve` behind Traefik + Cloudflare + Let's Encrypt with
@@ -75,18 +75,19 @@ internal). Non-interactive and idempotent. `hart help-json` introspects the whol
 
 | Command | Does |
 |---|---|
-| `hart publish <file> [--title --favicon --slug --private\|--unlisted\|--public]` | upload → `{id,url,version}` (re-publishing a `--slug` updates in place) |
-| `hart update <id> <file>` | new version at the same URL |
-| `hart versions <id>` / `hart rollback <id> <v>` | history + instant revert |
-| `hart list` / `hart get <id>` / `hart rm <id>` | manage artifacts |
-| `hart share <id> <private\|unlisted\|public>` | change access mode |
-| `hart domain <id> <sub.you.dev>` | map a custom domain (BYO) |
-| `hart stats <id>` | privacy-respecting view counts (M4) |
-| `hart usage` | account limits / storage / bandwidth |
+| `hart publish <file> [--owner <who>] [--artifact <name>] [--title --format html\|jsx] [--dry-run --force]` | upload → `{id,url,version}`. `owner`+`artifact` ⇒ stable id `owner/artifact`; re-publishing appends a version |
+| `hart versions <id>` / `hart rollback <id> <v>` | history + instant revert (non-destructive) |
+| `hart list [--owner <who>]` / `hart get <id>` / `hart rm <id>` | manage artifacts |
 | `hart serve [port]` | run the hosting daemon |
-| `hart grant <email>` / `hart login <token>` | auth |
+| `hart login <token>` | store the client token in `~/.hart-token` |
 
-Env: `HART_URL` (control plane), `HART_TOKEN`/`hart login` (auth), `HART_DB` / `HART_STORE`
+URLs: `/a/<owner>/<artifact>` (or `/a/<id>`) → latest · `…/latest` · `…/v<n>` → immutable pin.
+JSX (`--format jsx`) is transpiled in-browser via a same-origin React+Babel runtime the daemon
+serves at `/_hart/runtime/*`.
+
+Env: `HART_URL` (daemon), `HART_TOKEN` (a single **optional** static token — set it on the daemon
+to require it for publishing, leave unset for a free/open instance; reads are always public),
+`HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`
 (daemon storage, e.g. `s3://bucket`).
 
 ## Architecture
