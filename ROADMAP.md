@@ -164,3 +164,26 @@ Two directives folded in, pulled earlier than their original milestone:
 **Known M0 limitations (for M1):** returned URL omits the port when published via the MFL HTTP
 client (sends `Host` sans port) — set `HART_PUBLIC` for canonical URLs; no auth yet (publish is
 open — add `HART_TOKEN` gate in M1); no publish-time CSP linter yet; JSX not transpiled.
+
+---
+
+## M1 status — auth + linter + CLI SHIPPED, JSX pending (2026-07-06)
+
+Done + tested end to end:
+- **Auth + per-account isolation** — `accounts`/`tokens` tables; `hart grant <email>` (admin,
+  direct DB → account+token); `hart login <token>` (→ ~/.hart-token); publish/list/versions/rm
+  require a bearer token and are scoped to the account. `HART_OPEN=1` = single-user no-auth
+  self-host mode. Cross-account id reuse → 403.
+- **Publish contract + CSP linter** (`CONTRACT.md`) — `lint()` flags external script/css/import/
+  asset + fetch/XHR/WebSocket; **errors block (422) unless `--force`**; `--dry-run` returns
+  `{would_block,lint}` without storing. Verified: clean page passes, `fetch()`+external `<script
+  src>` blocks, `--force` overrides.
+- **CLI surface** — `serve grant login publish get list versions rm help` (agent-first JSON,
+  semantic exit codes, `HART_URL`/`HART_TOKEN`, idempotent `--id`).
+
+Pending for M1 completion:
+- **JSX transpile** — format is stored; runtime not built. Decision in `CONTRACT.md`: browser-side
+  transpile via a **same-origin** `/_hart/runtime/{react,babel}.js` (self-hosted, no CDN), start
+  with babel-standalone. This is the load-bearing remaining piece.
+- **Origin isolation** — serve artifacts from a dedicated origin (deploy-time; pairs with M3 hosting).
+- **Signed sessions** — M1 uses opaque bearer tokens; `machweb set_session` cookies optional later.
