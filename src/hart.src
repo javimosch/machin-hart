@@ -7,7 +7,7 @@
 // Env: HART_URL (publish target, default http://127.0.0.1:8799), HART_DB (default ~/.hart.db),
 //      HART_PORT (serve port, default 8799), HART_PUBLIC (public base for returned URLs).
 
-type ArtRow struct { id string  account_id string  title string  latest int  created int  updated int }
+type ArtRow struct { id string  owner string  name string  title string  latest int  created int  updated int }
 type VerRow struct { version int  format string  created int }
 type HtmlRow struct { html string  format string  title string }
 
@@ -36,36 +36,44 @@ func hdb() (p) {
 func opendb() (db) {
     db = sqlite_open(hdb())
     sqlite_exec(db, "PRAGMA busy_timeout=3000", []string{})
-    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, account_id TEXT DEFAULT '', title TEXT, latest INTEGER DEFAULT 0, created INTEGER, updated INTEGER)", []string{})
-    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN account_id TEXT DEFAULT ''", []string{})   // no-op once it exists
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, owner TEXT DEFAULT '', name TEXT DEFAULT '', title TEXT, latest INTEGER DEFAULT 0, created INTEGER, updated INTEGER)", []string{})
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN owner TEXT DEFAULT ''", []string{})   // no-op once it exists
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN name TEXT DEFAULT ''", []string{})
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS versions(artifact_id TEXT, version INTEGER, title TEXT, format TEXT, html TEXT, hash TEXT, created INTEGER, PRIMARY KEY(artifact_id, version))", []string{})
-    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, email TEXT UNIQUE, created INTEGER)", []string{})
-    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS tokens(token TEXT PRIMARY KEY, account_id TEXT, created INTEGER)", []string{})
 }
 
 func nid() (s) { s = to_hex(rand_bytes(6)) }
-func longid() (s) { s = to_hex(rand_bytes(16)) }
 
-func unq(s) (o) {
-    o = s
-    n := len(s)
-    if n >= 2 { if substr(s, 0, 1) == "\"" { o = substr(s, 1, n - 1) } }
+// auth: a single OPTIONAL static token, set by the self-hoster. If HART_TOKEN is set on the
+// daemon, mutating requests must present it (Bearer); if unset, the service is OPEN (free).
+// Ownership is a plain label (--owner), not a secured identity — legible, not access-control.
+func check_token(req) (ok) {
+    st := env("HART_TOKEN")
+    if st == "" { return 1 }
+    if header(req, "authorization") == "Bearer " + st { return 1 }
+    ok = 0
 }
 
-// auth: resolve the bearer token to an account. Open mode (HART_OPEN=1, for single-user
-// self-host) returns a fixed "self" account so publish works with no token.
-func bearer_account(db, req) (aid, ok) {
-    aid = ""
-    ok = 0
-    if env("HART_OPEN") == "1" { return "self", 1 }
-    h := header(req, "authorization")
-    if !has_prefix(h, "Bearer ") { return aid, ok }
-    tok := trim(substr(h, 7, len(h)))
-    if tok == "" { return aid, ok }
-    rows := sqlite_query(db, "SELECT account_id FROM tokens WHERE token = ?", []string{tok})
-    v, err := json_get(rows, "[0].account_id")
-    if err == "" { aid = unq(v) }
-    if aid != "" && aid != "null" { ok = 1 } else { aid = "" }
+// slugify — a URL-safe artifact name: lowercase, non-alnum runs -> single "-", trimmed.
+func slugify(s) (out) {
+    lc := to_lower(s)
+    out = ""
+    prevdash := 1
+    i := 0
+    for i < len(lc) {
+        c := substr(lc, i, i + 1)
+        keep := 0
+        if c >= "a" && c <= "z" { keep = 1 }
+        if c >= "0" && c <= "9" { keep = 1 }
+        if keep == 1 {
+            out = out + c
+            prevdash = 0
+        } else {
+            if prevdash == 0 { out = out + "-"; prevdash = 1 }
+        }
+        i = i + 1
+    }
+    if len(out) > 0 { if substr(out, len(out) - 1, len(out)) == "-" { out = substr(out, 0, len(out) - 1) } }
 }
 
 func say(s) { write(1, s + "\n") }
@@ -84,13 +92,16 @@ func pubbase(req) (b) {
 
 // ---- daemon ---------------------------------------------------------------
 
-// POST /v1/publish?id=&title=&format=  — raw HTML in the body (no JSON escaping of the page).
-// New id -> v1; existing id -> next version; `latest` always tracks the newest.
+// POST /v1/publish?owner=&artifact=&id=&title=&format=  — raw HTML in the body.
+// Address by owner/artifact (legible, stable): id = "<owner>/<slug(artifact)>". Re-publishing
+// the same owner+artifact appends the next version. Falls back to a random id if neither given.
 func h_publish(req) (res) {
     db := opendb()
-    aid, ok := bearer_account(db, req)
-    if ok == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"bad or missing token — hart login <token> (or run the daemon with HART_OPEN=1 for single-user)\"}") }
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"this hart requires a token — hart login <token> (the operator set HART_TOKEN)\"}") }
+    owner := slugify(query(req, "owner"))
+    artifact := slugify(query(req, "artifact"))
     id := query(req, "id")
+    if id == "" && owner != "" && artifact != "" { id = owner + "/" + artifact }
     title := query(req, "title")
     format := query(req, "format")
     if format == "" { format = "html" }
@@ -110,13 +121,9 @@ func h_publish(req) (res) {
     }
     n := now()
     ver := 1
-    arows := sqlite_query(db, "SELECT id, account_id, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if id != "" && len(ars) > 0 {
-        if ars[0].account_id != aid && env("HART_OPEN") != "1" {
-            sqlite_close(db)
-            return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"that id belongs to another account\"}")
-        }
         // next version = highest ever + 1 (NOT latest+1 — rollback can move latest backward)
         mrows := sqlite_query(db, "SELECT COALESCE(MAX(version),0) AS m FROM versions WHERE artifact_id = ?", []string{id})
         mraw, _ := json_get(mrows, "[0].m")
@@ -124,59 +131,61 @@ func h_publish(req) (res) {
         sqlite_exec(db, "UPDATE artifacts SET latest = ?, title = COALESCE(NULLIF(?,''), title), updated = ? WHERE id = ?", []string{str(ver), title, str(n), id})
     } else {
         if id == "" { id = nid() }
-        sqlite_exec(db, "INSERT INTO artifacts(id, account_id, title, latest, created, updated) VALUES(?,?,?,?,?,?)", []string{id, aid, title, str(ver), str(n), str(n)})
+        sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, created, updated) VALUES(?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), str(n), str(n)})
     }
     hash := to_hex(sha256_bytes(bytes(body)))
     sqlite_exec(db, "INSERT INTO versions(artifact_id, version, title, format, html, hash, created) VALUES(?,?,?,?,?,?,?)", []string{id, str(ver), title, format, body, hash, str(n)})
     sqlite_close(db)
     base := pubbase(req)
-    out := "{\"ok\":true,\"id\":\"" + id + "\",\"version\":" + str(ver) + ",\"format\":\"" + format + "\",\"url\":\"" + base + "/a/" + id + "\",\"latest_url\":\"" + base + "/a/" + id + "/latest\",\"pinned_url\":\"" + base + "/a/" + id + "/v" + str(ver) + "\",\"lint\":" + report + "}"
+    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + owner + "\",\"artifact\":\"" + artifact + "\",\"version\":" + str(ver) + ",\"format\":\"" + format + "\",\"url\":\"" + base + "/a/" + id + "\",\"latest_url\":\"" + base + "/a/" + id + "/latest\",\"pinned_url\":\"" + base + "/a/" + id + "/v" + str(ver) + "\",\"lint\":" + report + "}"
     res = ok_json(out)
 }
 
 func h_list(req) (res) {
     db := opendb()
-    aid, ok := bearer_account(db, req)
-    if ok == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"bad or missing token\"}") }
-    rows := sqlite_query(db, "SELECT id, account_id, title, latest, updated FROM artifacts WHERE account_id = ? ORDER BY updated DESC LIMIT 500", []string{aid})
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    owner := slugify(query(req, "owner"))
+    rows := ""
+    if owner != "" {
+        rows = sqlite_query(db, "SELECT id, owner, name, title, latest, updated FROM artifacts WHERE owner = ? ORDER BY updated DESC LIMIT 500", []string{owner})
+    } else {
+        rows = sqlite_query(db, "SELECT id, owner, name, title, latest, updated FROM artifacts ORDER BY updated DESC LIMIT 500", []string{})
+    }
     sqlite_close(db)
     res = ok_json("{\"ok\":true,\"artifacts\":" + rows + "}")
 }
 
 func h_versions(db, req, id) (res) {
-    aid, ok := bearer_account(db, req)
-    if ok == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"bad or missing token\"}") }
-    orows := sqlite_query(db, "SELECT id, account_id, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
-    if len(oa) == 0 || (oa[0].account_id != aid && env("HART_OPEN") != "1") { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     rows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? ORDER BY version DESC", []string{id})
     sqlite_close(db)
-    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"versions\":" + rows + "}")
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + oa[0].owner + "\",\"name\":\"" + oa[0].name + "\",\"versions\":" + rows + "}")
 }
 
-// h_delete — remove an artifact + all versions (owner only).
+// h_delete — remove an artifact + all versions.
 func h_delete(req, id) (res) {
     db := opendb()
-    aid, ok := bearer_account(db, req)
-    if ok == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"bad or missing token\"}") }
-    orows := sqlite_query(db, "SELECT id, account_id, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
-    if len(oa) == 0 || (oa[0].account_id != aid && env("HART_OPEN") != "1") { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     sqlite_exec(db, "DELETE FROM versions WHERE artifact_id = ?", []string{id})
     sqlite_exec(db, "DELETE FROM artifacts WHERE id = ?", []string{id})
     sqlite_close(db)
     res = ok_json("{\"ok\":true,\"deleted\":\"" + id + "\"}")
 }
 
-// h_rollback — re-point `latest` at an existing older version (owner only). Non-destructive:
-// versions stay immutable; publishing afterwards still appends MAX+1.
+// h_rollback — re-point `latest` at an existing older version. Non-destructive: versions stay
+// immutable; publishing afterwards still appends MAX+1.
 func h_rollback(req, id, target) (res) {
     db := opendb()
-    aid, ok := bearer_account(db, req)
-    if ok == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"bad or missing token\"}") }
-    orows := sqlite_query(db, "SELECT id, account_id, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
-    if len(oa) == 0 || (oa[0].account_id != aid && env("HART_OPEN") != "1") { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     vrows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(target)})
     vs := parse(vrows, []VerRow{})
     if len(vs) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such version — see hart versions <id>\"}") }
@@ -264,7 +273,7 @@ func serve_runtime(fname) (res) {
 func serve_artifact(db, id, ver) (res) {
     v := ver
     if v == 0 {
-        arows := sqlite_query(db, "SELECT id, account_id, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+        arows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
         ars := parse(arows, []ArtRow{})
         if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain; charset=utf-8", "artifact not found") }
         v = ars[0].latest
@@ -284,49 +293,76 @@ func serve_artifact(db, id, ver) (res) {
     res = r
 }
 
-// parse /a/<id>, /a/<id>/latest, /a/<id>/v<n>
+// is_version_seg — a trailing path segment that pins a version: "latest" or "v<digits>".
+func is_version_seg(seg) (yes) {
+    yes = 0
+    if seg == "latest" { return 1 }
+    if len(seg) >= 2 { if substr(seg, 0, 1) == "v" {
+        rest := substr(seg, 1, len(seg))
+        alld := 1
+        i := 0
+        for i < len(rest) { c := substr(rest, i, i + 1); if c < "0" || c > "9" { alld = 0 } i = i + 1 }
+        yes = alld
+    } }
+}
+
+// parse /a/<id>, /a/<owner>/<artifact>, plus an optional trailing /latest or /v<n>.
+// The id is everything before a trailing version segment (so owner/artifact ids keep their slash).
 func handle_artifact(req, p) (res) {
     rest := substr(p, 3, len(p))   // strip "/a/"
+    if rest == "" { return response("404 Not Found", "text/plain", "no id") }
     parts := split(rest, "/")
-    id := parts[0]
+    ver := 0
+    idcount := len(parts)
+    last := parts[len(parts) - 1]
+    if len(parts) > 1 && is_version_seg(last) == 1 {
+        if last != "latest" { ver = parse_int(substr(last, 1, len(last))) }
+        idcount = len(parts) - 1
+    }
+    id := ""
+    i := 0
+    for i < idcount { if id != "" { id = id + "/" } id = id + parts[i] i = i + 1 }
     if id == "" { return response("404 Not Found", "text/plain", "no id") }
     db := opendb()
-    ver := 0
-    if len(parts) > 1 {
-        seg := parts[1]
-        if seg != "latest" && seg != "" {
-            if substr(seg, 0, 1) == "v" { ver = parse_int(substr(seg, 1, len(seg))) } else { ver = parse_int(seg) }
-        }
-    }
     res = serve_artifact(db, id, ver)
+}
+
+// the root page — what hart is + how to publish. Self-contained, served at /.
+func serve_landing() (res) {
+    auth := "open — no token required"
+    if env("HART_TOKEN") != "" { auth = "token required (operator-configured)" }
+    body := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>hart — artifact host</title>"
+    body = body + "<style>:root{--ink:#16181d;--mut:#5b6472;--ln:#e6e8eb;--ac:#0e6e6e;--bg:#f6f7f8}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}.w{max-width:680px;margin:0 auto;padding:64px 24px}h1{font-size:40px;letter-spacing:-.02em;margin:0 0 6px}.tag{color:var(--ac);font:12px ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase;margin:0 0 18px}p{color:var(--mut);max-width:60ch}pre{background:#fff;border:1px solid var(--ln);border-radius:10px;padding:16px 18px;overflow-x:auto;font:13px/1.7 ui-monospace,monospace;color:var(--ink)}.k{color:var(--ac)}.st{display:inline-block;font:12px ui-monospace,monospace;color:var(--mut);border:1px solid var(--ln);background:#fff;border-radius:20px;padding:4px 12px;margin-top:8px}code{font:13px ui-monospace,monospace;background:#eef0f1;padding:1px 6px;border-radius:5px}</style></head><body><div class=\"w\">"
+    body = body + "<p class=\"tag\">agent-first artifact host</p><h1>hart</h1>"
+    body = body + "<p>Publish self-contained HTML or JSX from any terminal agent and get a live, versioned, sandboxed URL. One binary — CLI + host — self-hostable, BYO everything.</p>"
+    body = body + "<div class=\"st\">this instance: " + auth + "</div>"
+    body = body + "<pre># publish (owner + artifact name = a stable URL)\nhart <span class=\"k\">publish</span> page.html --owner <span class=\"k\">alice</span> --artifact <span class=\"k\">pricing</span>\n  → " + "/a/alice/pricing\n\n# update it → new version, latest moves\nhart <span class=\"k\">publish</span> page.html --owner alice --artifact pricing\n\n# pin / rollback / list\n/a/alice/pricing/v1     hart <span class=\"k\">rollback</span> alice/pricing 1     hart <span class=\"k\">list</span></pre>"
+    body = body + "<p style=\"margin-top:28px;font-size:14px\">Docs &amp; source: <code>github.com/javimosch/machin-hart</code></p>"
+    body = body + "</div></body></html>"
+    r := ok_html(body)
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:")
+    res = r
 }
 
 func hart_route(req) (res) {
     p := req.path
     qi := index(p, "?")
     if qi >= 0 { p = substr(p, 0, qi) }
+    if p == "/" { return serve_landing() }
     if p == "/_health" { return ok_json("{\"ok\":true,\"service\":\"hart\"}") }
     if req.method == "GET" && has_prefix(p, "/_hart/runtime/") { return serve_runtime(substr(p, 15, len(p))) }
     if req.method == "POST" && p == "/v1/publish" { return h_publish(req) }
     if req.method == "GET" && p == "/v1/artifacts" { return h_list(req) }
-    if req.method == "GET" && has_prefix(p, "/v1/artifacts/") {
-        id := substr(p, 14, len(p))
-        si := index(id, "/")
-        if si >= 0 { id = substr(id, 0, si) }
-        db := opendb()
-        return h_versions(db, req, id)
-    }
-    if req.method == "POST" && has_prefix(p, "/v1/artifacts/") && has_suffix(p, "/rollback") {
-        id := substr(p, 14, len(p))
-        si := index(id, "/")
-        if si >= 0 { id = substr(id, 0, si) }
-        return h_rollback(req, id, parse_int(query(req, "to")))
-    }
-    if req.method == "DELETE" && has_prefix(p, "/v1/artifacts/") {
-        id := substr(p, 14, len(p))
-        si := index(id, "/")
-        if si >= 0 { id = substr(id, 0, si) }
-        return h_delete(req, id)
+    if has_prefix(p, "/v1/artifacts/") {
+        tail := substr(p, 14, len(p))   // the id (may contain "/") + optional /versions|/rollback
+        if req.method == "GET" && has_suffix(tail, "/versions") {
+            db := opendb(); return h_versions(db, req, substr(tail, 0, len(tail) - 9))
+        }
+        if req.method == "POST" && has_suffix(tail, "/rollback") {
+            return h_rollback(req, substr(tail, 0, len(tail) - 9), parse_int(query(req, "to")))
+        }
+        if req.method == "DELETE" { return h_delete(req, tail) }
+        if req.method == "GET" { db := opendb(); return h_versions(db, req, tail) }
     }
     if req.method == "GET" && has_prefix(p, "/a/") { return handle_artifact(req, p) }
     res = response("404 Not Found", "text/plain; charset=utf-8", "not found")
@@ -366,15 +402,19 @@ func has_flag(a, name) (yes) {
 }
 
 func cmd_publish(a) {
-    if len(a) < 3 { die(80, "usage: hart publish <file> [--id <id>] [--title <t>] [--format html|jsx] [--dry-run] [--force]") }
+    if len(a) < 3 { die(80, "usage: hart publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--id <id>] [--dry-run] [--force]") }
     file := a[2]
     html := read_file(file)
     if html == "" { die(90, "file empty or unreadable: " + file) }
     id := flagv(a, "--id", "")
+    owner := flagv(a, "--owner", "")
+    artifact := flagv(a, "--artifact", "")
     title := flagv(a, "--title", "")
     format := flagv(a, "--format", "html")
     url := hart_url() + "/v1/publish?format=" + url_encode(format)
     if id != "" { url = url + "&id=" + url_encode(id) }
+    if owner != "" { url = url + "&owner=" + url_encode(owner) }
+    if artifact != "" { url = url + "&artifact=" + url_encode(artifact) }
     if title != "" { url = url + "&title=" + url_encode(title) }
     if has_flag(a, "--dry-run") == 1 { url = url + "&dry=1" }
     if has_flag(a, "--force") == 1 { url = url + "&force=1" }
@@ -426,25 +466,11 @@ func cmd_login(a) {
     say("{\"ok\":true,\"saved\":\"~/.hart-token\"}")
 }
 
-// admin (operator-only, direct DB): mint an account + token. Run on the daemon host.
-func cmd_grant(a) {
-    if len(a) < 3 { die(80, "usage: hart grant <email>") }
-    email := a[2]
-    db := opendb()
-    id := longid()
-    tok := longid() + longid()
-    sqlite_exec(db, "INSERT OR IGNORE INTO accounts(id,email,created) VALUES(?,?,?)", []string{id, email, str(now())})
-    arows := sqlite_query(db, "SELECT id FROM accounts WHERE email = ?", []string{email})
-    ar := parse(arows, []ArtRow{})
-    aid := id
-    if len(ar) > 0 { aid = ar[0].id }
-    sqlite_exec(db, "INSERT INTO tokens(token,account_id,created) VALUES(?,?,?)", []string{tok, aid, str(now())})
-    sqlite_close(db)
-    say("{\"ok\":true,\"email\":\"" + email + "\",\"account_id\":\"" + aid + "\",\"token\":\"" + tok + "\"}")
-}
-
-func cmd_list() {
-    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts", auth_headers(), "")
+func cmd_list(a) {
+    url := hart_url() + "/v1/artifacts"
+    owner := flagv(a, "--owner", "")
+    if owner != "" { url = url + "?owner=" + url_encode(owner) }
+    status, resp, err := http_request("GET", url, auth_headers(), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status == 401 { die(80, "not authenticated — hart login <token>") }
     if status != 200 { die(100, "list failed (" + str(status) + ")") }
@@ -460,7 +486,7 @@ func cmd_versions(a) {
 }
 
 func cmd_help() {
-    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_PORT, HART_PUBLIC, HART_OPEN=1 for single-user)\",\"grant\":\"grant <email> (admin, on the daemon host: mint an account+token)\",\"login\":\"login <token> (store creds in ~/.hart-token)\",\"publish\":\"publish <file> [--id <id>] [--title <t>] [--format html|jsx] [--dry-run] [--force] -> {url,version}. Re-publish with --id => next version.\",\"get\":\"get <id> (versions)\",\"list\":\"list (your artifacts)\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version> (re-point latest at an older version; non-destructive)\",\"rm\":\"rm <id>\"},\"env\":{\"HART_URL\":\"daemon (default http://127.0.0.1:8799)\",\"HART_TOKEN\":\"bearer token (or hart login)\"},\"urls\":{\"latest\":\"/a/<id> or /a/<id>/latest\",\"pinned\":\"/a/<id>/v<n>\"},\"contract\":\"self-contained HTML only — inline CSS/JS, data: URIs; external refs + network are linted (errors block, pass --force)\"}")
+    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC; HART_TOKEN set => publish requires that token, unset => open/free)\",\"login\":\"login <token> (store creds in ~/.hart-token)\",\"publish\":\"publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--dry-run] [--force] -> {id,url,version}. owner+artifact => stable id owner/artifact; re-publish => next version.\",\"get\":\"get <id> (versions)\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version> (re-point latest; non-destructive)\",\"rm\":\"rm <id>\"},\"env\":{\"HART_URL\":\"daemon (default http://127.0.0.1:8799)\",\"HART_TOKEN\":\"static token (client sends it; server requires it if set)\"},\"urls\":{\"latest\":\"/a/<owner>/<artifact> or /a/<id> (+ /latest)\",\"pinned\":\"/a/<owner>/<artifact>/v<n>\"},\"contract\":\"self-contained HTML/JSX only — inline CSS/JS, data: URIs; external refs + network are linted (errors block, pass --force)\"}")
 }
 
 func main() {
@@ -469,11 +495,10 @@ func main() {
     if len(a) >= 2 { cmd = a[1] }
     if cmd == "" || cmd == "help" { cmd_help(); return }
     if cmd == "serve" { cmd_serve(a); return }
-    if cmd == "grant" { cmd_grant(a); return }
     if cmd == "login" { cmd_login(a); return }
     if cmd == "publish" { cmd_publish(a); return }
     if cmd == "get" { cmd_get(a); return }
-    if cmd == "list" { cmd_list(); return }
+    if cmd == "list" { cmd_list(a); return }
     if cmd == "versions" { cmd_versions(a); return }
     if cmd == "rollback" { cmd_rollback(a); return }
     if cmd == "rm" { cmd_rm(a); return }
