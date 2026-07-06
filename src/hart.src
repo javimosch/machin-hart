@@ -7,9 +7,11 @@
 // Env: HART_URL (publish target, default http://127.0.0.1:8799), HART_DB (default ~/.hart.db),
 //      HART_PORT (serve port, default 8799), HART_PUBLIC (public base for returned URLs).
 
-type ArtRow struct { id string  owner string  name string  title string  latest int  created int  updated int }
+type ArtRow struct { id string  owner string  name string  title string  latest int  data string  created int  updated int }
 type VerRow struct { version int  format string  created int }
 type HtmlRow struct { html string  format string  title string }
+type SumRow struct { s int }
+type CntRow struct { n int }
 
 // the strict render sandbox — same envelope idea as Claude artifacts: renders the page while
 // neutering it as an exfiltration/attack vector. No external anything; no network.
@@ -39,10 +41,55 @@ func opendb() (db) {
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, owner TEXT DEFAULT '', name TEXT DEFAULT '', title TEXT, latest INTEGER DEFAULT 0, created INTEGER, updated INTEGER)", []string{})
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN owner TEXT DEFAULT ''", []string{})   // no-op once it exists
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN name TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN data TEXT DEFAULT ''", []string{})   // the template's live data (window.HART_DATA + {{key}})
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS versions(artifact_id TEXT, version INTEGER, title TEXT, format TEXT, html TEXT, hash TEXT, created INTEGER, PRIMARY KEY(artifact_id, version))", []string{})
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS hits(ip TEXT, ts INTEGER)", []string{})   // per-IP submit rate window
+}
+
+// ---- abuse limits (customizable; the daemon is otherwise open/free) --------
+func max_submits_per_min() (n) {
+    n = parse_int(env("HART_MAX_SUBMITS_PER_MIN"))
+    if n <= 0 { n = 10 }
+}
+func max_owner_bytes() (n) {
+    mb := parse_int(env("HART_MAX_OWNER_MB"))
+    if mb <= 0 { mb = 30 }
+    n = mb * 1048576
+}
+
+func hart_client_ip(req) (ip) {
+    ip = header(req, "x-forwarded-for")
+    ci := index(ip, ",")
+    if ci >= 0 { ip = trim(substr(ip, 0, ci)) }
+    if ip == "" { ip = header(req, "x-real-ip") }
+    if ip == "" { ip = "unknown" }
+}
+
+// rate_ok — sliding 60s window per IP. Prunes old rows, counts recent, records this hit.
+func rate_ok(db, ip) (ok) {
+    cut := now() - 60
+    sqlite_exec(db, "DELETE FROM hits WHERE ts < ?", []string{str(cut)})
+    crows := sqlite_query(db, "SELECT COUNT(*) AS n FROM hits WHERE ip = ? AND ts >= ?", []string{ip, str(cut)})
+    cs := parse(crows, []CntRow{})
+    if len(cs) > 0 && cs[0].n >= max_submits_per_min() { return 0 }
+    sqlite_exec(db, "INSERT INTO hits(ip, ts) VALUES(?,?)", []string{ip, str(now())})
+    ok = 1
+}
+
+// owner_bytes — total stored HTML bytes for an owner (quota accounting).
+func owner_bytes(db, owner) (n) {
+    srows := sqlite_query(db, "SELECT COALESCE(SUM(LENGTH(v.html)),0) AS s FROM versions v JOIN artifacts a ON v.artifact_id = a.id WHERE a.owner = ?", []string{owner})
+    ss := parse(srows, []SumRow{})
+    if len(ss) > 0 { n = ss[0].s }
 }
 
 func nid() (s) { s = to_hex(rand_bytes(6)) }
+
+func unq(s) (o) {
+    o = s
+    n := len(s)
+    if n >= 2 { if substr(s, 0, 1) == "\"" { o = substr(s, 1, n - 1) } }
+}
 
 // auth: a single OPTIONAL static token, set by the self-hoster. If HART_TOKEN is set on the
 // daemon, mutating requests must present it (Bearer); if unset, the service is OPEN (free).
@@ -107,6 +154,9 @@ func h_publish(req) (res) {
     if format == "" { format = "html" }
     body := req.body
     if body == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty body\"}") }
+    // abuse limits: per-IP submit rate + per-owner storage quota (both customizable)
+    if rate_ok(db, hart_client_ip(req)) == 0 { sqlite_close(db); return response("429 Too Many Requests", "application/json", "{\"ok\":false,\"error\":\"rate limit: max " + str(max_submits_per_min()) + " submits/min — slow down\"}") }
+    if owner_bytes(db, owner) + len(body) > max_owner_bytes() { sqlite_close(db); return response("413 Payload Too Large", "application/json", "{\"ok\":false,\"error\":\"storage quota exceeded for owner '" + owner + "': max " + str(max_owner_bytes() / 1048576) + " MB total\"}") }
     // publish-time safety lint (see lint()); hard violations block unless ?force=1
     report := lint(body)
     if query(req, "dry") == "1" {
@@ -121,7 +171,7 @@ func h_publish(req) (res) {
     }
     n := now()
     ver := 1
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if id != "" && len(ars) > 0 {
         // next version = highest ever + 1 (NOT latest+1 — rollback can move latest backward)
@@ -141,6 +191,29 @@ func h_publish(req) (res) {
     res = ok_json(out)
 }
 
+// POST /v1/data?owner=&artifact=&id=  — JSON body = the artifact's live data. Updates the data
+// slot (a mutable pointer, not a version) so an agent can refresh an artifact's content without
+// re-pushing the template. The template reads it via window.HART_DATA and/or {{key}}.
+func h_data(req) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    if rate_ok(db, hart_client_ip(req)) == 0 { sqlite_close(db); return response("429 Too Many Requests", "application/json", "{\"ok\":false,\"error\":\"rate limit\"}") }
+    owner := slugify(query(req, "owner"))
+    artifact := slugify(query(req, "artifact"))
+    id := query(req, "id")
+    if id == "" && owner != "" && artifact != "" { id = owner + "/" + artifact }
+    if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need --id or --owner+--artifact\"}") }
+    body := req.body
+    if body == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty data body\"}") }
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact — publish the template first\"}") }
+    sqlite_exec(db, "UPDATE artifacts SET data = ?, updated = ? WHERE id = ?", []string{body, str(now()), id})
+    sqlite_close(db)
+    base := pubbase(req)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"data_bytes\":" + str(len(body)) + ",\"url\":\"" + base + "/a/" + id + "\"}")
+}
+
 func h_list(req) (res) {
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
@@ -157,7 +230,7 @@ func h_list(req) (res) {
 
 func h_versions(db, req, id) (res) {
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     rows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? ORDER BY version DESC", []string{id})
@@ -169,7 +242,7 @@ func h_versions(db, req, id) (res) {
 func h_delete(req, id) (res) {
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     sqlite_exec(db, "DELETE FROM versions WHERE artifact_id = ?", []string{id})
@@ -183,7 +256,7 @@ func h_delete(req, id) (res) {
 func h_rollback(req, id, target) (res) {
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     vrows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(target)})
@@ -238,22 +311,53 @@ func lint_blocks(report) (n) {
     if index(report, "\"level\":\"error\"") >= 0 { n = 1 }
 }
 
+// apply_template — replace {{key}} placeholders in the HTML with top-level values from the
+// artifact's data JSON. Bounded loop; unknown keys become empty.
+func apply_template(html, data) (out) {
+    out = html
+    if data == "" { return out }
+    guard := 0
+    for guard < 500 {
+        st := index(out, "{{")
+        if st < 0 { return out }
+        rel := index(substr(out, st, len(out)), "}}")
+        if rel < 0 { return out }
+        en := st + rel
+        key := trim(substr(out, st + 2, en))
+        rep := ""
+        val, err := json_get(data, "." + key)
+        if err == "" { rep = unq(val) }
+        out = substr(out, 0, st) + rep + substr(out, en + 2, len(out))
+        guard = guard + 1
+    }
+}
+
+// data_script — inject the live data as a JS global so templates (charts, JSX, anything) read
+// window.HART_DATA. Empty data -> {}.
+func data_script(data) (s) {
+    d := data
+    if d == "" { d = "{}" }
+    s = "<script>window.HART_DATA=" + d + ";</script>"
+}
+
 // wrap stored content in a minimal doctype skeleton (the content itself carries inline
-// <title>/<style>/<script>, artifact-style) and serve under the strict CSP.
-func render_page(html, title) (page) {
+// <title>/<style>/<script>, artifact-style) and serve under the strict CSP. Data is applied
+// two ways: {{key}} substitution in the markup + a window.HART_DATA global for scripts.
+func render_page(html, title, data) (page) {
     t := title
     if t == "" { t = "hart artifact" }
-    page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title></head><body>" + html + "</body></html>"
+    b := apply_template(html, data)
+    page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>" + data_script(data) + "</head><body>" + b + "</body></html>"
 }
 
 // JSX: load the same-origin React + Babel runtime, then transform the agent's JSX with the
 // CLASSIC runtime (emits React.createElement — no `import` of jsx-runtime, which would fail
 // outside a module) and eval it. React/ReactDOM are globals; the agent renders into #root.
-func render_page_jsx(jsx, title) (page) {
+func render_page_jsx(jsx, title, data) (page) {
     t := title
     if t == "" { t = "hart artifact" }
     src := replace(jsx, "</script>", "<\\/script>")   // don't let the source close its host tag
-    head := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>"
+    head := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>" + data_script(data)
     rt := "<script src=\"/_hart/runtime/react.js\"></script><script src=\"/_hart/runtime/react-dom.js\"></script><script src=\"/_hart/runtime/babel.js\"></script></head>"
     boot := "<script>(function(){try{var s=document.getElementById('__hart_jsx').textContent;var o=Babel.transform(s,{presets:[['react',{runtime:'classic'}]]}).code;(0,eval)(o);}catch(e){document.getElementById('root').innerHTML='<pre style=\"color:#b00020;padding:24px;font:14px ui-monospace,monospace;white-space:pre-wrap\">hart: JSX error\\n\\n'+((e&&e.message)?e.message:e)+'</pre>';}})();</script>"
     body := "<body><div id=\"root\"></div><script type=\"text/plain\" id=\"__hart_jsx\">\n" + src + "\n</script>" + boot + "</body></html>"
@@ -271,20 +375,19 @@ func serve_runtime(fname) (res) {
 }
 
 func serve_artifact(db, id, ver) (res) {
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain; charset=utf-8", "artifact not found") }
     v := ver
-    if v == 0 {
-        arows := sqlite_query(db, "SELECT id, owner, name, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
-        ars := parse(arows, []ArtRow{})
-        if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain; charset=utf-8", "artifact not found") }
-        v = ars[0].latest
-    }
+    if v == 0 { v = ars[0].latest }
+    data := ars[0].data
     hrows := sqlite_query(db, "SELECT html, format, title FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(v)})
     sqlite_close(db)
     hs := parse(hrows, []HtmlRow{})
     if len(hs) == 0 { return response("404 Not Found", "text/plain; charset=utf-8", "version not found") }
-    page := render_page(hs[0].html, hs[0].title)
+    page := render_page(hs[0].html, hs[0].title, data)
     ct := csp()
-    if hs[0].format == "jsx" { page = render_page_jsx(hs[0].html, hs[0].title); ct = csp_jsx() }
+    if hs[0].format == "jsx" { page = render_page_jsx(hs[0].html, hs[0].title, data); ct = csp_jsx() }
     r := ok_html(page)
     r = with_header(r, "Content-Security-Policy", ct)
     r = with_header(r, "X-Content-Type-Options", "nosniff")
@@ -327,20 +430,15 @@ func handle_artifact(req, p) (res) {
     res = serve_artifact(db, id, ver)
 }
 
-// the root page — what hart is + how to publish. Self-contained, served at /.
+// the root page — the product landing (OSS, self-hosted). Served from HART_LANDING (default
+// ./landing.html); falls back to a one-line notice if the file isn't deployed.
 func serve_landing() (res) {
-    auth := "open — no token required"
-    if env("HART_TOKEN") != "" { auth = "token required (operator-configured)" }
-    body := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>hart — artifact host</title>"
-    body = body + "<style>:root{--ink:#16181d;--mut:#5b6472;--ln:#e6e8eb;--ac:#0e6e6e;--bg:#f6f7f8}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}.w{max-width:680px;margin:0 auto;padding:64px 24px}h1{font-size:40px;letter-spacing:-.02em;margin:0 0 6px}.tag{color:var(--ac);font:12px ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase;margin:0 0 18px}p{color:var(--mut);max-width:60ch}pre{background:#fff;border:1px solid var(--ln);border-radius:10px;padding:16px 18px;overflow-x:auto;font:13px/1.7 ui-monospace,monospace;color:var(--ink)}.k{color:var(--ac)}.st{display:inline-block;font:12px ui-monospace,monospace;color:var(--mut);border:1px solid var(--ln);background:#fff;border-radius:20px;padding:4px 12px;margin-top:8px}code{font:13px ui-monospace,monospace;background:#eef0f1;padding:1px 6px;border-radius:5px}</style></head><body><div class=\"w\">"
-    body = body + "<p class=\"tag\">agent-first artifact host</p><h1>hart</h1>"
-    body = body + "<p>Publish self-contained HTML or JSX from any terminal agent and get a live, versioned, sandboxed URL. One binary — CLI + host — self-hostable, BYO everything.</p>"
-    body = body + "<div class=\"st\">this instance: " + auth + "</div>"
-    body = body + "<pre># publish (owner + artifact name = a stable URL)\nhart <span class=\"k\">publish</span> page.html --owner <span class=\"k\">alice</span> --artifact <span class=\"k\">pricing</span>\n  → " + "/a/alice/pricing\n\n# update it → new version, latest moves\nhart <span class=\"k\">publish</span> page.html --owner alice --artifact pricing\n\n# pin / rollback / list\n/a/alice/pricing/v1     hart <span class=\"k\">rollback</span> alice/pricing 1     hart <span class=\"k\">list</span></pre>"
-    body = body + "<p style=\"margin-top:28px;font-size:14px\">Docs &amp; source: <code>github.com/javimosch/machin-hart</code></p>"
-    body = body + "</div></body></html>"
+    path := env("HART_LANDING")
+    if path == "" { path = "landing.html" }
+    body := read_file(path)
+    if body == "" { body = "<!doctype html><meta charset=utf-8><title>hart</title><body style=\"font:16px system-ui;max-width:40em;margin:12vh auto;padding:0 6vw\"><h1>hart</h1><p>The agent-first artifact host. Source: github.com/javimosch/machin-hart</p>" }
     r := ok_html(body)
-    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:")
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:")
     res = r
 }
 
@@ -352,6 +450,7 @@ func hart_route(req) (res) {
     if p == "/_health" { return ok_json("{\"ok\":true,\"service\":\"hart\"}") }
     if req.method == "GET" && has_prefix(p, "/_hart/runtime/") { return serve_runtime(substr(p, 15, len(p))) }
     if req.method == "POST" && p == "/v1/publish" { return h_publish(req) }
+    if req.method == "POST" && p == "/v1/data" { return h_data(req) }
     if req.method == "GET" && p == "/v1/artifacts" { return h_list(req) }
     if has_prefix(p, "/v1/artifacts/") {
         tail := substr(p, 14, len(p))   // the id (may contain "/") + optional /versions|/rollback
@@ -445,6 +544,28 @@ func cmd_rm(a) {
     say(resp)
 }
 
+// hart data <id> '<json>'   |   hart data --owner X --artifact Y '<json>'
+// updates the artifact's live data (the template re-renders with it).
+func cmd_data(a) {
+    if len(a) < 3 { die(80, "usage: hart data <id> '<json>'  |  hart data --owner <who> --artifact <name> '<json>'") }
+    owner := flagv(a, "--owner", "")
+    artifact := flagv(a, "--artifact", "")
+    id := flagv(a, "--id", "")
+    json := a[len(a) - 1]
+    url := hart_url() + "/v1/data?x=1"
+    if id != "" { url = url + "&id=" + url_encode(id) } else {
+        if owner != "" && artifact != "" { url = url + "&owner=" + url_encode(owner) + "&artifact=" + url_encode(artifact) } else { url = url + "&id=" + url_encode(a[2]) }
+    }
+    headers := []string{"content-type: application/json"}
+    tok := client_token()
+    if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
+    status, resp, err := http_request("POST", url, headers, json)
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status == 404 { die(90, "no such artifact — publish the template first") }
+    if status != 200 { die(100, "data update failed (" + str(status) + "): " + resp) }
+    say(resp)
+}
+
 func cmd_rollback(a) {
     if len(a) < 4 { die(80, "usage: hart rollback <id> <version>  (re-point latest at an older version)") }
     status, resp, err := http_request("POST", hart_url() + "/v1/artifacts/" + a[2] + "/rollback?to=" + a[3], auth_headers(), "")
@@ -497,6 +618,7 @@ func main() {
     if cmd == "serve" { cmd_serve(a); return }
     if cmd == "login" { cmd_login(a); return }
     if cmd == "publish" { cmd_publish(a); return }
+    if cmd == "data" { cmd_data(a); return }
     if cmd == "get" { cmd_get(a); return }
     if cmd == "list" { cmd_list(a); return }
     if cmd == "versions" { cmd_versions(a); return }

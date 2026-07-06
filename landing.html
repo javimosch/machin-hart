@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hart — the agent-first artifact host</title>
+<style>
+  :root{
+    --bg:#0e1216; --panel:#151b21; --ink:#e8edf2; --mut:#8b97a4; --faint:#5c6773;
+    --line:#232c34; --ac:#3ad0c4; --ac2:#1e8f86; --warn:#e0a355;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 var(--sans);
+    -webkit-font-smoothing:antialiased}
+  .w{max-width:860px;margin:0 auto;padding:0 24px}
+  a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}
+  code{font:0.92em var(--mono);background:#1b232a;border:1px solid var(--line);border-radius:4px;padding:1px 6px}
+
+  /* hero */
+  header{padding:88px 0 20px;border-bottom:1px solid var(--line);
+    background:radial-gradient(120% 90% at 82% -10%,rgba(58,208,196,.10),transparent 60%)}
+  .eyebrow{font:12px var(--mono);letter-spacing:.22em;text-transform:uppercase;color:var(--ac);margin:0 0 20px}
+  h1{font-size:clamp(36px,6.5vw,60px);line-height:1.03;letter-spacing:-.03em;margin:0;font-weight:660;text-wrap:balance}
+  h1 em{font-style:normal;color:var(--ac)}
+  .sub{color:var(--mut);font-size:clamp(17px,2.4vw,21px);max-width:34ch;margin:22px 0 30px;line-height:1.5}
+  .badges{display:flex;flex-wrap:wrap;gap:9px;margin-bottom:8px}
+  .badge{font:12px var(--mono);color:var(--mut);border:1px solid var(--line);background:var(--panel);
+    border-radius:20px;padding:5px 13px}
+  .badge b{color:var(--ink);font-weight:600}
+  .cta{display:flex;gap:12px;flex-wrap:wrap;margin-top:30px;padding-bottom:8px}
+  .btn{font:13px var(--mono);padding:11px 18px;border-radius:8px;border:1px solid var(--ac2);
+    background:var(--ac);color:#062023;font-weight:600}
+  .btn.ghost{background:transparent;color:var(--ac);border-color:var(--line)}
+
+  section{padding:60px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:13px;font-family:var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 0 26px;font-weight:500}
+  .lead{font-size:22px;letter-spacing:-.01em;line-height:1.45;max-width:30ch;margin:0 0 8px;text-wrap:balance}
+  .lead b{color:var(--ac)}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;
+    overflow-x:auto;font:13.5px/1.75 var(--mono);color:var(--ink);margin:0}
+  pre .c{color:var(--faint)}
+  pre .k{color:var(--ac)}
+  pre .s{color:var(--warn)}
+  pre .u{color:var(--ac);text-decoration:none}
+
+  .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px 22px}
+  .card h3{margin:0 0 6px;font-size:15.5px;letter-spacing:-.01em}
+  .card p{margin:0;color:var(--mut);font-size:14px;line-height:1.55}
+  .card .m{font:11px var(--mono);color:var(--ac);letter-spacing:.06em;text-transform:uppercase;display:block;margin-bottom:11px}
+
+  .flow{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  .flow .step .n{font:12px var(--mono);color:var(--ac)}
+  .flow .step h3{margin:6px 0 4px;font-size:16px}
+  .flow .step p{margin:0 0 12px;color:var(--mut);font-size:14px}
+
+  .uses{display:flex;gap:12px;flex-wrap:wrap}
+  .use{flex:1 1 240px;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:18px 20px;display:flex;flex-direction:column;gap:6px}
+  .use .t{font-weight:600}
+  .use .d{color:var(--mut);font-size:13.5px;line-height:1.5}
+  .use a{font:12px var(--mono);margin-top:4px}
+
+  footer{padding:50px 0 80px;color:var(--faint);font-size:13.5px}
+  footer .note{color:var(--warn);font-family:var(--mono);font-size:12px;border:1px solid var(--line);
+    background:var(--panel);border-radius:8px;padding:12px 15px;margin-bottom:20px;display:inline-block}
+  @media(max-width:640px){.grid,.flow{grid-template-columns:1fr}header{padding:60px 0 20px}}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="w">
+    <p class="eyebrow">Agent-first artifact host</p>
+    <h1>Ship an HTML page from your terminal.<br>Get a <em>live URL</em> back.</h1>
+    <p class="sub">One binary that hosts self-contained HTML &amp; JSX — versioned, sandboxed, and updatable with just data. Built for agents, run by you.</p>
+    <div class="badges">
+      <span class="badge"><b>Open source</b></span>
+      <span class="badge"><b>Self-hosted</b> · one static binary</span>
+      <span class="badge">BYO everything</span>
+      <span class="badge">not a SaaS <span style="color:var(--faint)">— yet</span></span>
+    </div>
+    <div class="cta">
+      <a class="btn" href="https://github.com/javimosch/machin-hart">Get the source →</a>
+      <a class="btn ghost" href="/a/intrane/call-budget">See a live artifact</a>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="w">
+    <h2>What it is</h2>
+    <p class="lead">Claude &amp; friends generate great HTML. <b>hart gives it a home</b> — a real, shareable, sandboxed URL — for <b>any</b> terminal agent, not just one vendor's.</p>
+    <div class="grid" style="margin-top:28px">
+      <div class="card"><span class="m">publish</span><h3>HTML or JSX → a URL</h3><p>Pipe a self-contained file; get <code>/a/owner/name</code> back. JSX is transpiled in-browser with a same-origin React runtime — no build step, no CDN.</p></div>
+      <div class="card"><span class="m">versioned</span><h3>v1 · v2 · latest</h3><p>Re-publish to append a version; <code>latest</code> always tracks newest, old versions stay immutably pinned, and <code>rollback</code> reverts instantly.</p></div>
+      <div class="card"><span class="m">sandboxed</span><h3>Hostile pages stay inert</h3><p>Every artifact is served under a strict CSP — no external scripts, no network. A publish-time linter blocks anything that reaches off-page.</p></div>
+      <div class="card"><span class="m">agent-first</span><h3>A CLI, not a dashboard</h3><p>JSON in, JSON out, semantic exit codes, no UI tax. The interface <em>is</em> the CLI — an agent drives it blind.</p></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="w">
+    <h2>The template + data model</h2>
+    <p class="lead">Publish a <b>template</b> once. Then push <b>just the data</b> — the artifact re-renders. An agent keeps a page live as its source data changes.</p>
+    <div class="flow" style="margin-top:30px">
+      <div class="step">
+        <span class="n">01 — template (once)</span>
+        <h3>Push the shape</h3>
+        <p>Use <code>{{placeholders}}</code> or read <code>window.HART_DATA</code> from your script.</p>
+        <pre><span class="c"># a greeting template</span>
+echo '&lt;h1&gt;Hello, {{name}}!&lt;/h1&gt;' &gt; g.html
+hart <span class="k">publish</span> g.html --owner acme --artifact hello</pre>
+      </div>
+      <div class="step">
+        <span class="n">02 — data (as it changes)</span>
+        <h3>Push the values</h3>
+        <p>Same URL, new content. No re-uploading the page.</p>
+        <pre>hart <span class="k">data</span> acme/hello '<span class="s">{"name":"Ada"}</span>'
+<span class="c"># → /a/acme/hello now says "Hello, Ada!"</span>
+hart <span class="k">data</span> acme/hello '<span class="s">{"name":"Bob"}</span>'
+<span class="c"># → "Hello, Bob!" — one call</span></pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="w">
+    <h2>Made for things that change</h2>
+    <div class="uses">
+      <div class="use"><span class="t">📊 A live chart</span><span class="d">Ship the chart template once; an agent pushes fresh series as the numbers move. The page reads <code>window.HART_DATA</code>.</span></div>
+      <div class="use"><span class="t">📞 A call-budget sheet</span><span class="d">A working console with a live spend meter — data-driven, updatable, sandboxed.</span><a href="/a/intrane/call-budget">/a/intrane/call-budget →</a></div>
+      <div class="use"><span class="t">⚛️ A JSX app</span><span class="d">Author React/JSX; hart transpiles &amp; hosts it. State, hooks, components — all client-side, all sandboxed.</span><a href="/a/intrane/jsx-demo">/a/intrane/jsx-demo →</a></div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="w">
+    <h2>Run your own</h2>
+    <p class="lead" style="font-size:19px;max-width:38ch">One binary is the CLI <em>and</em> the host. Free &amp; open by default; set a token to gate it. Rate-limited so you can leave it open.</p>
+    <pre style="margin-top:26px"><span class="c"># build &amp; run the host (SQLite store, your box)</span>
+./build.sh &amp;&amp; ./hart <span class="k">serve</span> 8799
+
+<span class="c"># publish from anywhere</span>
+export HART_URL=<span class="u">https://hart.yourdomain</span>
+hart <span class="k">publish</span> report.html --owner you --artifact q3
+
+<span class="c"># knobs: HART_TOKEN (gate publishing) ·</span>
+<span class="c"># HART_MAX_SUBMITS_PER_MIN (10) · HART_MAX_OWNER_MB (30)</span></pre>
+  </div>
+</section>
+
+<footer>
+  <div class="w">
+    <div class="note">Open source, self-hosted for now — not a hosted service. Run it yourself.</div><br>
+    <a href="https://github.com/javimosch/machin-hart">github.com/javimosch/machin-hart</a>
+    &nbsp;·&nbsp; built in <a href="https://github.com/javimosch/machin">machin</a> (MFL) &nbsp;·&nbsp; one static binary, no Node
+  </div>
+</footer>
+
+</body>
+</html>

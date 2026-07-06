@@ -76,6 +76,7 @@ internal). Non-interactive and idempotent. `hart help-json` introspects the whol
 | Command | Does |
 |---|---|
 | `hart publish <file> [--owner <who>] [--artifact <name>] [--title --format html\|jsx] [--dry-run --force]` | upload → `{id,url,version}`. `owner`+`artifact` ⇒ stable id `owner/artifact`; re-publishing appends a version |
+| `hart data <id> '<json>'` | update the artifact's live data — template re-renders (push just what changed) |
 | `hart versions <id>` / `hart rollback <id> <v>` | history + instant revert (non-destructive) |
 | `hart list [--owner <who>]` / `hart get <id>` / `hart rm <id>` | manage artifacts |
 | `hart serve [port]` | run the hosting daemon |

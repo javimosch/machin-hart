@@ -208,3 +208,21 @@ M1 COMPLETE:
 
 **So M2 = rollback (done).** Next real work is **M3** (hosted tier + Stripe = the micro-SaaS)
 when there's demand; until then hart is a complete, self-hostable, live agent-first artifact host.
+
+---
+
+## Landing + free + rate limits + template/data engine (2026-07-07, founder)
+
+- **hart.intrane.fr = the product landing** (OSS, self-hosted; "not a SaaS — yet"). Root `/`
+  serves `landing.html` (via `HART_LANDING`); the public instance is now **free — no token**.
+- **Abuse limits (customizable, so it's safe to leave open):** per-IP **10 submits/min**
+  (`HART_MAX_SUBMITS_PER_MIN`) via a sliding 60s window (`hits` table) → 429; per-owner
+  **30 MB** total (`HART_MAX_OWNER_MB`) → 413.
+- **Template + data engine** — the real ask behind "JSX": publish a **template** once, then push
+  **just the data** and the artifact re-renders. Two mechanisms, both live:
+  - `{{key}}` substitution in the HTML markup, and
+  - `window.HART_DATA` — a JS global the page/JSX/chart reads.
+  `hart data <id> '<json>'` (or `--owner/--artifact`) updates a mutable data slot; `POST /v1/data`.
+  Verified live: a greeting (`{{name}}`) and a data-driven bar chart (`/a/intrane/live-chart`)
+  updated by pushing only JSON. Use cases: charts, the call-budget sheet, anything with changing data.
+  *(Data is a mutable slot, not versioned — data rollback is future.)*
