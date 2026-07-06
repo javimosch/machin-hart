@@ -181,9 +181,12 @@ Done + tested end to end:
 - **CLI surface** — `serve grant login publish get list versions rm help` (agent-first JSON,
   semantic exit codes, `HART_URL`/`HART_TOKEN`, idempotent `--id`).
 
-Pending for M1 completion:
-- **JSX transpile** — format is stored; runtime not built. Decision in `CONTRACT.md`: browser-side
-  transpile via a **same-origin** `/_hart/runtime/{react,babel}.js` (self-hosted, no CDN), start
-  with babel-standalone. This is the load-bearing remaining piece.
+M1 COMPLETE:
+- **JSX transpile SHIPPED** — `--format jsx` → the daemon serves a same-origin runtime
+  (`/_hart/runtime/{react,react-dom,babel}.js` from `HART_RUNTIME_DIR`; `runtime/fetch.sh` seeds
+  them) + a JSX CSP (`script-src 'self' …`). Transform uses Babel's **classic runtime** (emits
+  React.createElement — automatic runtime's `import` fails outside a module) via a bootstrap that
+  evals the compiled code. **Verified with a headless render** (a useState counter mounted +
+  computed). Path-traversal guarded.
 - **Origin isolation** — serve artifacts from a dedicated origin (deploy-time; pairs with M3 hosting).
 - **Signed sessions** — M1 uses opaque bearer tokens; `machweb set_session` cookies optional later.

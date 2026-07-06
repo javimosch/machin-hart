@@ -17,6 +17,17 @@ func csp() (c) {
     c = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; font-src data:; script-src 'unsafe-inline' 'unsafe-eval'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 }
 
+// JSX pages additionally load the same-origin runtime (react/babel) — script-src gains 'self'
+// for those assets only. Still no external host, still no network.
+func csp_jsx() (c) {
+    c = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; font-src data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+}
+
+func runtime_dir() (d) {
+    d = env("HART_RUNTIME_DIR")
+    if d == "" { d = "runtime" }
+}
+
 func hdb() (p) {
     p = env("HART_DB")
     if p == "" { p = env("HOME") + "/.hart.db" }
@@ -205,6 +216,30 @@ func render_page(html, title) (page) {
     page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title></head><body>" + html + "</body></html>"
 }
 
+// JSX: load the same-origin React + Babel runtime, then transform the agent's JSX with the
+// CLASSIC runtime (emits React.createElement — no `import` of jsx-runtime, which would fail
+// outside a module) and eval it. React/ReactDOM are globals; the agent renders into #root.
+func render_page_jsx(jsx, title) (page) {
+    t := title
+    if t == "" { t = "hart artifact" }
+    src := replace(jsx, "</script>", "<\\/script>")   // don't let the source close its host tag
+    head := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>"
+    rt := "<script src=\"/_hart/runtime/react.js\"></script><script src=\"/_hart/runtime/react-dom.js\"></script><script src=\"/_hart/runtime/babel.js\"></script></head>"
+    boot := "<script>(function(){try{var s=document.getElementById('__hart_jsx').textContent;var o=Babel.transform(s,{presets:[['react',{runtime:'classic'}]]}).code;(0,eval)(o);}catch(e){document.getElementById('root').innerHTML='<pre style=\"color:#b00020;padding:24px;font:14px ui-monospace,monospace;white-space:pre-wrap\">hart: JSX error\\n\\n'+((e&&e.message)?e.message:e)+'</pre>';}})();</script>"
+    body := "<body><div id=\"root\"></div><script type=\"text/plain\" id=\"__hart_jsx\">\n" + src + "\n</script>" + boot + "</body></html>"
+    page = head + rt + body
+}
+
+// serve a same-origin runtime asset (react/react-dom/babel) from disk. Path-safe (no traversal).
+func serve_runtime(fname) (res) {
+    if index(fname, "..") >= 0 || index(fname, "/") >= 0 { return response("400 Bad Request", "text/plain", "bad path") }
+    body := read_file(runtime_dir() + "/" + fname)
+    if body == "" { return response("404 Not Found", "text/plain; charset=utf-8", "runtime asset not found — deploy the hart runtime dir") }
+    r := response("200 OK", "application/javascript; charset=utf-8", body)
+    r = with_header(r, "Cache-Control", "public, max-age=31536000, immutable")
+    res = r
+}
+
 func serve_artifact(db, id, ver) (res) {
     v := ver
     if v == 0 {
@@ -218,8 +253,10 @@ func serve_artifact(db, id, ver) (res) {
     hs := parse(hrows, []HtmlRow{})
     if len(hs) == 0 { return response("404 Not Found", "text/plain; charset=utf-8", "version not found") }
     page := render_page(hs[0].html, hs[0].title)
+    ct := csp()
+    if hs[0].format == "jsx" { page = render_page_jsx(hs[0].html, hs[0].title); ct = csp_jsx() }
     r := ok_html(page)
-    r = with_header(r, "Content-Security-Policy", csp())
+    r = with_header(r, "Content-Security-Policy", ct)
     r = with_header(r, "X-Content-Type-Options", "nosniff")
     r = with_header(r, "X-Frame-Options", "SAMEORIGIN")
     r = with_header(r, "Referrer-Policy", "no-referrer")
@@ -248,6 +285,7 @@ func hart_route(req) (res) {
     qi := index(p, "?")
     if qi >= 0 { p = substr(p, 0, qi) }
     if p == "/_health" { return ok_json("{\"ok\":true,\"service\":\"hart\"}") }
+    if req.method == "GET" && has_prefix(p, "/_hart/runtime/") { return serve_runtime(substr(p, 15, len(p))) }
     if req.method == "POST" && p == "/v1/publish" { return h_publish(req) }
     if req.method == "GET" && p == "/v1/artifacts" { return h_list(req) }
     if req.method == "GET" && has_prefix(p, "/v1/artifacts/") {
