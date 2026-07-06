@@ -10,7 +10,7 @@ Legend: 🎯 goal · 📦 deliverable · ✅ done-when.
 
 ---
 
-## M0 — Spike: HTML → URL, once (½–1 day)
+## M0 — Spike: HTML → URL, once ✅ DONE (2026-07-06)
 
 🎯 Prove the core loop end to end with the crudest possible version.
 - 📦 `hart publish <file.html>` → POST bytes to a local `hart serve` daemon → returns
@@ -143,3 +143,24 @@ Two directives folded in, pulled earlier than their original milestone:
    verbatim; **JSX transpile lands in M1** (the transpiler is the load-bearing piece — likely a
    vendored inline Babel-standalone-equivalent or a minimal JSX→JS pass, TBD in the open
    questions). The contract is: *source in (html|jsx) → self-contained sandboxed page out*.
+
+---
+
+## M0 status — SHIPPED (2026-07-06)
+
+`src/hart.src` (one MFL binary, vendors `framework/machweb.src`) proves the full loop:
+- `hart serve [port]` — machweb daemon; SQLite store (`artifacts` + immutable `versions`).
+- `hart publish <file> [--id --title --format]` — POSTs raw HTML (body, no JSON-escaping) →
+  `{id, version, url, latest_url, pinned_url}`. New id → v1; `--id <existing>` → next version.
+- Serving: `GET /a/<id>` & `/a/<id>/latest` → newest; `GET /a/<id>/v<n>` → **immutable pin**
+  (verified: v1 keeps its own content+title after v2 publishes). Wrapped in a doctype skeleton +
+  strict **CSP** (`default-src 'none'`, no external anything, `connect-src` absent ⇒ no fetch),
+  plus `X-Content-Type-Options`/`X-Frame-Options`/`Referrer-Policy`.
+- `hart list`, `hart versions <id>`, `hart help` — agent-first JSON.
+- **Versioning (v1/v2/v3/latest) is live** per the founder note; **JSX** is stored as a `format`
+  (transpile deferred to M1). Built + tested end to end (published the €5 call-budget sheet,
+  updated it to v2, confirmed latest moved and v1 stayed pinned).
+
+**Known M0 limitations (for M1):** returned URL omits the port when published via the MFL HTTP
+client (sends `Host` sans port) — set `HART_PUBLIC` for canonical URLs; no auth yet (publish is
+open — add `HART_TOKEN` gate in M1); no publish-time CSP linter yet; JSX not transpiled.

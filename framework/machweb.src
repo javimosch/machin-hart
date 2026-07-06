@@ -1,0 +1,679 @@
+// machweb — a tiny web framework for MFL.
+//
+// Compose it ahead of your app and compile:
+//   machin encode framework/machweb.src yourapp.src > app.mfl
+//   machin run app.mfl
+//
+// Your app provides a `main` that calls serve(port, handler), where handler is
+// a closure  func(Request) Response.  Every request is dispatched to it in its
+// own goroutine; the goroutine's memory is reclaimed when the response is sent.
+
+type Request struct {
+    method     string
+    path       string
+    body       string             // text view of the body (truncates at a NUL — use body_bytes for uploads)
+    body_bytes bytes              // raw body, binary-safe (file uploads / multipart)
+    headers    map[string]string  // lowercased header name -> value; read via header(req, name)
+    remote     string             // the socket peer IP (set by machweb_handle); see client_ip(req)
+}
+
+type Response struct {
+    status  string
+    ctype   string
+    body    string
+    bin     bytes      // binary body, used when is_bin == 1 (NUL-safe; body is ignored)
+    is_bin  int        // 1 = serve bin (raw bytes), 0 = serve body (text)
+    cookies []string   // Set-Cookie values (added via set_cookie); empty for most responses
+    location string    // Location header (set by redirect); empty for most responses
+    extra   []string   // extra header lines "Name: value" (added via with_header), e.g. Content-Disposition
+    is_stream int      // 1 = a streaming response: ignore body/bin, call stream(conn) instead
+    is_hijack int      // 1 = hand the raw socket to stream(conn) with NO response written (protocol upgrade, e.g. WebSocket)
+    stream  func       // func(conn): writes the body incrementally over a long-lived socket (SSE / chunked / hijack)
+}
+
+// hijack returns a response that hands the raw connection to fn(conn) — machweb writes
+// nothing and closes after fn returns. The basis for a protocol upgrade: fn sends its own
+// handshake then speaks the new protocol (see framework/ws.src for WebSocket).
+func hijack(fn) (r) {
+    r = Response{status: "101 Switching Protocols", ctype: "", is_hijack: 1, stream: fn}
+}
+
+// with_header returns res with an extra response header added (e.g. Content-Disposition
+// for a download filename, or Cache-Control). Structs are values, so use the copy.
+func with_header(res, name, value) (r) {
+    r = res
+    r.extra = append(r.extra, name + ": " + value)
+}
+
+// redirect returns a 302 to url (a Location header). Compose with set_cookie /
+// set_session to redirect AND set state, e.g. after an OAuth login.
+func redirect(url) (r) {
+    r = Response{status: "302 Found", ctype: "text/html; charset=utf-8", body: "", is_bin: 0, location: url}
+}
+
+// ---- response builders ----
+
+func response(status, ctype, body) (r) {
+    r = Response{status: status, ctype: ctype, body: body, is_bin: 0}
+}
+
+func ok_text(body) (r) { r = response("200 OK", "text/plain; charset=utf-8", body) }
+func ok_html(body) (r) { r = response("200 OK", "text/html; charset=utf-8", body) }
+func ok_json(body) (r) { r = response("200 OK", "application/json", body) }
+func created(body) (r) { r = response("201 Created", "application/json", body) }
+func bad_request(msg) (r) { r = response("400 Bad Request", "text/plain", msg) }
+func not_found() (r) { r = response("404 Not Found", "text/plain", "not found") }
+
+// ok_bytes serves a raw binary body (NUL-safe) with an explicit content type —
+// for assets like wasm/images/fonts a text body would truncate at a NUL byte.
+func ok_bytes(ctype, b) (r) {
+    r = Response{status: "200 OK", ctype: ctype, body: "", bin: b, is_bin: 1}
+}
+// ok_wasm serves a WebAssembly module with the correct content type, so a single
+// machin binary can ship both its SSR HTML and its own .wasm SPA bundle.
+func ok_wasm(b) (r) { r = ok_bytes("application/wasm", b) }
+
+// ---- streaming responses (Server-Sent Events / live tail) ----
+//
+// A normal handler computes a whole Response and machweb writes it, then closes. A
+// STREAMING handler instead returns stream_response(...)/sse(fn): machweb writes the
+// headers, then hands fn the connection so it can write the body incrementally over a
+// long-lived socket — live logs, metrics, progress, LLM tokens. There is no
+// Content-Length; the socket stays open until fn returns. Writing to a client that has
+// gone away returns < 0 (the runtime ignores SIGPIPE), so a stream loop should break on
+// a negative write to stop cleanly.
+
+// stream_response builds a streaming response driven by fn(conn).
+func stream_response(status, ctype, fn) (r) {
+    r = Response{status: status, ctype: ctype, body: "", is_bin: 0, is_stream: 1, stream: fn}
+}
+
+// sse builds a text/event-stream response — the browser consumes it with EventSource.
+func sse(fn) (r) { r = stream_response("200 OK", "text/event-stream; charset=utf-8", fn) }
+
+// sse_data sends one SSE message (a "data:" event). Multi-line text is split so each
+// line is its own data field (per the spec). Returns the write result — < 0 once the
+// client has disconnected, which a producer loop should treat as "stop".
+func sse_data(conn, data) (n) {
+    msg := ""
+    for _, line := range split(data, "\n") { msg = msg + "data: " + line + "\n" }
+    n = write(conn, msg + "\n")
+}
+
+// sse_event sends a named SSE event (dispatched by name on the client).
+func sse_event(conn, event, data) (n) {
+    msg := "event: " + event + "\n"
+    for _, line := range split(data, "\n") { msg = msg + "data: " + line + "\n" }
+    n = write(conn, msg + "\n")
+}
+
+// sse_comment sends a comment line — a keepalive ping browsers ignore (returns < 0 if
+// the client has gone, so it doubles as a liveness probe).
+func sse_comment(conn, c) (n) { n = write(conn, ": " + c + "\n\n") }
+
+// ---- request helpers ----
+
+// parse_headers builds a map of the request headers (names lowercased), reading
+// the lines between the request line and the blank line before the body.
+func parse_headers(raw) (h) {
+    h = make(map[string]string)
+    start := index(raw, "\r\n")
+    if start < 0 { return }
+    sep := index(raw, "\r\n\r\n")
+    if sep < 0 { sep = len(raw) }
+    block := substr(raw, start + 2, sep)
+    for _, line := range split(block, "\r\n") {
+        ci := index(line, ":")
+        if ci > 0 {
+            h[to_lower(trim(substr(line, 0, ci)))] = trim(substr(line, ci + 1, len(line)))
+        }
+    }
+}
+
+// parse_request extracts the method, path, headers, and body from a raw request.
+func parse_request(raw) (req) {
+    nl := index(raw, "\r\n")
+    line := substr(raw, 0, nl)
+    parts := split(line, " ")
+    m := ""
+    p := "/"
+    if len(parts) >= 2 {
+        m = parts[0]
+        p = parts[1]
+    }
+    b := http_body(raw)
+    req = Request{method: m, path: p, body: b, body_bytes: bytes(b), headers: parse_headers(raw)}
+}
+
+// header returns a request header value (case-insensitive), or "" if absent.
+func header(req, name) (v) {
+    v = ""
+    k := to_lower(name)
+    if has(req.headers, k) { v = req.headers[k] }
+}
+
+// param returns the path segment after a prefix:
+//   param("/users/42", "/users/") == "42"
+func param(path, prefix) (v) {
+    if has_prefix(path, prefix) {
+        v = substr(path, len(prefix), len(path))
+    }
+}
+
+// query returns a query-string parameter from the request path (url-decoded), or "":
+//   query(req, "state") for "/callback?code=abc&state=xyz" == "xyz"
+func query(req, name) (v) {
+    v = ""
+    qi := index(req.path, "?")
+    if qi < 0 { return }
+    for _, part := range split(substr(req.path, qi + 1, len(req.path)), "&") {
+        eq := index(part, "=")
+        if eq > 0 {
+            if substr(part, 0, eq) == name { v = url_decode(substr(part, eq + 1, len(part))) }
+        }
+    }
+}
+
+// ---- multipart/form-data (file uploads) ----
+//
+// A browser uploads files as multipart/form-data: parts separated by a boundary, each
+// with its own headers (Content-Disposition: name / filename, Content-Type) and a raw,
+// possibly-binary body. parse_multipart splits req.body_bytes into those parts,
+// binary-safe (it works on bytes, not the NUL-truncating text view).
+
+type MultipartPart struct {
+    name     string   // form field name
+    filename string   // original filename ("" for a plain, non-file field)
+    ctype    string   // the part's Content-Type ("" if absent)
+    data     bytes    // the part's raw body (binary-safe)
+}
+
+// multipart_boundary extracts the boundary token from a multipart Content-Type, or "".
+func multipart_boundary(ctype) (b) {
+    b = ""
+    i := index(to_lower(ctype), "boundary=")
+    if i < 0 { return }
+    b = substr(ctype, i + 9, len(ctype))
+    if charat(b, 0) == "\"" {                       // quoted boundary
+        e := index(substr(b, 1, len(b)), "\"")
+        if e >= 0 { b = substr(b, 1, 1 + e) }
+    } else {
+        sc := index(b, ";")
+        if sc >= 0 { b = substr(b, 0, sc) }
+    }
+    b = trim(b)
+}
+
+// mp_attr pulls a quoted attribute (name= / filename=) out of a part's header block.
+func mp_attr(head, key) (v) {
+    v = ""
+    needle := key + "=\""
+    i := index(head, needle)
+    if i < 0 { return }
+    rest := substr(head, i + len(needle), len(head))
+    e := index(rest, "\"")
+    if e >= 0 { v = substr(rest, 0, e) }
+}
+
+// mp_ctype reads a part's own Content-Type header line, or "".
+func mp_ctype(head) (v) {
+    v = ""
+    i := index(to_lower(head), "content-type:")
+    if i < 0 { return }
+    rest := substr(head, i + 13, len(head))
+    nl := index(rest, "\r\n")
+    if nl >= 0 { rest = substr(rest, 0, nl) }
+    v = trim(rest)
+}
+
+// parse_multipart parses a multipart/form-data request body into its parts (fields and
+// files), binary-safe. Returns [] for a non-multipart request. File parts carry a
+// filename; plain fields have filename == "". Each part's raw bytes are in .data.
+func parse_multipart(req) (parts) {
+    parts = []MultipartPart{}
+    bnd := multipart_boundary(header(req, "content-type"))
+    if bnd == "" { return }
+    body := req.body_bytes
+    delim := bytes("--" + bnd)
+    pos := bytes_index(body, delim, 0)
+    if pos < 0 { return }
+    pos = pos + len(delim)
+    for {
+        if pos + 2 > len(body) { return }
+        if byte_at(body, pos) == 45 { return }      // "--" after boundary -> closing delimiter
+        hstart := pos + 2                            // skip the CRLF after the boundary line
+        hsep := bytes_index(body, bytes("\r\n\r\n"), hstart)
+        if hsep < 0 { return }
+        headstr := bytes_str(bytes_sub(body, hstart, hsep))
+        dstart := hsep + 4
+        next := bytes_index(body, delim, dstart)     // next boundary ends this part's data
+        if next < 0 { return }
+        dend := next
+        if dend - 2 >= dstart {
+            if byte_at(body, dend - 2) == 13 { dend = dend - 2 }   // strip the CRLF before the boundary
+        }
+        p := MultipartPart{name: mp_attr(headstr, "name"), filename: mp_attr(headstr, "filename"), ctype: mp_ctype(headstr), data: bytes_sub(body, dstart, dend)}
+        parts = append(parts, p)
+        pos = next + len(delim)
+    }
+}
+
+// multipart_file returns the first uploaded file part with the given field name (or any
+// file if name == ""), and ok == 1 if one was found.
+func multipart_file(req, name) (part, ok) {
+    ok = 0
+    for _, p := range parse_multipart(req) {
+        if p.filename != "" {
+            if name == "" || p.name == name { part = p  ok = 1  return }
+        }
+    }
+}
+
+// multipart_field returns the text value of a non-file form field, or "".
+func multipart_field(req, name) (v) {
+    v = ""
+    for _, p := range parse_multipart(req) {
+        if p.filename == "" {
+            if p.name == name { v = bytes_str(p.data)  return }
+        }
+    }
+}
+
+// ---- cookies ----
+
+// cookie returns a request cookie value by name (from the Cookie header), or "".
+func cookie(req, name) (v) {
+    v = ""
+    for _, part := range split(header(req, "cookie"), ";") {
+        kv := trim(part)
+        eq := index(kv, "=")
+        if eq > 0 {
+            if substr(kv, 0, eq) == name { v = substr(kv, eq + 1, len(kv)) }
+        }
+    }
+}
+
+// set_cookie returns res with a Set-Cookie added (Path=/, HttpOnly, SameSite=Lax —
+// safe defaults for a session). Structs are values, so use the returned copy:
+//   return set_cookie(ok_html(page()), "sid", token)
+func set_cookie(res, name, value) (r) {
+    r = res
+    sec := ""
+    if machweb_secure_cookies == 1 { sec = "; Secure" }    // HTTPS-only when set_secure_cookies(1)
+    r.cookies = append(r.cookies, name + "=" + value + "; Path=/; HttpOnly; SameSite=Lax" + sec)
+}
+
+// clear_cookie returns res with a cookie expired (for logout).
+func clear_cookie(res, name) (r) {
+    r = res
+    r.cookies = append(r.cookies, name + "=; Path=/; Max-Age=0")
+}
+
+// cookie_lines renders the Set-Cookie (and Location) header block for a response.
+func cookie_lines(res) (h) {
+    h = ""
+    for _, c := range res.cookies { h = h + "Set-Cookie: " + c + "\r\n" }
+    if res.location != "" { h = h + "Location: " + res.location + "\r\n" }
+    for _, e := range res.extra { h = h + e + "\r\n" }
+}
+
+// ---- signed sessions ----
+//
+// A session cookie the client cannot forge: value + "." + HMAC-SHA256(secret, value)
+// (a 64-char hex tag). set_session stores it; get_session returns (value, ok=1) only
+// if the tag verifies. Keep `secret` server-side (e.g. from env). The value is
+// readable by the client (signed, not encrypted) — store an id/handle, not secrets.
+
+func session_sign(secret, value) (s) { s = value + "." + hmac_sha256(secret, value) }
+
+func session_verify(secret, signed) (value, ok) {
+    value = ""
+    ok = 0
+    n := len(signed)
+    if n < 65 { return }                          // "." + 64-hex tag minimum
+    if charat(signed, n - 65) != "." { return }
+    v := substr(signed, 0, n - 65)
+    if hmac_sha256(secret, v) == substr(signed, n - 64, n) {
+        value = v
+        ok = 1
+    }
+}
+
+// set_session returns res with a signed session cookie set.
+func set_session(res, secret, name, value) (r) { r = set_cookie(res, name, session_sign(secret, value)) }
+
+// get_session reads + verifies a signed session cookie: (value, ok).
+func get_session(req, secret, name) (value, ok) { value, ok = session_verify(secret, cookie(req, name)) }
+
+// ---- production config: proxy-awareness + hardening ----
+//
+// In production a machin app usually sits behind a reverse proxy (nginx / Caddy /
+// Traefik / Cloudflare) that terminates TLS. These knobs make the app correct + safe in
+// that setup. All default OFF, so existing apps are unchanged; turn them on in main().
+
+var machweb_trust_proxy   = 0    // 1 = trust X-Forwarded-Proto/For (ONLY behind a proxy you control)
+var machweb_secure_cookies = 0   // 1 = add "; Secure" to cookies (set when served over HTTPS)
+var machweb_access_log    = 0    // 1 = one JSON access-log line per request on stderr
+var machweb_max_body      = 0    // > 0 = reject a request body larger than N bytes (413)
+var machweb_read_timeout  = 0    // > 0 = cap a slow client's request read at N ms (anti slow-loris)
+
+func set_trust_proxy(n)    { machweb_trust_proxy = n }
+func set_secure_cookies(n) { machweb_secure_cookies = n }
+func set_access_log(n)     { machweb_access_log = n }
+func set_max_body(n)       { machweb_max_body = n }
+func set_read_timeout(n)   { machweb_read_timeout = n }
+
+// harden turns on the common production set in one call: trust the proxy, mark cookies
+// Secure (you're behind TLS), structured access logs, a body cap, and a read timeout.
+func harden(max_body_bytes, read_timeout_ms) {
+    machweb_trust_proxy = 1
+    machweb_secure_cookies = 1
+    machweb_access_log = 1
+    machweb_max_body = max_body_bytes
+    machweb_read_timeout = read_timeout_ms
+}
+
+// scheme is the request's original scheme. Behind a TLS-terminating proxy the socket is
+// plain HTTP, so the true scheme comes from X-Forwarded-Proto (only trusted when
+// set_trust_proxy(1)). Defaults to "http".
+func scheme(req) (s) {
+    s = "http"
+    if machweb_trust_proxy == 1 {
+        xf := header(req, "x-forwarded-proto")
+        if xf != "" {
+            ci := index(xf, ",")                  // may be a list "https, http"
+            if ci >= 0 { xf = substr(xf, 0, ci) }
+            s = trim(xf)
+        }
+    }
+}
+
+// client_ip is the real client IP: the first hop of X-Forwarded-For when trusting the
+// proxy, otherwise the socket peer (req.remote).
+func client_ip(req) (ip) {
+    ip = req.remote
+    if machweb_trust_proxy == 1 {
+        xf := header(req, "x-forwarded-for")
+        if xf != "" {
+            ci := index(xf, ",")
+            if ci >= 0 { xf = substr(xf, 0, ci) }   // left-most = original client
+            ip = trim(xf)
+        }
+    }
+}
+
+// base_url is scheme://host for the request — build absolute URLs (OAuth redirect_uri,
+// emailed links) that are correct even behind a TLS proxy.
+func base_url(req) (u) { u = scheme(req) + "://" + header(req, "host") }
+
+// ---- server ----
+
+// content_length parses the Content-Length header value from a request's headers.
+func content_length(head) (n) {
+    n = 0
+    i := index(to_lower(head), "content-length:")
+    if i >= 0 {
+        rest := substr(head, i + 15, len(head))   // text after "content-length:"
+        nl := index(rest, "\r\n")
+        if nl >= 0 { rest = substr(rest, 0, nl) }
+        n = parse_int(trim(rest))
+    }
+}
+
+// read_request reads a whole HTTP request, not just the first packet: a browser
+// often sends the POST body in a separate TCP segment from the headers, so we
+// keep reading until Content-Length bytes of body have arrived.
+func read_request(conn) (raw) {
+    raw = read(conn)
+    sep := index(raw, "\r\n\r\n")
+    if sep >= 0 {
+        clen := content_length(substr(raw, 0, sep))
+        body_start := sep + 4
+        for len(raw) - body_start < clen {
+            chunk := read(conn)
+            if chunk == "" { break }            // connection closed early
+            raw = raw + chunk
+        }
+    }
+}
+
+// read_request_bytes reads a whole HTTP request as raw bytes — binary-safe, so a file
+// upload body (which contains NUL bytes a string read would truncate) survives intact.
+// Like read_request it keeps reading until Content-Length bytes of body have arrived.
+func read_request_bytes(conn) (raw) {
+    raw = read_bytes(conn)
+    sep := bytes_index(raw, bytes("\r\n\r\n"), 0)
+    if sep >= 0 {
+        clen := content_length(bytes_str(bytes_sub(raw, 0, sep)))   // header block is ASCII
+        // a declared body larger than the cap is left unread — machweb_handle 413s it
+        // (no buffering, no OOM) rather than draining megabytes off the socket.
+        if machweb_max_body == 0 || clen <= machweb_max_body {
+            body_start := sep + 4
+            for len(raw) - body_start < clen {
+                chunk := read_bytes(conn)
+                if len(chunk) == 0 { break }    // connection closed early (or read timeout)
+                raw = bytes_concat(raw, chunk)
+            }
+        }
+    }
+}
+
+// parse_request_bytes builds a Request from raw request bytes, keeping the body as
+// bytes (body_bytes) for binary-safe file/multipart uploads; body is the text view.
+func parse_request_bytes(raw) (req) {
+    sep := bytes_index(raw, bytes("\r\n\r\n"), 0)
+    head := raw
+    bodyb := bytes("")
+    if sep >= 0 {
+        head = bytes_sub(raw, 0, sep)
+        bodyb = bytes_sub(raw, sep + 4, len(raw))
+    }
+    hs := bytes_str(head)
+    nl := index(hs, "\r\n")
+    if nl < 0 { nl = len(hs) }
+    line := substr(hs, 0, nl)
+    parts := split(line, " ")
+    m := ""
+    p := "/"
+    if len(parts) >= 2 { m = parts[0]  p = parts[1] }
+    req = Request{method: m, path: p, body: bytes_str(bodyb), body_bytes: bodyb, headers: parse_headers(hs)}
+}
+
+// access_log writes one structured JSON line per request to stderr (fd 2), so it never
+// pollutes a JSON/data response on stdout. Enabled by set_access_log(1).
+func access_log(req, status, bytes_out, ms) {
+    line := "{\"ip\":\"" + client_ip(req) + "\",\"method\":\"" + req.method + "\",\"path\":\"" + req.path + "\",\"status\":\"" + status + "\",\"bytes\":" + str(bytes_out) + ",\"ms\":" + str(ms) + "}\n"
+    w := write(2, line)
+}
+
+func machweb_handle(conn, handler) {
+    started := now_ms()
+    if machweb_read_timeout > 0 { t := socket_timeout(conn, machweb_read_timeout) }   // anti slow-loris
+    raw := read_request_bytes(conn)
+    req := parse_request_bytes(raw)
+    req.remote = peer_addr(conn)
+    // reject an over-cap body before dispatching (read_request_bytes stopped buffering it)
+    if machweb_max_body > 0 && parse_int(header(req, "content-length")) > machweb_max_body {
+        body := "request body exceeds the limit"
+        out := "HTTP/1.1 413 Payload Too Large\r\nContent-Type: text/plain\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+        write(conn, out)
+        close(conn)
+        if machweb_access_log == 1 { access_log(req, "413 Payload Too Large", len(body), now_ms() - started) }
+        return
+    }
+    res := handler(req)
+    if res.is_hijack == 1 {
+        // protocol upgrade: hand over the raw socket, write no HTTP response of our own.
+        res.stream(conn)
+        close(conn)
+        return
+    }
+    if res.is_stream == 1 {
+        // streaming body: write the headers (no Content-Length), then let the handler
+        // write events over the open socket. X-Accel-Buffering disables nginx buffering.
+        shead := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n"
+        write(conn, shead)
+        if machweb_access_log == 1 { access_log(req, res.status + " (stream)", 0, now_ms() - started) }
+        res.stream(conn)
+        close(conn)
+        return
+    }
+    nbytes := 0
+    if res.is_bin == 1 {
+        // binary body: write the headers, then the raw bytes (NUL-safe).
+        head := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.bin)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n"
+        write(conn, head)
+        write_bytes(conn, res.bin)
+        nbytes = len(res.bin)
+    } else {
+        out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n" + res.body
+        write(conn, out)
+        nbytes = len(res.body)
+    }
+    close(conn)
+    if machweb_access_log == 1 { access_log(req, res.status, nbytes, now_ms() - started) }
+}
+
+// serve runs the HTTP server. Each connection is handled in its own goroutine.
+func serve(port, handler) {
+    server := listen(port)
+    println("machweb on http://localhost:" + str(port))
+    flush() // otherwise this line never reaches a log file/pipe (nohup, systemd, Docker) — see the stdout-buffering gotcha
+    for {
+        conn := accept(server)
+        go machweb_handle(conn, handler)
+    }
+}
+
+// ---- native TLS termination (no reverse proxy) ----
+//
+// serve_tls is `serve`, but the process terminates HTTPS itself via tls_server_ctx
+// / tls_accept (issue #260) instead of expecting nginx/Caddy/Traefik in front of
+// it. v1 scope: plain request/response only — res.is_hijack (protocol upgrades,
+// e.g. a raw WebSocket handoff) and res.is_stream (SSE) are NOT supported here
+// yet (they hand the raw `conn` to a callback that does plain read/write; over
+// TLS that callback would need to be tls_read/tls_write-aware instead, which is
+// a separate follow-up) — such a handler gets a 501 rather than silently
+// misbehaving. Use `serve` behind a reverse proxy for hijack/stream endpoints
+// until that lands.
+
+// read_request_bytes_tls is read_request_bytes, over a tls handle instead of a
+// raw fd.
+func read_request_bytes_tls(tls) (raw) {
+    raw = tls_read_bytes(tls)
+    sep := bytes_index(raw, bytes("\r\n\r\n"), 0)
+    if sep >= 0 {
+        clen := content_length(bytes_str(bytes_sub(raw, 0, sep)))
+        if machweb_max_body == 0 || clen <= machweb_max_body {
+            body_start := sep + 4
+            for len(raw) - body_start < clen {
+                chunk := tls_read_bytes(tls)
+                if len(chunk) == 0 { break }
+                raw = bytes_concat(raw, chunk)
+            }
+        }
+    }
+}
+
+// machweb_handle_tls is machweb_handle, over a tls handle for the HTTP
+// read/write (fd is still the raw socket, used only for socket_timeout/peer_addr
+// — TLS framing doesn't change what those mean).
+func machweb_handle_tls(fd, tls, handler) {
+    started := now_ms()
+    if machweb_read_timeout > 0 { t := socket_timeout(fd, machweb_read_timeout) }
+    raw := read_request_bytes_tls(tls)
+    req := parse_request_bytes(raw)
+    req.remote = peer_addr(fd)
+    if machweb_max_body > 0 && parse_int(header(req, "content-length")) > machweb_max_body {
+        body := "request body exceeds the limit"
+        out := "HTTP/1.1 413 Payload Too Large\r\nContent-Type: text/plain\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+        tls_write(tls, out)
+        tls_close(tls)
+        if machweb_access_log == 1 { access_log(req, "413 Payload Too Large", len(body), now_ms() - started) }
+        return
+    }
+    res := handler(req)
+    if res.is_hijack == 1 || res.is_stream == 1 {
+        body := "hijack/stream responses are not yet supported over serve_tls"
+        out := "HTTP/1.1 501 Not Implemented\r\nContent-Type: text/plain\r\nContent-Length: " + str(len(body)) + "\r\nConnection: close\r\n\r\n" + body
+        tls_write(tls, out)
+        tls_close(tls)
+        if machweb_access_log == 1 { access_log(req, "501 Not Implemented (hijack/stream)", len(body), now_ms() - started) }
+        return
+    }
+    nbytes := 0
+    if res.is_bin == 1 {
+        head := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.bin)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n"
+        tls_write(tls, head)
+        tls_write_bytes(tls, res.bin)
+        nbytes = len(res.bin)
+    } else {
+        out := "HTTP/1.1 " + res.status + "\r\nContent-Type: " + res.ctype + "\r\nContent-Length: " + str(len(res.body)) + "\r\n" + cookie_lines(res) + "Connection: close\r\n\r\n" + res.body
+        tls_write(tls, out)
+        nbytes = len(res.body)
+    }
+    tls_close(tls)
+    if machweb_access_log == 1 { access_log(req, res.status, nbytes, now_ms() - started) }
+}
+
+// machweb_accept_tls completes the server-side handshake for one connection,
+// then hands off to machweb_handle_tls. A handshake failure just drops the fd
+// (matches a browser hitting a plaintext port with https:// — no valid response
+// is possible before a handshake completes).
+func machweb_accept_tls(ctx, fd, handler) {
+    tls := tls_accept(ctx, fd)
+    if tls == 0 {
+        close(fd)
+        return
+    }
+    machweb_handle_tls(fd, tls, handler)
+}
+
+// serve_tls runs the HTTPS server directly — no reverse proxy needed. certfile/
+// keyfile are PEM paths (see tls_server_ctx). Each connection is handled (handshake
+// + request + response) in its own goroutine, same concurrency shape as serve.
+func serve_tls(port, certfile, keyfile, handler) {
+    ctx := tls_server_ctx(certfile, keyfile)
+    if ctx == 0 {
+        println("serve_tls: failed to load " + certfile + " / " + keyfile)
+        return
+    }
+    server := listen(port)
+    println("machweb on https://localhost:" + str(port))
+    flush() // otherwise this line never reaches a log file/pipe (nohup, systemd, Docker) — see the stdout-buffering gotcha
+    for {
+        fd := accept(server)
+        go machweb_accept_tls(ctx, fd, handler)
+    }
+}
+
+// ---- map-based router ----
+//
+// A router maps "METHOD PATH" to a handler closure func(Request) Response.
+//
+//   r := new_router()
+//   route(r, "GET", "/", func(req) { return ok_text("home") })
+//   serve_router(48080, r)
+
+func new_router() (r) {
+    r = make(map[string]func)
+}
+
+func route(router, method, path, handler) {
+    router[method + " " + path] = handler
+}
+
+func dispatch(router, req) (res) {
+    key := req.method + " " + req.path
+    if has(router, key) {
+        h := router[key]
+        res = h(req)
+    } else {
+        res = not_found()
+    }
+}
+
+// serve_router runs a router-backed server.
+func serve_router(port, router) {
+    serve(port, func(req) { return dispatch(router, req) })
+}

@@ -1,0 +1,230 @@
+// hart — the agent-first artifact host. One MFL/machin static binary that is BOTH a hosting
+// daemon (`hart serve`) and a CLI (`hart publish <file>` → a live, sandboxed URL). M0 spike:
+// prove the loop end to end — publish HTML → stored+versioned in SQLite → served at /a/<id>
+// wrapped in a doctype skeleton + a strict CSP, with v1/v2/v3/latest versioning.
+//
+// Agent-first: JSON on stdout, structured errors on stderr, semantic exit codes.
+// Env: HART_URL (publish target, default http://127.0.0.1:8799), HART_DB (default ~/.hart.db),
+//      HART_PORT (serve port, default 8799), HART_PUBLIC (public base for returned URLs).
+
+type ArtRow struct { id string  title string  latest int  created int  updated int }
+type VerRow struct { version int  format string  created int }
+type HtmlRow struct { html string  format string  title string }
+
+// the strict render sandbox — same envelope idea as Claude artifacts: renders the page while
+// neutering it as an exfiltration/attack vector. No external anything; no network.
+func csp() (c) {
+    c = "default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; font-src data:; script-src 'unsafe-inline' 'unsafe-eval'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
+}
+
+func hdb() (p) {
+    p = env("HART_DB")
+    if p == "" { p = env("HOME") + "/.hart.db" }
+}
+
+func opendb() (db) {
+    db = sqlite_open(hdb())
+    sqlite_exec(db, "PRAGMA busy_timeout=3000", []string{})
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS artifacts(id TEXT PRIMARY KEY, title TEXT, latest INTEGER DEFAULT 0, created INTEGER, updated INTEGER)", []string{})
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS versions(artifact_id TEXT, version INTEGER, title TEXT, format TEXT, html TEXT, hash TEXT, created INTEGER, PRIMARY KEY(artifact_id, version))", []string{})
+}
+
+func nid() (s) { s = to_hex(rand_bytes(6)) }
+
+func say(s) { write(1, s + "\n") }
+func die(code, msg) { write(2, "{\"ok\":false,\"error\":\"" + msg + "\"}\n"); exit(code) }
+
+// public base for the URLs we hand back. HART_PUBLIC pins the real domain (hosted/proxied);
+// otherwise reflect the Host the client actually hit, so returned URLs are always dialable.
+func pubbase(req) (b) {
+    b = env("HART_PUBLIC")
+    if b == "" {
+        host := header(req, "host")
+        if host == "" { host = "127.0.0.1:8799" }
+        b = "http://" + host
+    }
+}
+
+// ---- daemon ---------------------------------------------------------------
+
+// POST /v1/publish?id=&title=&format=  — raw HTML in the body (no JSON escaping of the page).
+// New id -> v1; existing id -> next version; `latest` always tracks the newest.
+func h_publish(req) (res) {
+    db := opendb()
+    id := query(req, "id")
+    title := query(req, "title")
+    format := query(req, "format")
+    if format == "" { format = "html" }
+    body := req.body
+    if body == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty body\"}") }
+    n := now()
+    ver := 1
+    arows := sqlite_query(db, "SELECT id, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if id != "" && len(ars) > 0 {
+        ver = ars[0].latest + 1
+        sqlite_exec(db, "UPDATE artifacts SET latest = ?, title = COALESCE(NULLIF(?,''), title), updated = ? WHERE id = ?", []string{str(ver), title, str(n), id})
+    } else {
+        if id == "" { id = nid() }
+        sqlite_exec(db, "INSERT INTO artifacts(id, title, latest, created, updated) VALUES(?,?,?,?,?)", []string{id, title, str(ver), str(n), str(n)})
+    }
+    hash := to_hex(sha256_bytes(bytes(body)))
+    sqlite_exec(db, "INSERT INTO versions(artifact_id, version, title, format, html, hash, created) VALUES(?,?,?,?,?,?,?)", []string{id, str(ver), title, format, body, hash, str(n)})
+    sqlite_close(db)
+    base := pubbase(req)
+    out := "{\"ok\":true,\"id\":\"" + id + "\",\"version\":" + str(ver) + ",\"format\":\"" + format + "\",\"url\":\"" + base + "/a/" + id + "\",\"latest_url\":\"" + base + "/a/" + id + "/latest\",\"pinned_url\":\"" + base + "/a/" + id + "/v" + str(ver) + "\"}"
+    res = ok_json(out)
+}
+
+func h_list(req) (res) {
+    db := opendb()
+    rows := sqlite_query(db, "SELECT id, title, latest, created, updated FROM artifacts ORDER BY updated DESC LIMIT 500", []string{})
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"artifacts\":" + rows + "}")
+}
+
+func h_versions(db, id) (res) {
+    rows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? ORDER BY version DESC", []string{id})
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"versions\":" + rows + "}")
+}
+
+// wrap stored content in a minimal doctype skeleton (the content itself carries inline
+// <title>/<style>/<script>, artifact-style) and serve under the strict CSP.
+func render_page(html, title) (page) {
+    t := title
+    if t == "" { t = "hart artifact" }
+    page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title></head><body>" + html + "</body></html>"
+}
+
+func serve_artifact(db, id, ver) (res) {
+    v := ver
+    if v == 0 {
+        arows := sqlite_query(db, "SELECT id, title, latest, created, updated FROM artifacts WHERE id = ?", []string{id})
+        ars := parse(arows, []ArtRow{})
+        if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain; charset=utf-8", "artifact not found") }
+        v = ars[0].latest
+    }
+    hrows := sqlite_query(db, "SELECT html, format, title FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(v)})
+    sqlite_close(db)
+    hs := parse(hrows, []HtmlRow{})
+    if len(hs) == 0 { return response("404 Not Found", "text/plain; charset=utf-8", "version not found") }
+    page := render_page(hs[0].html, hs[0].title)
+    r := ok_html(page)
+    r = with_header(r, "Content-Security-Policy", csp())
+    r = with_header(r, "X-Content-Type-Options", "nosniff")
+    r = with_header(r, "X-Frame-Options", "SAMEORIGIN")
+    r = with_header(r, "Referrer-Policy", "no-referrer")
+    res = r
+}
+
+// parse /a/<id>, /a/<id>/latest, /a/<id>/v<n>
+func handle_artifact(req, p) (res) {
+    rest := substr(p, 3, len(p))   // strip "/a/"
+    parts := split(rest, "/")
+    id := parts[0]
+    if id == "" { return response("404 Not Found", "text/plain", "no id") }
+    db := opendb()
+    ver := 0
+    if len(parts) > 1 {
+        seg := parts[1]
+        if seg != "latest" && seg != "" {
+            if substr(seg, 0, 1) == "v" { ver = parse_int(substr(seg, 1, len(seg))) } else { ver = parse_int(seg) }
+        }
+    }
+    res = serve_artifact(db, id, ver)
+}
+
+func hart_route(req) (res) {
+    p := req.path
+    qi := index(p, "?")
+    if qi >= 0 { p = substr(p, 0, qi) }
+    if p == "/_health" { return ok_json("{\"ok\":true,\"service\":\"hart\"}") }
+    if req.method == "POST" && p == "/v1/publish" { return h_publish(req) }
+    if req.method == "GET" && p == "/v1/artifacts" { return h_list(req) }
+    if req.method == "GET" && has_prefix(p, "/v1/artifacts/") {
+        id := substr(p, 14, len(p))
+        si := index(id, "/")
+        if si >= 0 { id = substr(id, 0, si) }
+        db := opendb()
+        return h_versions(db, id)
+    }
+    if req.method == "GET" && has_prefix(p, "/a/") { return handle_artifact(req, p) }
+    res = response("404 Not Found", "text/plain; charset=utf-8", "not found")
+}
+
+func cmd_serve(a) {
+    port := 8799
+    if len(a) >= 3 { port = parse_int(a[2]) }
+    say("{\"ok\":true,\"serving\":\"hart\",\"port\":" + str(port) + ",\"routes\":[\"POST /v1/publish\",\"GET /a/<id>[/latest|/v<n>]\",\"GET /v1/artifacts\"]}")
+    serve(port, func(req) { return hart_route(req) })
+}
+
+// ---- CLI ------------------------------------------------------------------
+
+func flagv(a, name, dflt) (v) {
+    v = dflt
+    i := 0
+    for i < len(a) {
+        if a[i] == name { if i + 1 < len(a) { v = a[i+1] } }
+        i = i + 1
+    }
+}
+
+func cmd_publish(a) {
+    if len(a) < 3 { die(80, "usage: hart publish <file> [--id <id>] [--title <t>] [--format html|jsx]") }
+    file := a[2]
+    html := read_file(file)
+    if html == "" { die(90, "file empty or unreadable: " + file) }
+    id := flagv(a, "--id", "")
+    title := flagv(a, "--title", "")
+    format := flagv(a, "--format", "html")
+    base := env("HART_URL")
+    if base == "" { base = "http://127.0.0.1:8799" }
+    url := base + "/v1/publish?format=" + url_encode(format)
+    if id != "" { url = url + "&id=" + url_encode(id) }
+    if title != "" { url = url + "&title=" + url_encode(title) }
+    tok := env("HART_TOKEN")
+    headers := []string{"content-type: text/html; charset=utf-8"}
+    if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
+    status, resp, err := http_request("POST", url, headers, html)
+    if err != "" { die(100, "cannot reach hart daemon at " + base + " (is `hart serve` running? set HART_URL): " + err) }
+    if status != 200 { die(100, "publish failed (" + str(status) + "): " + resp) }
+    say(resp)
+}
+
+func cmd_list() {
+    base := env("HART_URL")
+    if base == "" { base = "http://127.0.0.1:8799" }
+    status, resp, err := http_request("GET", base + "/v1/artifacts", []string{}, "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(100, "list failed (" + str(status) + ")") }
+    say(resp)
+}
+
+func cmd_versions(a) {
+    if len(a) < 3 { die(80, "usage: hart versions <id>") }
+    base := env("HART_URL")
+    if base == "" { base = "http://127.0.0.1:8799" }
+    status, resp, err := http_request("GET", base + "/v1/artifacts/" + a[2] + "/versions", []string{}, "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(100, "versions failed (" + str(status) + ")") }
+    say(resp)
+}
+
+func cmd_help() {
+    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML, get a sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (hosting daemon; HART_DB, HART_PORT, HART_PUBLIC)\",\"publish\":\"publish <file> [--id <id>] [--title <t>] [--format html|jsx] -> {url,version}. Re-publish with --id => next version; latest moves.\",\"list\":\"list (all artifacts)\",\"versions\":\"versions <id>\"},\"env\":{\"HART_URL\":\"publish target (default http://127.0.0.1:8799)\",\"HART_TOKEN\":\"bearer token (optional in M0)\"},\"urls\":{\"latest\":\"/a/<id>  or  /a/<id>/latest\",\"pinned\":\"/a/<id>/v<n>\"}}")
+}
+
+func main() {
+    a := args()
+    cmd := ""
+    if len(a) >= 2 { cmd = a[1] }
+    if cmd == "" || cmd == "help" { cmd_help(); return }
+    if cmd == "serve" { cmd_serve(a); return }
+    if cmd == "publish" { cmd_publish(a); return }
+    if cmd == "list" { cmd_list(); return }
+    if cmd == "versions" { cmd_versions(a); return }
+    write(2, "{\"ok\":false,\"error\":\"unknown command: " + cmd + "\"}\n")
+    exit(80)
+}
