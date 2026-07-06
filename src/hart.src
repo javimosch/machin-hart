@@ -7,12 +7,13 @@
 // Env: HART_URL (publish target, default http://127.0.0.1:8799), HART_DB (default ~/.hart.db),
 //      HART_PORT (serve port, default 8799), HART_PUBLIC (public base for returned URLs).
 
-type ArtRow struct { id string  owner string  name string  title string  latest int  data string  created int  updated int }
+type ArtRow struct { id string  owner string  name string  title string  latest int  data string  visibility string  read_key_hash string  created int  updated int }
 type VerRow struct { version int  format string  created int }
 type HtmlRow struct { html string  format string  title string }
 type SumRow struct { s int }
 type CntRow struct { n int }
 type OwnerRow struct { owner string  key_hash string  created int }
+type ListRow struct { id string  owner string  name string  title string  visibility string  updated int }
 
 // the strict render sandbox — same envelope idea as Claude artifacts: renders the page while
 // neutering it as an exfiltration/attack vector. No external anything; no network.
@@ -43,6 +44,8 @@ func opendb() (db) {
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN owner TEXT DEFAULT ''", []string{})   // no-op once it exists
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN name TEXT DEFAULT ''", []string{})
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN data TEXT DEFAULT ''", []string{})   // the template's live data (window.HART_DATA + {{key}})
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN visibility TEXT DEFAULT 'unlisted'", []string{})   // unlisted (default) | public | private
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN read_key_hash TEXT DEFAULT ''", []string{})   // sha256 of the read password (private mode)
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS versions(artifact_id TEXT, version INTEGER, title TEXT, format TEXT, html TEXT, hash TEXT, created INTEGER, PRIMARY KEY(artifact_id, version))", []string{})
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS hits(ip TEXT, ts INTEGER)", []string{})   // per-IP submit rate window
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS owners(owner TEXT PRIMARY KEY, key_hash TEXT DEFAULT '', created INTEGER)", []string{})   // namespace claim keys
@@ -66,6 +69,34 @@ func owner_authorized(db, owner, req) (ok) {
     }
     if os[0].key_hash == "" { return 1 }
     if provided == os[0].key_hash { return 1 }
+}
+
+// cookie_secret — a stable HMAC secret for signed unlock cookies, initialized once at startup
+// (cmd_serve). HART_COOKIE_SECRET pins it across restarts (else unlock cookies invalidate on
+// restart — users just re-enter the password, which is fine).
+var g_cookie_secret = ""
+func cookie_secret() (s) { s = g_cookie_secret }
+
+// pubbase_over_https — 1 if the public base is HTTPS (so unlock cookies get "; Secure").
+func pubbase_over_https() (yes) {
+    yes = 0
+    if has_prefix(env("HART_PUBLIC"), "https://") { yes = 1 }
+}
+
+// read_cookie_name — a URL/cookie-safe per-artifact name for the unlock cookie.
+func read_cookie_name(id) (n) {
+    n = "hr_" + substr(to_hex(sha256_bytes(bytes(id))), 0, 16)
+}
+
+// read_authorized — may the requester VIEW this (private) artifact? A valid X-Hart-Read-Key
+// header OR a valid signed unlock cookie (value == current read_key_hash) grants access.
+func read_authorized(db, id, kh, req) (ok) {
+    ok = 0
+    if kh == "" { return 1 }   // not gated
+    hk := header(req, "x-hart-read-key")
+    if hk != "" { if to_hex(sha256_bytes(bytes(hk))) == kh { return 1 } }
+    val, vok := get_session(req, cookie_secret(), read_cookie_name(id))
+    if vok == 1 && val == kh { return 1 }
 }
 
 // ---- abuse limits (customizable; the daemon is otherwise open/free) --------
@@ -171,9 +202,15 @@ func h_publish(req) (res) {
     artifact := slugify(query(req, "artifact"))
     id := query(req, "id")
     if id == "" && owner != "" && artifact != "" { id = owner + "/" + artifact }
+    if query(req, "unguessable") == "1" && id != "" { id = id + "-" + substr(to_hex(rand_bytes(3)), 0, 5) }
     title := query(req, "title")
     format := query(req, "format")
     if format == "" { format = "html" }
+    vis := query(req, "visibility")
+    if vis != "public" && vis != "private" { vis = "unlisted" }
+    rkh := ""
+    rk := query(req, "read_key")
+    if rk != "" { rkh = to_hex(sha256_bytes(bytes(rk))) }
     body := req.body
     if body == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty body\"}") }
     // abuse limits: per-IP submit rate + per-owner storage quota (both customizable)
@@ -194,7 +231,7 @@ func h_publish(req) (res) {
     if owner_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + owner + "' is claimed — pass the owner key (--owner-key / HART_OWNER_KEY)\"}") }
     n := now()
     ver := 1
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if id != "" && len(ars) > 0 {
         // next version = highest ever + 1 (NOT latest+1 — rollback can move latest backward)
@@ -202,15 +239,20 @@ func h_publish(req) (res) {
         mraw, _ := json_get(mrows, "[0].m")
         ver = parse_int(mraw) + 1
         sqlite_exec(db, "UPDATE artifacts SET latest = ?, title = COALESCE(NULLIF(?,''), title), updated = ? WHERE id = ?", []string{str(ver), title, str(n), id})
+        // visibility/read-key only change if explicitly provided (re-publish keeps them otherwise)
+        if query(req, "visibility") != "" { sqlite_exec(db, "UPDATE artifacts SET visibility = ? WHERE id = ?", []string{vis, id}) }
+        if rk != "" { sqlite_exec(db, "UPDATE artifacts SET read_key_hash = ? WHERE id = ?", []string{rkh, id}) }
+        vis = ars[0].visibility
+        if query(req, "visibility") != "" { vis = query(req, "visibility") }
     } else {
         if id == "" { id = nid() }
-        sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, created, updated) VALUES(?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), str(n), str(n)})
+        sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, visibility, read_key_hash, created, updated) VALUES(?,?,?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), vis, rkh, str(n), str(n)})
     }
     hash := to_hex(sha256_bytes(bytes(body)))
     sqlite_exec(db, "INSERT INTO versions(artifact_id, version, title, format, html, hash, created) VALUES(?,?,?,?,?,?,?)", []string{id, str(ver), title, format, body, hash, str(n)})
     sqlite_close(db)
     base := pubbase(req)
-    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + owner + "\",\"artifact\":\"" + artifact + "\",\"version\":" + str(ver) + ",\"format\":\"" + format + "\",\"url\":\"" + base + "/a/" + id + "\",\"latest_url\":\"" + base + "/a/" + id + "/latest\",\"pinned_url\":\"" + base + "/a/" + id + "/v" + str(ver) + "\",\"lint\":" + report + "}"
+    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + owner + "\",\"artifact\":\"" + artifact + "\",\"version\":" + str(ver) + ",\"format\":\"" + format + "\",\"visibility\":\"" + vis + "\",\"url\":\"" + base + "/a/" + id + "\",\"latest_url\":\"" + base + "/a/" + id + "/latest\",\"pinned_url\":\"" + base + "/a/" + id + "/v" + str(ver) + "\",\"lint\":" + report + "}"
     res = ok_json(out)
 }
 
@@ -228,7 +270,7 @@ func h_data(req) (res) {
     if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need --id or --owner+--artifact\"}") }
     body := req.body
     if body == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty data body\"}") }
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact — publish the template first\"}") }
     if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
@@ -254,7 +296,7 @@ func h_list(req) (res) {
 
 func h_versions(db, req, id) (res) {
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     rows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? ORDER BY version DESC", []string{id})
@@ -266,7 +308,7 @@ func h_versions(db, req, id) (res) {
 func h_delete(req, id) (res) {
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     if owner_authorized(db, oa[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + oa[0].owner + "' is claimed — pass the owner key\"}") }
@@ -281,7 +323,7 @@ func h_delete(req, id) (res) {
 func h_rollback(req, id, target) (res) {
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     if owner_authorized(db, oa[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + oa[0].owner + "' is claimed — pass the owner key\"}") }
@@ -400,13 +442,17 @@ func serve_runtime(fname) (res) {
     res = r
 }
 
-func serve_artifact(db, id, ver) (res) {
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, created, updated FROM artifacts WHERE id = ?", []string{id})
+func serve_artifact(db, req, id, ver) (res) {
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain; charset=utf-8", "artifact not found") }
+    // private (gated) read: valid header or unlock cookie, else the unlock page
+    if read_authorized(db, id, ars[0].read_key_hash, req) == 0 { r := unlock_page(id, ""); sqlite_close(db); return r }
     v := ver
     if v == 0 { v = ars[0].latest }
     data := ars[0].data
+    gated := 0
+    if ars[0].read_key_hash != "" { gated = 1 }
     hrows := sqlite_query(db, "SELECT html, format, title FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(v)})
     sqlite_close(db)
     hs := parse(hrows, []HtmlRow{})
@@ -419,7 +465,54 @@ func serve_artifact(db, id, ver) (res) {
     r = with_header(r, "X-Content-Type-Options", "nosniff")
     r = with_header(r, "X-Frame-Options", "SAMEORIGIN")
     r = with_header(r, "Referrer-Policy", "no-referrer")
+    if gated == 1 { r = with_header(r, "Cache-Control", "no-store") }
     res = r
+}
+
+// the unlock page — a password form for a private artifact. Posts to /a/<id>/unlock.
+func unlock_page(id, errmsg) (res) {
+    em := ""
+    if errmsg != "" { em = "<p class=\"e\">" + errmsg + "</p>" }
+    body := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Protected · hart</title>"
+    body = body + "<style>body{margin:0;background:#0e1216;color:#e8edf2;font:15px system-ui;min-height:100vh;display:grid;place-items:center}.b{width:min(90vw,360px);text-align:center}.lock{font-size:34px}h1{font-size:19px;font-weight:600;margin:14px 0 4px}p{color:#8b97a4;font-size:13px;margin:0 0 20px}form{display:flex;gap:8px}input{flex:1;background:#151b21;border:1px solid #232c34;border-radius:8px;padding:11px 13px;color:#e8edf2;font:14px system-ui}input:focus{outline:2px solid #0e6e6e;border-color:transparent}button{background:#3ad0c4;color:#062023;border:0;border-radius:8px;padding:11px 18px;font:600 14px system-ui;cursor:pointer}.e{color:#e0a355;font:12px ui-monospace,monospace;margin-top:12px}</style></head>"
+    body = body + "<body><div class=\"b\"><div class=\"lock\">🔒</div><h1>This artifact is protected</h1><p>Enter the read password to view it.</p>"
+    body = body + "<form method=\"POST\" action=\"/a/" + id + "/unlock\"><input type=\"password\" name=\"key\" placeholder=\"password\" autofocus autocomplete=\"current-password\"><button type=\"submit\">Unlock</button></form>" + em + "</div></body></html>"
+    r := response("401 Unauthorized", "text/html; charset=utf-8", body)
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+    r = with_header(r, "Cache-Control", "no-store")
+    res = r
+}
+
+// POST /a/<id>/unlock  (form: key) — verify the read password, set a signed cookie, redirect.
+func h_unlock(req, id) (res) {
+    db := opendb()
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain", "not found") }
+    kh := ars[0].read_key_hash
+    key := query_form(req, "key")
+    if kh == "" || to_hex(sha256_bytes(bytes(key))) != kh {
+        r := unlock_page(id, "Wrong password.")
+        sqlite_close(db)
+        return r
+    }
+    sec := cookie_secret()
+    sqlite_close(db)
+    r := redirect("/a/" + id)
+    r = set_session(r, sec, read_cookie_name(id), kh)
+    res = r
+}
+
+// query_form — read a value from an application/x-www-form-urlencoded body.
+func query_form(req, name) (v) {
+    v = ""
+    parts := split(req.body, "&")
+    i := 0
+    for i < len(parts) {
+        kv := split(parts[i], "=")
+        if len(kv) >= 2 { if url_decode(kv[0]) == name { v = url_decode(kv[1]) } }
+        i = i + 1
+    }
 }
 
 // is_version_seg — a trailing path segment that pins a version: "latest" or "v<digits>".
@@ -453,7 +546,97 @@ func handle_artifact(req, p) (res) {
     for i < idcount { if id != "" { id = id + "/" } id = id + parts[i] i = i + 1 }
     if id == "" { return response("404 Not Found", "text/plain", "no id") }
     db := opendb()
-    res = serve_artifact(db, id, ver)
+    res = serve_artifact(db, req, id, ver)
+}
+
+// POST /v1/visibility?id=&visibility=&read_key=  — change an artifact's visibility/read-key
+// without a new version. Owner-key protected (like other mutations).
+func h_visibility(req) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    id := query(req, "id")
+    if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need --id\"}") }
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
+    vis := query(req, "visibility")
+    if vis != "" {
+        if vis != "public" && vis != "private" && vis != "unlisted" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"visibility must be unlisted|public|private\"}") }
+        sqlite_exec(db, "UPDATE artifacts SET visibility = ? WHERE id = ?", []string{vis, id})
+    }
+    rk := query(req, "read_key")
+    if rk != "" { sqlite_exec(db, "UPDATE artifacts SET read_key_hash = ? WHERE id = ?", []string{to_hex(sha256_bytes(bytes(rk))), id}) }
+    if query(req, "clear_read_key") == "1" { sqlite_exec(db, "UPDATE artifacts SET read_key_hash = '' WHERE id = ?", []string{id}) }
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"visibility\":\"" + vis + "\"}")
+}
+
+// GET /v1/public?owner=&q=  — the discovery feed: PUBLIC artifacts only, recency-ranked.
+// Powers /explore (global) and /o/<owner> (per-owner). JSON for agents.
+func public_rows(db, owner, q) (rows) {
+    like := "%" + q + "%"
+    if owner != "" {
+        rows = sqlite_query(db, "SELECT id, owner, name, title, visibility, updated FROM artifacts WHERE visibility = 'public' AND owner = ? AND (title LIKE ? OR name LIKE ?) ORDER BY updated DESC LIMIT 200", []string{owner, like, like})
+    } else {
+        rows = sqlite_query(db, "SELECT id, owner, name, title, visibility, updated FROM artifacts WHERE visibility = 'public' AND (title LIKE ? OR name LIKE ? OR owner LIKE ?) ORDER BY updated DESC LIMIT 200", []string{like, like, like})
+    }
+}
+
+func h_public(req) (res) {
+    db := opendb()
+    rows := public_rows(db, slugify(query(req, "owner")), query(req, "q"))
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"artifacts\":" + rows + "}")
+}
+
+// gallery_html — the server-rendered listing page shared by /explore and /o/<owner>.
+func gallery_html(db, owner, q) (page) {
+    rows := public_rows(db, owner, q)
+    items := parse(rows, []ListRow{})
+    heading := "Explore"
+    sub := "Public artifacts on this hart instance."
+    if owner != "" { heading = owner; sub = "Public artifacts by " + owner + "." }
+    cards := ""
+    i := 0
+    for i < len(items) {
+        it := items[i]
+        t := it.title
+        if t == "" { t = it.name }
+        cards = cards + "<a class=\"card\" href=\"/a/" + it.id + "\"><div class=\"ct\">" + t + "</div><div class=\"cm\">" + it.owner + " / " + it.name + "</div></a>"
+        i = i + 1
+    }
+    if len(items) == 0 { cards = "<p class=\"empty\">Nothing public yet. Publish with <code>--visibility public</code>.</p>" }
+    page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + heading + " · hart</title>"
+    page = page + "<style>body{margin:0;background:#0e1216;color:#e8edf2;font:15px system-ui}.w{max-width:820px;margin:0 auto;padding:56px 24px 80px}a{color:#3ad0c4;text-decoration:none}.eyebrow{font:12px ui-monospace,monospace;letter-spacing:.2em;text-transform:uppercase;color:#3ad0c4;margin:0 0 12px}h1{font-size:32px;letter-spacing:-.02em;margin:0 0 6px}.sub{color:#8b97a4;margin:0 0 26px}form{margin:0 0 26px}input{width:100%;max-width:360px;background:#151b21;border:1px solid #232c34;border-radius:8px;padding:11px 14px;color:#e8edf2;font:14px system-ui}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{display:block;background:#151b21;border:1px solid #232c34;border-radius:12px;padding:18px 20px}.card:hover{border-color:#2f5c58}.ct{font-weight:600;color:#e8edf2;letter-spacing:-.01em}.cm{font:12px ui-monospace,monospace;color:#5c6773;margin-top:5px}.empty{color:#8b97a4}code{font:.9em ui-monospace,monospace;background:#1b232a;border:1px solid #232c34;border-radius:4px;padding:1px 6px}.home{font:12px ui-monospace,monospace;color:#5c6773}@media(max-width:600px){.grid{grid-template-columns:1fr}}</style></head>"
+    page = page + "<body><div class=\"w\"><a class=\"home\" href=\"/\">← hart</a><p class=\"eyebrow\" style=\"margin-top:18px\">" + sub + "</p><h1>" + heading + "</h1>"
+    page = page + "<form method=\"GET\"><input type=\"search\" name=\"q\" value=\"" + esc_attr(q) + "\" placeholder=\"Search public artifacts…\"></form>"
+    page = page + "<div class=\"grid\">" + cards + "</div></div></body></html>"
+}
+
+func esc_attr(s) (o) {
+    o = replace(s, "\"", "")
+    o = replace(o, "<", "")
+    o = replace(o, ">", "")
+}
+
+func serve_explore(req) (res) {
+    if env("HART_EXPLORE") == "0" { return response("404 Not Found", "text/plain", "explore disabled") }
+    db := opendb()
+    page := gallery_html(db, "", query(req, "q"))
+    sqlite_close(db)
+    r := ok_html(page)
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+    res = r
+}
+
+func serve_owner(req, owner) (res) {
+    db := opendb()
+    page := gallery_html(db, slugify(owner), query(req, "q"))
+    sqlite_close(db)
+    r := ok_html(page)
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+    res = r
 }
 
 // the root page — the product landing (OSS, self-hosted). Served from HART_LANDING (default
@@ -489,6 +672,14 @@ func hart_route(req) (res) {
         if req.method == "DELETE" { return h_delete(req, tail) }
         if req.method == "GET" { db := opendb(); return h_versions(db, req, tail) }
     }
+    if req.method == "POST" && p == "/v1/visibility" { return h_visibility(req) }
+    if req.method == "GET" && p == "/v1/public" { return h_public(req) }
+    if req.method == "GET" && p == "/explore" { return serve_explore(req) }
+    if req.method == "GET" && has_prefix(p, "/o/") { return serve_owner(req, substr(p, 3, len(p))) }
+    if req.method == "POST" && has_prefix(p, "/a/") && has_suffix(p, "/unlock") {
+        rest := substr(p, 3, len(p) - 7)   // strip "/a/" and "/unlock"
+        return h_unlock(req, rest)
+    }
     if req.method == "GET" && has_prefix(p, "/a/") { return handle_artifact(req, p) }
     res = response("404 Not Found", "text/plain; charset=utf-8", "not found")
 }
@@ -496,6 +687,9 @@ func hart_route(req) (res) {
 func cmd_serve(a) {
     port := 8799
     if len(a) >= 3 { port = parse_int(a[2]) }
+    g_cookie_secret = env("HART_COOKIE_SECRET")
+    if g_cookie_secret == "" { g_cookie_secret = to_hex(rand_bytes(24)) }
+    if pubbase_over_https() == 1 { set_secure_cookies(1) }
     say("{\"ok\":true,\"serving\":\"hart\",\"port\":" + str(port) + ",\"routes\":[\"POST /v1/publish\",\"GET /a/<id>[/latest|/v<n>]\",\"GET /v1/artifacts\"]}")
     serve(port, func(req) { return hart_route(req) })
 }
@@ -527,7 +721,7 @@ func has_flag(a, name) (yes) {
 }
 
 func cmd_publish(a) {
-    if len(a) < 3 { die(80, "usage: hart publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--id <id>] [--dry-run] [--force]") }
+    if len(a) < 3 { die(80, "usage: hart publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--visibility unlisted|public|private] [--read-key <pw>] [--unguessable] [--dry-run] [--force]") }
     file := a[2]
     html := read_file(file)
     if html == "" { die(90, "file empty or unreadable: " + file) }
@@ -536,11 +730,16 @@ func cmd_publish(a) {
     artifact := flagv(a, "--artifact", "")
     title := flagv(a, "--title", "")
     format := flagv(a, "--format", "html")
+    vis := flagv(a, "--visibility", "")
+    rk := flagv(a, "--read-key", "")
     url := hart_url() + "/v1/publish?format=" + url_encode(format)
     if id != "" { url = url + "&id=" + url_encode(id) }
     if owner != "" { url = url + "&owner=" + url_encode(owner) }
     if artifact != "" { url = url + "&artifact=" + url_encode(artifact) }
     if title != "" { url = url + "&title=" + url_encode(title) }
+    if vis != "" { url = url + "&visibility=" + url_encode(vis) }
+    if rk != "" { url = url + "&read_key=" + url_encode(rk) }
+    if has_flag(a, "--unguessable") == 1 { url = url + "&unguessable=1" }
     if has_flag(a, "--dry-run") == 1 { url = url + "&dry=1" }
     if has_flag(a, "--force") == 1 { url = url + "&force=1" }
     headers := []string{"content-type: text/html; charset=utf-8"}
@@ -551,6 +750,29 @@ func cmd_publish(a) {
     status, resp, err := http_request("POST", url, headers, html)
     if err != "" { die(100, "cannot reach hart daemon at " + hart_url() + " (is `hart serve` running? set HART_URL): " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }   // server already returns clean JSON
+    say(resp)
+}
+
+// hart visibility <id> <unlisted|public|private> [--read-key <pw>] [--clear-read-key]
+func cmd_visibility(a) {
+    if len(a) < 4 { die(80, "usage: hart visibility <id> <unlisted|public|private> [--read-key <pw>] [--clear-read-key]") }
+    url := hart_url() + "/v1/visibility?id=" + url_encode(a[2]) + "&visibility=" + url_encode(a[3])
+    rk := flagv(a, "--read-key", "")
+    if rk != "" { url = url + "&read_key=" + url_encode(rk) }
+    if has_flag(a, "--clear-read-key") == 1 { url = url + "&clear_read_key=1" }
+    status, resp, err := http_request("POST", url, auth_headers(), "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }
+    say(resp)
+}
+
+// hart explore [query]   /   hart owner <who> [query]  — the public discovery feed (JSON)
+func cmd_explore(a) {
+    q := ""
+    if len(a) >= 3 { q = a[2] }
+    status, resp, err := http_request("GET", hart_url() + "/v1/public?q=" + url_encode(q), []string{}, "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(100, "explore failed (" + str(status) + ")") }
     say(resp)
 }
 
@@ -607,6 +829,8 @@ func auth_headers() (h) {
     if tok != "" { h = append(h, "authorization: Bearer " + tok) }
     ok := env("HART_OWNER_KEY")
     if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
+    rk := env("HART_READ_KEY")
+    if rk != "" { h = append(h, "x-hart-read-key: " + rk) }
 }
 
 // owner_key_flag — --owner-key on the command overrides HART_OWNER_KEY for this call.
@@ -642,7 +866,7 @@ func cmd_versions(a) {
 }
 
 func cmd_help() {
-    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC; HART_TOKEN set => publish requires that token, unset => open/free)\",\"login\":\"login <token> (store creds in ~/.hart-token)\",\"publish\":\"publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--dry-run] [--force] -> {id,url,version}. owner+artifact => stable id owner/artifact; re-publish => next version.\",\"get\":\"get <id> (versions)\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version> (re-point latest; non-destructive)\",\"rm\":\"rm <id>\"},\"env\":{\"HART_URL\":\"daemon (default http://127.0.0.1:8799)\",\"HART_TOKEN\":\"static token (client sends it; server requires it if set)\"},\"urls\":{\"latest\":\"/a/<owner>/<artifact> or /a/<id> (+ /latest)\",\"pinned\":\"/a/<owner>/<artifact>/v<n>\"},\"contract\":\"self-contained HTML/JSX only — inline CSS/JS, data: URIs; external refs + network are linted (errors block, pass --force)\"}")
+    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private --read-key <pw> --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"visibility\":\"visibility <id> <unlisted|public|private> [--read-key <pw> --clear-read-key]\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id>\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
 }
 
 func main() {
@@ -658,6 +882,8 @@ func main() {
     if cmd == "list" { cmd_list(a); return }
     if cmd == "versions" { cmd_versions(a); return }
     if cmd == "rollback" { cmd_rollback(a); return }
+    if cmd == "visibility" { cmd_visibility(a); return }
+    if cmd == "explore" { cmd_explore(a); return }
     if cmd == "rm" { cmd_rm(a); return }
     write(2, "{\"ok\":false,\"error\":\"unknown command: " + cmd + "\"}\n")
     exit(80)

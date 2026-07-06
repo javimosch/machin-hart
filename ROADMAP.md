@@ -226,3 +226,39 @@ when there's demand; until then hart is a complete, self-hostable, live agent-fi
   Verified live: a greeting (`{{name}}`) and a data-driven bar chart (`/a/intrane/live-chart`)
   updated by pushing only JSON. Use cases: charts, the call-budget sheet, anything with changing data.
   *(Data is a mutable slot, not versioned — data rollback is future.)*
+
+---
+
+## Visibility (2026-07-07, founder decisions locked)
+
+Three modes on `artifacts.visibility` (naming: adopted unlisted/public/private):
+- **unlisted** (default) — public read, not listed anywhere.
+- **public** — public read + listed/searchable at **/explore** (global) and **/o/<owner>** (per-owner);
+  `GET /v1/public?owner=&q=` is the JSON feed (`hart explore [query]`).
+- **private** — gated read via a **read password** (`read_key_hash`). Browsers get a signed-cookie
+  **unlock page** (`POST /a/<id>/unlock` → HMAC cookie → render); agents send **`X-Hart-Read-Key`**
+  (`HART_READ_KEY`). Cookie secret = a startup global (`HART_COOKIE_SECRET` to pin across restarts).
+- Set at publish (`--visibility`, `--read-key`, `--unguessable` random suffix) or later via
+  `hart visibility <id> <mode> [--read-key --clear-read-key]` (owner-key protected, no new version).
+- `HART_EXPLORE=0` disables the global gallery (per-owner still works).
+
+Gotcha fixed: a per-request SQLite read/write for the cookie secret segfaulted machin → moved to a
+startup-initialized global. Live: intrane demos are public (in /explore), call-budget is private
+(read-key) so its lead data is no longer publicly readable.
+
+---
+
+## Visibility (2026-07-07, founder decisions locked)
+
+Three modes on `artifacts.visibility` (naming: adopted unlisted/public/private):
+- **unlisted** (default) — public read, not listed anywhere.
+- **public** — public read + listed/searchable at /explore (global) and /o/<owner> (per-owner);
+  GET /v1/public is the JSON feed (hart explore).
+- **private** — gated read via a read password. Browsers get a signed-cookie unlock page
+  (POST /a/<id>/unlock); agents send X-Hart-Read-Key (HART_READ_KEY). Cookie secret = startup
+  global (HART_COOKIE_SECRET to pin across restarts).
+- Set at publish (--visibility, --read-key, --unguessable) or later via hart visibility <id> <mode>.
+- HART_EXPLORE=0 disables the global gallery.
+
+Gotcha fixed: a per-request SQLite read/write for the cookie secret segfaulted machin -> moved to a
+startup global. Live: intrane demos public (in /explore), call-budget private (read-key).
