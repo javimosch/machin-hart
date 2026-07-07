@@ -1,126 +1,171 @@
 # hart — the agent-first artifact host
 
-> Publish self-contained HTML to a live, shareable URL — from **any** terminal agent, on **your**
-> infrastructure, in one CLI call. Claude Artifacts, unbundled and made universal.
+> Publish self-contained HTML or JSX to a live, shareable URL — from **any** terminal agent, on
+> **your** infrastructure, in one CLI call. Claude Artifacts, unbundled and made universal.
 
 `hart` (HTML ARTifacts) is an **agent-first, CLI-only, open-source, self-hosted** artifact host
 built as one static **MFL / [machin](https://github.com/javimosch/machin)** binary — it is both
-the client (`hart publish …`) and the hosting daemon (`hart serve`). Self-hostable, BYO
-everything. It's the *show* to grepapi's *find*, bland-cli's *call*, and crm-cli's *remember*.
+the client (`hart publish …`) and the hosting daemon (`hart serve`). It's the *show* to grepapi's
+*find*, bland-cli's *call*, and crm-cli's *remember*.
 
-> **Status: live.** M0–M2 shipped + a live instance at **[hart.intrane.fr](https://hart.intrane.fr)**
-> (free/open, rate-limited). Publish HTML or JSX → a versioned, sandboxed, rollback-able URL;
-> push **data** to a template to update it. Not a hosted SaaS — run your own. See [ROADMAP.md](ROADMAP.md).
+> **Live demo instance:** **[hart.intrane.fr](https://hart.intrane.fr)** (free/open, rate-limited).
+> **Prebuilt binary:** [Releases](https://github.com/javimosch/machin-hart/releases).
 
-> **🤖 For agents:** read **[`llms.txt`](llms.txt)** for a 30-second orientation, or run **`hart guide`**
-> (also served at any instance's `/llms.txt` and `/guide.md`) for the full, version-exact manual.
-> Prebuilt binaries: **[Releases](https://github.com/javimosch/machin-hart/releases)**.
+> **🤖 For agents:** read **[`llms.txt`](llms.txt)** for a 30-second orientation, or run **`hart
+> guide`** (also served at any instance's `/llms.txt` and `/guide.md`) for the full, version-exact
+> manual.
 
 ---
 
 ## Why
 
 Terminal agents (Claude Code, Cursor, aider, Codex CLI, Gemini CLI, custom SDK agents, cron jobs)
-now generate rich HTML deliverables — dashboards, reports, call sheets, mockups — but have
-**nowhere to put them**. `open` dies at share-time; a gist mangles the styling; standing up S3 by
-hand isn't agent-operable. Claude solved this *inside claude.ai*; everyone else is stuck. `hart`
-is the missing primitive:
+generate rich HTML deliverables — dashboards, reports, call sheets, mockups — but have **nowhere
+to put them**. `open` dies at share-time; a gist mangles the styling; standing up hosting by hand
+isn't agent-operable. Claude solved this *inside claude.ai*; everyone else is stuck. `hart` is the
+missing primitive — for every agent, on your own box:
 
 ```
-$ hart publish call-budget.html --title "€5 Call Budget"
-{"ok":true,"id":"x7f3k","url":"https://a.hart.host/x7f3k","version":1,"mode":"unlisted"}
+$ hart publish call-budget.html --owner acme --artifact call-budget
+{"ok":true,"id":"acme/call-budget","url":"https://hart.intrane.fr/a/acme/call-budget","version":1,"visibility":"unlisted"}
 ```
 
-Any agent can call that, parse the JSON, and hand the URL to the user. No UI, no build step, no
+Any agent calls that, parses the JSON, and hands the URL to the user. No UI, no build step, no
 lock-in.
 
-## Quickstart (self-host)
+## Use an existing instance (fastest)
 
 ```sh
-# 1. build (needs `machin` on PATH; vendors framework/machweb.src)
-./build.sh                       # → ./hart
-
-# 2. run the host daemon (SQLite store, your box). Free/open by default; set HART_TOKEN to gate publishing.
-HART_DB=~/.hart.db HART_RUNTIME_DIR=./runtime ./hart serve 8080 &
-
-# 3. point the client at it (+ token only if the daemon set one)
-export HART_URL=http://localhost:8080
-# ./hart login <token>            # only if this instance requires a token
-
-# 4. publish — owner + artifact = a stable, legible URL
-./hart publish report.html --owner alice --artifact q3-report --title "Q3 report"
-# → {"ok":true,"id":"alice/q3-report","url":"http://localhost:8080/a/alice/q3-report"}
-./hart publish report.html --owner alice --artifact q3-report   # re-publish → v2, latest moves
+export HART_URL=https://hart.intrane.fr
+hart publish page.html --owner you --artifact my-page
+# → {"url":"https://hart.intrane.fr/a/you/my-page", ...}
 ```
 
-For a public host, put `hart serve` behind Traefik + Cloudflare + Let's Encrypt with
-[hotify-cli](https://github.com/javimosch/hotify-cli) (the pattern used across the stack), or use
-the hosted control plane (M3).
+No `hart` binary? Every write is just an HTTP POST — curl it:
+
+```sh
+curl -X POST 'https://hart.intrane.fr/v1/publish?owner=you&artifact=my-page' \
+  -H 'content-type: text/html' --data-binary @page.html
+```
+
+## Self-host
+
+```sh
+# 1. get the binary — from a Release, or build it (needs `machin` on PATH)
+./runtime/fetch.sh        # seed the JSX runtime (react/react-dom/babel)
+./build.sh                # → ./hart   (vendors framework/machweb.src)
+
+# 2. run the daemon (SQLite store, your box). Free/open by default.
+HART_DB=~/.hart.db HART_RUNTIME_DIR=./runtime HART_LANDING=./landing.html ./hart serve 8799 &
+
+# 3. publish — owner + artifact = a stable, legible URL
+export HART_URL=http://localhost:8799
+hart publish report.html --owner alice --artifact q3
+# → {"id":"alice/q3","url":"http://localhost:8799/a/alice/q3","version":1}
+hart publish report.html --owner alice --artifact q3   # re-publish → v2, latest moves
+```
+
+Gate publishing with `HART_TOKEN=<secret>`. Expose publicly behind any reverse proxy
+(e.g. Traefik + Cloudflare + Let's Encrypt via [hotify-cli](https://github.com/javimosch/hotify-cli))
+and set `HART_PUBLIC=https://your.domain` so returned URLs are canonical.
 
 ## The publish contract
 
-`hart` hosts **finished, self-contained HTML** — one file, everything inlined. The daemon wraps
-your `<body>` content in a `<!doctype>…<head>` skeleton (title, favicon, viewport, CSP) and
-serves it under a strict, sandboxed **Content-Security-Policy**:
+`hart` hosts **self-contained** pages — one file, everything inlined. The daemon wraps your body
+in a `<!doctype>…<head>` skeleton (title, viewport, CSP) and serves it under a strict, sandboxed
+**Content-Security-Policy**:
 
 - ✅ inline `<style>` / `<script>`, `data:` URIs for images/fonts, self-contained pages
 - ❌ external `src`/`href` (CDN scripts, remote stylesheets, web fonts, remote images)
-- ❌ `fetch` / `XHR` / WebSocket to any host (`connect-src 'none'` by default)
+- ❌ `fetch` / `XHR` / WebSocket to any host (no `connect-src` → `default-src 'none'`)
 
-This is the same envelope that wraps Claude's own artifacts — it renders the page while neutering
-it as an attack or exfiltration vector. `hart publish --dry-run` returns the wrapped output + a
-CSP lint report so an agent can self-correct before shipping. Full spec: `CONTRACT.md` (M1).
+Same envelope that wraps Claude's own artifacts — it renders the page while neutering it as an
+attack or exfiltration vector. A **publish-time linter** rejects external refs + network calls
+(HTTP 422) unless you pass `--force`; `hart publish --dry-run` lints without storing. Full spec:
+[`CONTRACT.md`](CONTRACT.md).
+
+## Versioning
+
+Re-publishing the same `--owner/--artifact` appends a version; `latest` tracks newest, old
+versions are immutably pinned.
+
+- `/a/<owner>/<artifact>` or `…/latest` → newest
+- `/a/<owner>/<artifact>/v<n>` → a pinned version
+- `hart rollback <id> <v>` re-points latest (non-destructive)
+
+## Template + data (update without re-uploading)
+
+Publish a template **once**, then push just the **data** — it re-renders. Two mechanisms:
+`{{key}}` placeholders in the markup, and `window.HART_DATA` (a JS global your script/JSX reads).
+
+```sh
+hart publish chart.html --owner you --artifact sales
+hart data you/sales '{"points":[3,1,4,1,5]}'   # re-renders, same URL — great for agent-driven dashboards
+```
+
+## JSX
+
+`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a **same-origin**
+React+Babel runtime (`/_hart/runtime/*`) and transpiles **in the browser**. No build step, no CDN.
+`React`/`ReactDOM` are globals; render into `#root`.
+
+## Visibility & discovery
+
+- **unlisted** *(default)* — public read, not listed anywhere
+- **public** — public read + listed/searchable at **`/explore`** (global) and **`/o/<owner>`**
+  (per-owner); `hart explore [query]` is the JSON feed
+- **private** — **gated read**: browsers get a password **unlock page** (→ signed cookie); agents
+  send an **`X-Hart-Read-Key`** header (`HART_READ_KEY`)
+
+Set with `--visibility` / `--read-key` at publish, or change later with `hart visibility <id>
+<mode>` (no new version).
+
+## Ownership (write protection, even on a free instance)
+
+The first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to
+claim a namespace; then all writes to that owner require the key (else `403`). Anonymous (no-owner)
+artifacts get a random id. Free to create new stuff; your namespace stays yours.
 
 ## Command surface (agent-first)
 
-Every command prints **JSON on stdout**, structured errors on **stderr**, and uses **semantic
-exit codes** (`0` ok · `80–89` input · `90–99` resource · `100–109` integration · `110–119`
-internal). Non-interactive and idempotent. `hart help-json` introspects the whole contract.
+Every command prints **JSON on stdout**, structured errors on **stderr**, and uses **semantic exit
+codes** (`0` ok · `80–89` input · `90–99` resource · `100–109` integration · `110–119` internal).
+Non-interactive and idempotent. `hart guide` prints the full manual.
 
 | Command | Does |
 |---|---|
-| `hart publish <file> [--owner <who>] [--artifact <name>] [--title --format html\|jsx] [--dry-run --force]` | upload → `{id,url,version}`. `owner`+`artifact` ⇒ stable id `owner/artifact`; re-publishing appends a version |
-| `hart data <id> '<json>'` | update the artifact's live data — template re-renders (push just what changed) |
-| `hart versions <id>` / `hart rollback <id> <v>` | history + instant revert (non-destructive) |
-| `hart list [--owner <who>]` / `hart get <id>` / `hart rm <id>` | manage artifacts |
-| `hart serve [port]` | run the hosting daemon |
-| `hart login <token>` | store the client token in `~/.hart-token` |
+| `publish <file> [--owner --artifact --title --format html\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload → `{id,url,version}` |
+| `data <id> '<json>'` | update the live data — template re-renders |
+| `visibility <id> <unlisted\|public\|private> [--read-key --clear-read-key]` | change visibility |
+| `versions <id>` / `rollback <id> <v>` | history / instant revert |
+| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage artifacts |
+| `explore [query]` | public discovery feed (JSON) |
+| `serve [port]` | run the hosting daemon |
+| `login <token>` / `guide` | store creds / print the manual |
 
-URLs: `/a/<owner>/<artifact>` (or `/a/<id>`) → latest · `…/latest` · `…/v<n>` → immutable pin.
-JSX (`--format jsx`) is transpiled in-browser via a same-origin React+Babel runtime the daemon
-serves at `/_hart/runtime/*`.
-
-Env: `HART_URL` (daemon), `HART_TOKEN` (a single **optional** static token — set it on the daemon
-to require it for publishing, leave unset for a free/open instance; reads are always public),
-`HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`
-(daemon storage, e.g. `s3://bucket`).
+**Env** — client: `HART_URL`, `HART_TOKEN` (publish token, if the instance requires one),
+`HART_OWNER_KEY` (namespace write key), `HART_READ_KEY` (read a private artifact). Server:
+`HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10),
+`HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.
 
 ## Architecture
 
 ```
-  ┌──────────────┐   publish/update (HTTPS, token)   ┌───────────────────────────┐
-  │  any agent   │ ────────────────────────────────► │  hart serve  (MFL daemon) │
-  │  hart <cmd>  │ ◄──────────  {id,url,version} ──── │  ─ machweb HTTP server    │
-  └──────────────┘                                    │  ─ SQLite / S3 blob store │
-                                                      │  ─ versioned, content-CAS │
-   browser ── GET ─►  a.host/<id>  ── CSP-wrapped ───►│  ─ CSP + origin isolation │
-   (isolated artifact origin, default-deny CSP)       └───────────────────────────┘
+  ┌──────────────┐   publish/data/visibility (HTTP)   ┌──────────────────────────────┐
+  │  any agent   │ ─────────────────────────────────► │  hart serve  (one MFL binary)│
+  │  hart <cmd>  │ ◄─────────  {id,url,version}  ───── │  ─ machweb HTTP server        │
+  └──────────────┘                                     │  ─ SQLite store (artifacts,   │
+                                                       │      versions, owners)        │
+   browser ── GET ─►  /a/<owner>/<artifact>  ─────────►│  ─ doctype-wrap + strict CSP  │
+             (default-deny CSP; private = unlock page) │  ─ same-origin JSX runtime    │
+                                                       └──────────────────────────────┘
 ```
 
 - **One binary, two roles.** `hart <cmd>` is the client; `hart serve` is the daemon (same
-  `machin-backend` idioms: `machweb` router, `sqlite` store, signed sessions, pooled conns).
-- **Storage is BYOK.** `local` FS, embedded `sqlite` blobs, or a BYO **S3-compatible** bucket.
-- **Origin isolation.** Artifacts are served from a dedicated origin distinct from the API, so a
-  hostile page can't reach control-plane cookies. (Wildcard subdomain per artifact for the hosted
-  tier; path-based acceptable for self-host — see ROADMAP open questions.)
-- **Custom domains** via the hotify-cli (Traefik + Cloudflare + Let's Encrypt) pattern.
-
-## BYOK / open-core
-
-The OSS core (`hart serve` + CLI) is the whole product — self-host it for free, your storage,
-zero per-artifact cost. The **hosted tier** (M3) only sells not having to run it: flat monthly,
-you still BYO storage + domain, and bandwidth is the sole metered dimension. Same fair,
-predictable model as grepapi — a price for a *capability*, never a markup on commodity infra.
+  `machin-backend` idioms: `machweb` router, `sqlite` store, signed cookies).
+- **Storage is a single SQLite file** (`HART_DB`) — zero-dep, one file to back up.
+- **Sandbox.** Every artifact is served under a default-deny CSP; a hostile page can't reach the
+  network or external hosts. Signed-cookie unlock gates private artifacts.
 
 ## Build & verify
 
@@ -137,16 +182,11 @@ any host must be blocked by the CSP.
 
 **The agent-first artifact host.** Not a Netlify (human-first PaaS), not a Pastebin (no rendering,
 no safety) — the **publish primitive for the agent era**. Any terminal agent, any infra, one CLI
-call from HTML to URL.
+call from HTML to URL. See [VISION.md](VISION.md) and the running [ROADMAP.md](ROADMAP.md).
 
-## For the next agent
+## Status & license
 
-Read [VISION.md](VISION.md) → [ROADMAP.md](ROADMAP.md) (start at **M0**), then the
-`machin-backend` skill. First commit: `src/hart.src` with `serve` (machweb daemon + SQLite blob
-store + CSP-wrapped `/a/<id>`) and `publish` (POST a file, print `{url}`). Prove the loop; grow
-into the M1 contract + CLI. Resolve the five open questions at the end of ROADMAP.md before M1.
-
-## License
-
-Open-core. OSS core under a permissive license (TBD — MIT/Apache-2.0); hosted control plane is
-the commercial layer. Confirm at first real release.
+**Live and shipped:** publish (HTML/JSX) · versioning + rollback · CSP sandbox + linter · template
++ data · visibility (unlisted/public/private, gated read) · discovery (`/explore`, `/o/<owner>`) ·
+owner-claim keys · rate limits · `hart guide` / `/llms.txt`. Open-source, self-hosted — not a
+hosted service. License: TBD at first tagged release (MIT/Apache-2.0).

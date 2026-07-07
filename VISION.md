@@ -34,7 +34,7 @@ agent, from any terminal.
 even Claude Artifacts) is built for a *human* clicking a UI or wiring a CI pipeline. None expose
 a clean, non-interactive, JSON-in/JSON-out contract an agent can call blind and parse. `hart` is
 the opposite: the **primary user is a program**. JSON on stdout, structured errors on stderr,
-semantic exit codes, a `help-json` for introspection, deterministic idempotent publishes. No UI
+semantic exit codes, a `guide` command that prints the version-exact manual, deterministic idempotent publishes. No UI
 tax. That's the same unserved seam [[grepapi]] found for search and [[crm-cli]] found for CRM.
 
 **The hard part is the moat: safely hosting untrusted, agent-generated HTML.** Anyone can `scp`
@@ -62,10 +62,10 @@ it's what makes the security model tractable and the CLI a one-liner.
 
 | Layer | Who provides it |
 |---|---|
-| **Storage** (blobs) | **You** — local FS, SQLite blobs, or a BYO S3-compatible bucket |
-| **Domain** (custom vanity URL) | **You** — bring a domain; `hart` wires TLS + routing |
-| **Compute** | **You** for self-host; a thin control plane for the hosted tier |
-| **The publish contract, CSP sandbox, versioning, access control, CLI, gallery** | **hart** |
+| **Storage** (blobs) | **You** — a single SQLite file today; a BYO S3-compatible bucket is a parked option |
+| **Domain** (custom vanity URL) | **You** — bring a domain + reverse proxy |
+| **Compute** | **You** for self-host; a thin control plane if a hosted tier ever ships |
+| **The publish contract, CSP sandbox, versioning, template/data, visibility, CLI, gallery** | **hart** |
 
 - **Self-host** (OSS core): `hart serve` → your own artifact host, single binary, your storage,
   zero per-artifact cost. Free forever.

@@ -1,10 +1,20 @@
 # hart — Roadmap
 
 Built in **MFL / [machin](https://github.com/javimosch/machin)** — one static binary that is CLI
-*and* daemon (see the `machin-backend` skill: `machweb` HTTP server, `sqlite` store, signed
-sessions, the agent-first CLI contract). Phases are shippable and ordered so each proves the next
-is worth building. Dogfood target: replace the ad-hoc "write HTML to scratchpad" step every agent
-already does with `hart publish`.
+*and* daemon.
+
+> **Current state (2026-07-07):** hart is **live and shipped** — M0–M2 plus visibility, the
+> template/data engine, and agent onboarding. What's done: publish (HTML/JSX) · owner/artifact
+> addressing · versioning + rollback · CSP sandbox + publish-time linter · **JSX** (in-browser
+> transpile) · **template + data** (`hart data`) · **visibility** (unlisted/public/private, gated
+> read) · **discovery** (`/explore`, `/o/<owner>`) · owner-claim keys · rate limits · `hart guide`
+> / `/llms.txt` · a tagged binary Release. Live: **hart.intrane.fr**.
+>
+> **The milestone sections below are the original plan and running log** — kept for history. Some
+> shipped differently than first sketched (e.g. access control landed as `--visibility` not
+> `--private`/`share`; custom domains deferred; MCP rejected in favor of the CLI; storage is a
+> single SQLite file, not S3). The dated status notes at the bottom of each milestone reflect what
+> actually happened. **Remaining/optional:** M3 (a hosted tier) is demand-gated; BYO-S3 is parked.
 
 Legend: 🎯 goal · 📦 deliverable · ✅ done-when.
 
