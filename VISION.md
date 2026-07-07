@@ -110,11 +110,12 @@ bland-cli (call), and crm-cli (remember) in an agent-first tool suite: `hart` is
 ## The north-star loop
 
 ```
-  agent writes deliverable.html   ─┐
-  hart publish deliverable.html    │  →  { "url": "https://a.host/x7f…", "version": 3 }
-  agent hands the URL to the user ─┘
-        …user edits request…
-  hart update x7f deliverable.html →  same URL, new version, instant rollback available
+  agent writes deliverable.html                       ─┐
+  hart publish deliverable.html --owner u --artifact d │ →  {"url":"https://host/a/u/d","version":3}
+  agent hands the URL to the user                     ─┘
+        …data changes…                    hart data u/d '<json>'     → same URL, re-rendered
+        …user edits request…              hart publish … (same u/d)  → new version, latest moves
+                                          hart rollback u/d 2         → instant revert
 ```
 
 When that loop is one CLI call on every agent runtime, `hart` is the default way agents ship
