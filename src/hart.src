@@ -483,7 +483,50 @@ func unlock_page(id, errmsg) (res) {
     res = r
 }
 
-// POST /a/<id>/unlock  (form: key) — verify the read password, set a signed cookie, redirect.
+// unlock_success_page — shown after correct password entry. Displays the curl snippet
+// for agents/operators (blurred by default) with copy + toggle-blur buttons, plus a
+// link to view the artifact (cookie is already set).
+func unlock_success_page(id, key, req) (res) {
+    base := pubbase(req)
+    curl := "curl -s -H 'X-Hart-Read-Key: " + key + "' " + base + "/a/" + id
+    esc_curl := html_escape(curl)
+    body := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Unlocked · hart</title>"
+    body = body + "<style>"
+    body = body + "body{margin:0;background:#0e1216;color:#e8edf2;font:15px system-ui;min-height:100vh;display:grid;place-items:center}"
+    body = body + ".b{width:min(90vw,520px);text-align:center}"
+    body = body + ".ok{font-size:34px}h1{font-size:19px;font-weight:600;margin:14px 0 4px}"
+    body = body + "p{color:#8b97a4;font-size:13px;margin:0 0 20px}"
+    body = body + ".snip{background:#151b21;border:1px solid #232c34;border-radius:10px;padding:16px;margin:16px 0;text-align:left;position:relative}"
+    body = body + ".snip label{display:block;font:11px ui-monospace,monospace;color:#5c6773;margin-bottom:8px;letter-spacing:.05em;text-transform:uppercase}"
+    body = body + "pre{margin:0;font:13px ui-monospace,monospace;color:#3ad0c4;white-space:pre-wrap;word-break:break-all;transition:filter .15s}"
+    body = body + "pre.blurred{filter:blur(7px);user-select:none}"
+    body = body + ".btns{display:flex;gap:8px;justify-content:center;margin-top:14px}"
+    body = body + "button,.view{background:#3ad0c4;color:#062023;border:0;border-radius:8px;padding:10px 16px;font:600 13px system-ui;cursor:pointer;text-decoration:none;display:inline-block}"
+    body = body + "button.ghost{background:transparent;color:#8b97a4;border:1px solid #232c34}"
+    body = body + "button.ghost:hover{border-color:#3ad0c4;color:#3ad0c4}"
+    body = body + ".copied{color:#22c55e;font:12px system-ui;margin-top:8px;opacity:0;transition:opacity .2s}"
+    body = body + ".copied.show{opacity:1}"
+    body = body + "</style></head>"
+    body = body + "<body><div class=\"b\"><div class=\"ok\">🔓</div><h1>Unlocked</h1><p>Share this snippet with an agent or operator to fetch the artifact programmatically.</p>"
+    body = body + "<div class=\"snip\"><label>Agent curl command</label>"
+    body = body + "<pre id=\"curl\" class=\"blurred\">" + esc_curl + "</pre>"
+    body = body + "<div class=\"btns\">"
+    body = body + "<button class=\"ghost\" onclick=\"var e=document.getElementById('curl');e.classList.toggle('blurred');this.textContent=e.classList.contains('blurred')?'Show':'Hide'\">Show</button>"
+    body = body + "<button onclick=\"var t=document.getElementById('curl').textContent;navigator.clipboard.writeText(t);var c=document.getElementById('copied');c.classList.add('show');setTimeout(function(){c.classList.remove('show')},1500)\">Copy</button>"
+    body = body + "</div>"
+    body = body + "<div class=\"copied\" id=\"copied\">Copied to clipboard</div>"
+    body = body + "</div>"
+    body = body + "<div class=\"btns\"><a class=\"view\" href=\"/a/" + id + "\">View artifact →</a></div>"
+    body = body + "</div></body></html>"
+    r := response("200 OK", "text/html; charset=utf-8", body)
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")
+    r = with_header(r, "Cache-Control", "no-store")
+    res = r
+}
+
+// POST /a/<id>/unlock  (form: key) — verify the read password, set a signed cookie,
+// then show the success page with the blurred agent curl snippet (instead of a bare
+// redirect). The cookie lets the "View artifact" link work without re-entering the password.
 func h_unlock(req, id) (res) {
     db := opendb()
     arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
@@ -498,7 +541,7 @@ func h_unlock(req, id) (res) {
     }
     sec := cookie_secret()
     sqlite_close(db)
-    r := redirect("/a/" + id)
+    r := unlock_success_page(id, key, req)
     r = set_session(r, sec, read_cookie_name(id), kh)
     res = r
 }
@@ -618,6 +661,15 @@ func esc_attr(s) (o) {
     o = replace(s, "\"", "")
     o = replace(o, "<", "")
     o = replace(o, ">", "")
+}
+
+// html_escape — replace & < > " ' with HTML entities for safe inline display.
+func html_escape(s) (o) {
+    o = replace(s, "&", "&amp;")
+    o = replace(o, "<", "&lt;")
+    o = replace(o, ">", "&gt;")
+    o = replace(o, "\"", "&quot;")
+    o = replace(o, "'", "&#39;")
 }
 
 func serve_explore(req) (res) {
