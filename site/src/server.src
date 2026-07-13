@@ -5,7 +5,7 @@
 // components/ — no Node, no bundler).
 
 func page() (h) {
-    h = "<!doctype html><html lang=en><head><meta charset=utf-8>"
+    h = "<!doctype html><html lang=en class=dark><head><meta charset=utf-8>"
     h = h + "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
     h = h + "<title>" + app_name() + "</title>"
     h = h + "<style>" + tw_css_text() + "</style></head>"

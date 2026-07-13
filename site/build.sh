@@ -8,7 +8,7 @@ MACHIN="${MACHIN:-machin}"
 MWU="${MACHIN_WEB_UI:-machin-web-ui}"
 
 # 1. stylesheet: scan the app + components for Tailwind classes.
-"$MWU" css src components --theme theme.json -o web/tw.css
+"$MWU" css src components --dark-class --theme theme.json -o web/tw.css
 
 # 2. embed the generic JS host + the stylesheet (JSON escaping == MFL escaping).
 python3 - <<'PY' > src/assets_gen.src
