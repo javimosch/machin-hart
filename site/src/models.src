@@ -1,0 +1,36 @@
+// models.src — hart's landing page, composed from machin-web-ui components and
+// themed with hart's teal brand (theme.json). SHARED by the SSR server and the
+// wasm client (which just hydrates the static markup — no interactivity needed).
+
+func app_name() (s) { s = "hart" }
+
+func feature(title, body) (h) {
+    h = ui_card(title, "<p class=\"text-sm leading-6 text-muted\">" + body + "</p>")
+}
+
+func app_view(unused) (h) {
+    h = ui_navbar("hart", []string{"Docs", "GitHub", "Vision"}, []string{"#docs", "https://github.com/javimosch/hart", "#vision"}, "")
+
+    cta := "<a class=\"" + ui_button_classes("primary") + "\" href=\"https://github.com/javimosch/hart\">Get hart</a>"
+    cta = cta + "<a class=\"" + ui_button_classes("ghost") + "\" href=\"#docs\">Read the docs</a>"
+    h = h + ui_hero("Agent-first artifact host.", "Any terminal agent generates HTML; hart gives it a live, sandboxed, versioned URL. One static machin binary is both the CLI and the daemon. BYOK, open-core, self-hostable.", cta)
+
+    stats := "<div class=\"grid grid-cols-1 gap-3 sm:grid-cols-3\">"
+    stats = stats + ui_stat("binary", "one", "CLI + hosting daemon")
+    stats = stats + ui_stat("versions", "immutable", "v1/v2/latest, rollback")
+    stats = stats + ui_stat("runtime deps", "zero", "pure MFL, no Node")
+    stats = stats + "</div>"
+    h = h + stats
+
+    grid := "<div id=\"docs\" class=\"grid grid-cols-1 gap-6 md:grid-cols-3\">"
+    grid = grid + feature("Sandboxed by default", "Untrusted agent HTML is served under a strict CSP (default-src 'none', no external or network access) with frame/referrer hardening.")
+    grid = grid + feature("Content-addressed versions", "Every publish is immutable and hash-addressed; latest moves, old pins stay. Roll back to any v&lt;n&gt; forever.")
+    grid = grid + feature("Agent-first I/O", "JSON in, JSON out; semantic exit codes; no UI tax. Built for Cursor, aider, Codex, Gemini CLI, or your own.")
+    grid = grid + "</div>"
+    h = h + grid
+
+    pub := ui_code_block("publish an artifact", "hart publish report.html --title 'Q3 numbers'\n# -> id a1b2, version 1, https://hart.intrane.fr/a/a1b2/latest")
+    h = h + ui_card("", "<div class=\"flex flex-col gap-3\"><p class=\"text-sm text-muted\">The whole contract is one POST. The page is the request body; id/title/format are query params.</p>" + pub + "</div>")
+
+    h = h + "<div id=\"vision\">" + ui_footer("hart &mdash; the show arm of the agent-first stack. Built with <span class=\"text-ink\">machin</span> + machin-web-ui.", []string{"GitHub", "machin", "machin-web-ui"}, []string{"https://github.com/javimosch/hart", "https://github.com/javimosch/machin", "https://github.com/javimosch/machin-web-ui"}) + "</div>"
+}

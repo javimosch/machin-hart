@@ -1,0 +1,17 @@
+// code_block.src — command/code display: ink-on-bone block with an optional
+// title bar ("" to omit). Content is escaped; wraps long lines with x-scroll.
+
+func ui_code_block(title, code) (h) {
+    t := ""
+    if len(title) > 0 {
+        t = "<div class=\"border-b border-line dark:border-line-800 px-4 py-2 text-xs uppercase tracking-wider text-muted dark:text-muted-400\">" + ui_esc(title) + "</div>"
+    }
+    h = "<div class=\"overflow-hidden rounded-lg border border-line dark:border-line-800 bg-surface-100 dark:bg-surface-800\">" + t
+    h = h + "<pre class=\"overflow-x-auto px-4 py-3 text-sm text-ink dark:text-ink-100\">" + ui_esc(code) + "</pre>"
+    h = h + "</div>"
+}
+
+// inline code fragment
+func ui_code(code) (h) {
+    h = "<code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1.5 py-0.5 text-sm text-ink dark:text-ink-100\">" + ui_esc(code) + "</code>"
+}

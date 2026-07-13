@@ -1,0 +1,36 @@
+// toast.src — notifications. Two forms:
+//  - ui_toast: the single fixed toast (render hidden, toggle + patch its slot)
+//  - ui_toast_stack + ui_toast_item: STACKED toasts with queueing — render the
+//    empty stack container once; the client keeps a queue and re-renders the
+//    container (dom_mount) on push/expiry, using a host timer effect like
+//    `after(ms, key)` -> `timer_fired(key)` for auto-dismiss (gallery host.js).
+// Kind tints the left accent: "neutral", "green", "red".
+
+func ui_toast_classes(kind) (c) {
+    c = "pointer-events-auto flex items-center gap-3 rounded-md border border-line dark:border-line-800 bg-surface dark:bg-surface-900 px-4 py-3 text-sm text-ink dark:text-ink-100 border-l-2"
+    if kind == "green" { c = c + " border-l-ok-600 dark:border-l-ok-600" }
+    if kind == "red" { c = c + " border-l-danger-600 dark:border-l-danger-600" }
+    if kind == "neutral" { c = c + " border-l-muted-400 dark:border-l-muted-400" }
+}
+
+func ui_toast(id, slot_name, kind, open) (h) {
+    vis := " hidden"
+    if open { vis = "" }
+    h = "<div id=\"" + id + "\" class=\"fixed bottom-4 right-4 z-50" + vis + "\">"
+    h = h + "<div class=\"" + ui_toast_classes(kind) + "\"><span data-s=\"" + slot_name + "\"></span></div>"
+    h = h + "</div>"
+}
+
+// the fixed stack container (newest at the bottom); render once, empty
+func ui_toast_stack(id) (h) {
+    h = "<div id=\"" + id + "\" class=\"pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 max-w-full flex-col gap-2\"></div>"
+}
+
+// one stacked toast; `dismiss_action` + key wire the X button ("" for none)
+func ui_toast_item(msg, kind, dismiss_action, key) (h) {
+    h = "<div class=\"" + ui_toast_classes(kind) + " justify-between\"><span>" + ui_esc(msg) + "</span>"
+    if len(dismiss_action) > 0 {
+        h = h + "<button class=\"shrink-0 rounded px-1 text-muted-400 transition hover:bg-surface-100 dark:hover:bg-surface-800 hover:text-ink dark:hover:text-ink-100\" data-action=\"" + dismiss_action + "\" data-arg=\"" + str(key) + "\">&times;</button>"
+    }
+    h = h + "</div>"
+}

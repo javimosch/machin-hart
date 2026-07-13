@@ -1,0 +1,14 @@
+// card.src — flat bento card: white surface, hairline border, crisp radius,
+// generous padding, no shadow. `title` may be "" for a plain container.
+
+func ui_card_classes() (c) {
+    c = "rounded-lg border border-line dark:border-line-800 bg-surface dark:bg-surface-900 p-6"
+}
+
+func ui_card(title, body) (h) {
+    t := ""
+    if len(title) > 0 {
+        t = "<h3 class=\"mb-3 text-lg font-semibold tracking-tight\">" + ui_esc(title) + "</h3>"
+    }
+    h = "<section class=\"" + ui_card_classes() + "\">" + t + body + "</section>"
+}

@@ -1,0 +1,10 @@
+// stat.src — KPI tile: tiny uppercase label over a large figure, optional
+// quiet delta line ("" to omit). Compose inside a grid of ui_card-like tiles.
+
+func ui_stat(label, value, delta) (h) {
+    h = "<div class=\"rounded-lg border border-line dark:border-line-800 bg-surface dark:bg-surface-900 p-5\">"
+    h = h + "<p class=\"text-xs font-medium uppercase tracking-wider text-muted dark:text-muted-400\">" + ui_esc(label) + "</p>"
+    h = h + "<p class=\"mt-1 text-2xl font-semibold tracking-tight\">" + ui_esc(value) + "</p>"
+    if len(delta) > 0 { h = h + "<p class=\"mt-1 text-xs text-muted dark:text-muted-400\">" + ui_esc(delta) + "</p>" }
+    h = h + "</div>"
+}

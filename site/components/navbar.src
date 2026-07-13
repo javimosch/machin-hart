@@ -1,0 +1,16 @@
+// navbar.src — top bar: brand left, links right, hairline bottom border.
+// `active` marks one link by label.
+
+func ui_navbar(brand, labels, hrefs, active) (h) {
+    h = "<header class=\"flex items-center justify-between border-b border-line dark:border-line-800 pb-4\">"
+    h = h + "<span class=\"text-lg font-semibold tracking-tight\">" + ui_esc(brand) + "</span>"
+    h = h + "<nav class=\"flex items-center gap-5 text-sm\">"
+    i := 0
+    for _, l := range labels {
+        c := "text-muted dark:text-muted-400 hover:text-ink dark:hover:text-ink-100 transition"
+        if l == active { c = "font-medium text-ink dark:text-ink-100" }
+        h = h + "<a class=\"" + c + "\" href=\"" + hrefs[i] + "\">" + ui_esc(l) + "</a>"
+        i = i + 1
+    }
+    h = h + "</nav></header>"
+}
