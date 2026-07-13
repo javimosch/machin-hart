@@ -1,0 +1,21 @@
+// accordion.src — FAQ-style disclosure, no JS: native <details>/<summary>,
+// items separated only by hairline bottom borders (no container boxes).
+// `items` alternates question, answer, question, answer, ...
+
+func ui_accordion_item(q, a) (h) {
+    h = "<details class=\"group border-b border-line dark:border-line-800 py-3\">"
+    h = h + "<summary class=\"flex cursor-pointer items-center justify-between text-sm font-medium text-ink dark:text-ink-100\">" + ui_esc(q)
+    h = h + "<span class=\"text-muted-400\">+</span></summary>"
+    h = h + "<p class=\"pt-2 text-sm leading-6 text-muted dark:text-muted-400\">" + ui_esc(a) + "</p>"
+    h = h + "</details>"
+}
+
+func ui_accordion(items) (h) {
+    h = "<div class=\"flex flex-col\">"
+    i := 0
+    while i + 1 < len(items) {
+        h = h + ui_accordion_item(items[i], items[i + 1])
+        i = i + 2
+    }
+    h = h + "</div>"
+}

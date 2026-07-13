@@ -1,0 +1,11 @@
+// section_header.src — titled section opener: heading + quiet description on
+// the left, optional action markup on the right ("" to omit).
+
+func ui_section_header(title, desc, action) (h) {
+    h = "<div class=\"flex flex-wrap items-end justify-between gap-3\">"
+    h = h + "<div><h2 class=\"text-lg font-semibold tracking-tight\">" + ui_esc(title) + "</h2>"
+    if len(desc) > 0 { h = h + "<p class=\"mt-0.5 text-sm text-muted dark:text-muted-400\">" + ui_esc(desc) + "</p>" }
+    h = h + "</div>"
+    if len(action) > 0 { h = h + "<div class=\"shrink-0\">" + action + "</div>" }
+    h = h + "</div>"
+}

@@ -18,3 +18,10 @@ func ui_page_classes() (c) {
 func ui_main_classes() (c) {
     c = "mx-auto flex w-full max-w-6xl flex-col gap-6 p-6 md:p-10"
 }
+
+// ui_prose_classes — a NARROW reading column (~768px) for text-heavy pages:
+// docs, articles, long-form content. Comfortable measure (~70ch); pair with
+// prose-styled headings/paragraphs in your markup.
+func ui_prose_classes() (c) {
+    c = "mx-auto flex w-full max-w-3xl flex-col gap-6 p-6 md:p-10"
+}
