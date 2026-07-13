@@ -1,0 +1,15 @@
+// list_group.src — bordered stack of rows separated by hairlines. Each row is
+// primary text + quiet meta text; `items` alternates text, meta, text, meta...
+
+func ui_list_group(items) (h) {
+    h = "<div class=\"divide-y divide-line dark:divide-line-800 overflow-hidden rounded-lg border border-line dark:border-line-800 bg-surface dark:bg-surface-900\">"
+    i := 0
+    while i + 1 < len(items) {
+        h = h + "<div class=\"flex items-center justify-between px-4 py-3\">"
+        h = h + "<span class=\"text-sm text-ink dark:text-ink-100\">" + ui_esc(items[i]) + "</span>"
+        h = h + "<span class=\"text-xs text-muted dark:text-muted-400\">" + ui_esc(items[i + 1]) + "</span>"
+        h = h + "</div>"
+        i = i + 2
+    }
+    h = h + "</div>"
+}

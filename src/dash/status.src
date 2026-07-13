@@ -1,0 +1,98 @@
+// status.src — the operational INSTANCE-HOME dashboard for a running hart.
+// Served at /_status (and optionally /). Unlike the marketing landing (now on
+// GitHub Pages), this answers "you are on a running hart — here is how to use
+// THIS instance, and what it hosts." Server-rendered from the daemon's own DB,
+// styled with vendored machin-web-ui components (teal theme, dash_css()).
+
+func dash_page(inner) (h) {
+    h = "<!doctype html><html lang=en class=dark><head><meta charset=utf-8>"
+    h = h + "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
+    h = h + "<title>hart - instance status</title><style>" + dash_css() + "</style></head>"
+    h = h + "<body class=\"" + ui_page_classes() + "\">"
+    h = h + "<main class=\"" + ui_main_classes() + "\">" + inner + "</main></body></html>"
+}
+
+func dash_count(db, sql) (n) {
+    rows := sqlite_query(db, sql, []string{})
+    cs := parse(rows, []CntRow{})
+    n = 0
+    if len(cs) > 0 { n = cs[0].n }
+}
+
+func dash_bytes(db) (b) {
+    rows := sqlite_query(db, "SELECT COALESCE(SUM(LENGTH(html)),0) AS s FROM versions", []string{})
+    ss := parse(rows, []SumRow{})
+    b = 0
+    if len(ss) > 0 { b = ss[0].s }
+}
+
+func dash_hsize(n) (s) {
+    if n < 1024 { s = str(n) + " B"  return }
+    if n < 1048576 { s = str(n / 1024) + " KB"  return }
+    s = str(n / 1048576) + " MB"
+}
+
+func serve_status(req) (res) {
+    db := opendb()
+    base := pubbase(req)
+    nart := dash_count(db, "SELECT COUNT(*) AS n FROM artifacts")
+    nver := dash_count(db, "SELECT COUNT(*) AS n FROM versions")
+    nown := dash_count(db, "SELECT COUNT(DISTINCT owner) AS n FROM artifacts WHERE owner != ''")
+    bytes := dash_bytes(db)
+    listrows := sqlite_query(db, "SELECT id, owner, name, title, visibility, updated FROM artifacts WHERE visibility = 'public' ORDER BY updated DESC LIMIT 12", []string{})
+    arts := parse(listrows, []ListRow{})
+    sqlite_close(db)
+
+    // header
+    h := "<header class=\"flex flex-wrap items-center justify-between gap-3\">"
+    h = h + "<div class=\"flex items-center gap-3\"><h1 class=\"text-xl font-semibold tracking-tight\">hart</h1>"
+    h = h + ui_badge("instance", "info") + "</div>"
+    h = h + "<a class=\"text-sm text-muted hover:text-ink underline-offset-4 hover:underline\" href=\"" + base + "/explore\">explore &rarr;</a>"
+    h = h + "</header>"
+    h = h + "<p class=\"text-sm leading-6 text-muted\">You are on a running hart at <span class=\"text-ink\">" + ui_esc(base) + "</span> &mdash; the agent-first artifact host. Publish a self-contained HTML page and get a live, sandboxed URL back.</p>"
+
+    // stats
+    stats := "<div class=\"grid grid-cols-2 gap-3 md:grid-cols-4\">"
+    stats = stats + ui_stat("artifacts", str(nart), "hosted here")
+    stats = stats + ui_stat("versions", str(nver), "immutable, pinned")
+    stats = stats + ui_stat("owners", str(nown), "namespaces")
+    stats = stats + ui_stat("stored", dash_hsize(bytes), "rendered HTML")
+    stats = stats + "</div>"
+    h = h + stats
+
+    // publish-to-this-instance
+    pub := ui_code_block("publish to this instance", "export HART_URL=" + base + "\nhart publish page.html --owner you --artifact my-page\n# -> " + base + "/a/you/my-page")
+    h = h + ui_card("Publish here", "<div class=\"flex flex-col gap-3\"><p class=\"text-sm text-muted\">One POST; the page is the body. Or drive it with the CLI:</p>" + pub + "<p class=\"text-xs text-muted\">Full contract: <a class=\"text-accent hover:underline\" href=\"" + base + "/guide\">/guide</a> &middot; <a class=\"text-accent hover:underline\" href=\"" + base + "/llms.txt\">/llms.txt</a></p></div>")
+
+    // public artifacts table
+    if len(arts) > 0 {
+        rows := []string{}
+        for _, a := range arts {
+            title := a.title
+            if title == "" { title = a.id }
+            cells := ui_td("<a class=\"text-accent hover:underline\" href=\"" + base + "/a/" + a.id + "\">" + ui_esc(title) + "</a>")
+            cells = cells + ui_td("<span class=\"text-muted\">" + ui_esc(a.owner) + "</span>")
+            cells = cells + ui_td("<span class=\"text-muted\">" + time_format(a.updated, "%Y-%m-%d") + "</span>")
+            rows = append(rows, ui_tr(cells))
+        }
+        h = h + ui_card("Public artifacts", ui_table([]string{"artifact", "owner", "updated"}, rows))
+    } else {
+        h = h + ui_card("Public artifacts", "<p class=\"text-sm text-muted\">Nothing public yet. Published artifacts are unlisted by default; set visibility to <code class=\"rounded bg-surface-100 px-1 py-0.5 text-ink\">public</code> to list them here.</p>")
+    }
+
+    // limits + safety
+    lim := ui_list_group([]string{
+        "sandbox", "strict CSP - no external scripts, no network",
+        "versions", "immutable, hash-addressed, instant rollback",
+        "rate limit", "per-IP submit cap (HART_MAX_SUBMITS_PER_MIN)",
+        "namespace size", "per-owner cap (HART_MAX_OWNER_MB)"})
+    h = h + ui_card("Limits and safety", lim)
+
+    h = h + ui_footer("hart - one self-hosted binary. This is the instance status page.",
+        []string{"guide", "llms.txt", "GitHub"},
+        []string{base + "/guide", base + "/llms.txt", "https://github.com/javimosch/machin-hart"})
+
+    r := ok_html(dash_page(h))
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:")
+    res = r
+}

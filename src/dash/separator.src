@@ -1,0 +1,18 @@
+// separator.src — hairline divider, horizontal or vertical, with an optional
+// centered label on the horizontal form ("" for a plain line).
+
+func ui_separator(label) (h) {
+    if len(label) == 0 {
+        h = "<hr class=\"border-line dark:border-line-800\">"
+        return
+    }
+    h = "<div class=\"flex items-center gap-3\">"
+    h = h + "<hr class=\"flex-1 border-line dark:border-line-800\">"
+    h = h + "<span class=\"text-xs uppercase tracking-wider text-muted-400\">" + ui_esc(label) + "</span>"
+    h = h + "<hr class=\"flex-1 border-line dark:border-line-800\">"
+    h = h + "</div>"
+}
+
+func ui_separator_v() (h) {
+    h = "<span class=\"h-4 w-px bg-line dark:bg-surface-700\"></span>"
+}

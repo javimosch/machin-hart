@@ -1,0 +1,27 @@
+// ui.src — base helpers shared by every machin-web-ui component. Vendored into
+// your repo by `machin-web-ui add` (always included); edit freely, you own it.
+
+// ui_esc HTML-escapes user text before it lands in markup.
+func ui_esc(s) (e) {
+    e = replace(s, "&", "&amp;")
+    e = replace(e, "<", "&lt;")
+    e = replace(e, ">", "&gt;")
+    e = replace(e, "\"", "&quot;")
+}
+
+// ui_page wraps body markup in the app shell: warm bone canvas, centered
+// column, system font stack (minimalist editorial style — no webfonts, no CDN).
+func ui_page_classes() (c) {
+    c = "min-h-screen bg-canvas text-ink dark:bg-canvas-950 dark:text-ink-100 antialiased"
+}
+
+func ui_main_classes() (c) {
+    c = "mx-auto flex w-full max-w-6xl flex-col gap-6 p-6 md:p-10"
+}
+
+// ui_prose_classes — a NARROW reading column (~768px) for text-heavy pages:
+// docs, articles, long-form content. Comfortable measure (~70ch); pair with
+// prose-styled headings/paragraphs in your markup.
+func ui_prose_classes() (c) {
+    c = "mx-auto flex w-full max-w-3xl flex-col gap-6 p-6 md:p-10"
+}
