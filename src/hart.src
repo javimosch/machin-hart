@@ -763,10 +763,11 @@ func hart_route(req) (res) {
     p := req.path
     qi := index(p, "?")
     if qi >= 0 { p = substr(p, 0, qi) }
-    if p == "/" { return serve_landing() }
+    if p == "/" { if env("HART_HOME") == "dashboard" { return serve_status(req) }  return serve_landing() }
     if p == "/llms.txt" { return serve_llms(req) }
     if p == "/guide.md" || p == "/guide" { return serve_guide(req) }
     if p == "/_health" { return ok_json("{\"ok\":true,\"service\":\"hart\"}") }
+    if p == "/_status" || p == "/dashboard" { return serve_status(req) }
     if req.method == "GET" && has_prefix(p, "/_hart/runtime/") { return serve_runtime(substr(p, 15, len(p))) }
     if req.method == "POST" && p == "/v1/publish" { return h_publish(req) }
     if req.method == "POST" && p == "/v1/data" { return h_data(req) }

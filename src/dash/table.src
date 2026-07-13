@@ -1,0 +1,21 @@
+// table.src — document-style data table: tiny uppercase header row, hairline
+// row separators, no zebra, no outer chrome. `rows` is a slice of pre-built
+// `<td>...</td>` row strings (use ui_td / ui_tr to build them).
+
+func ui_td(cell) (h) {
+    h = "<td class=\"py-3 pr-4\">" + cell + "</td>"
+}
+
+func ui_tr(cells) (h) {
+    h = "<tr class=\"border-b border-line dark:border-line-800\">" + cells + "</tr>"
+}
+
+func ui_table(headers, rows) (h) {
+    h = "<table class=\"w-full text-left text-sm\"><thead><tr class=\"border-b border-line dark:border-line-800\">"
+    for _, hd := range headers {
+        h = h + "<th class=\"py-2 pr-4 text-xs font-medium uppercase tracking-wider text-muted dark:text-muted-400\">" + ui_esc(hd) + "</th>"
+    }
+    h = h + "</tr></thead><tbody>"
+    for _, r := range rows { h = h + r }
+    h = h + "</tbody></table>"
+}
