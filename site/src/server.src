@@ -30,9 +30,14 @@ func handle(req) (res) {
 func main() {
     fs := new_flags("app")
     fs = flag_int(fs, "port", "p", "48100", "HTTP port to listen on")
+    fs = flag_bool(fs, "render", "r", "print the static page to stdout and exit (for GitHub Pages export)")
     fs = parse_flags(fs, args())
     if flag_on(fs, "help") {
         println(flag_usage(fs))
+        return
+    }
+    if flag_on(fs, "render") {
+        print(page())
         return
     }
     port := flag_int_val(fs, "port")
