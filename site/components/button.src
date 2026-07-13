@@ -1,0 +1,16 @@
+// button.src — flat minimalist button. Variants: "primary" (solid ink),
+// "ghost" (hairline border), "danger". `action` becomes data-action, which the
+// generic host forwards to the matching wasm export on click ("" for none).
+
+func ui_button_classes(variant) (c) {
+    c = "inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-medium transition disabled:opacity-50 disabled:cursor-not-allowed"
+    if variant == "primary" { c = c + " bg-ink text-white hover:bg-ink-700 dark:bg-ink-100 dark:text-ink-900 dark:hover:bg-ink-300" }
+    if variant == "ghost" { c = c + " border border-line dark:border-line-800 bg-surface dark:bg-surface-900 text-ink dark:text-ink-100 hover:bg-surface-100 dark:hover:bg-surface-800" }
+    if variant == "danger" { c = c + " bg-danger-600 text-white hover:bg-danger-500" }
+}
+
+func ui_button(label, variant, action) (h) {
+    act := ""
+    if len(action) > 0 { act = " data-action=\"" + action + "\"" }
+    h = "<button class=\"" + ui_button_classes(variant) + "\"" + act + ">" + ui_esc(label) + "</button>"
+}

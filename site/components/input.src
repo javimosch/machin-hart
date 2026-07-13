@@ -1,0 +1,13 @@
+// input.src — text input: hairline border, quiet focus ring, no chrome.
+// `typ` is the input type ("text", "email", "password", "number", ...).
+
+func ui_input_classes() (c) {
+    c = "w-full rounded-md border border-line dark:border-line-800 bg-surface dark:bg-surface-900 px-3 py-2 text-sm text-ink dark:text-ink-100 placeholder:text-muted-400 dark:placeholder:text-muted-500 focus:outline-none focus:ring-2 focus:ring-line-300 dark:focus:ring-line-600 focus:border-line-300 dark:focus:border-line-600"
+}
+
+func ui_input(name, typ, placeholder, value) (h) {
+    h = "<input class=\"" + ui_input_classes() + "\" name=\"" + name + "\" type=\"" + typ + "\""
+    if len(placeholder) > 0 { h = h + " placeholder=\"" + ui_esc(placeholder) + "\"" }
+    if len(value) > 0 { h = h + " value=\"" + ui_esc(value) + "\"" }
+    h = h + ">"
+}

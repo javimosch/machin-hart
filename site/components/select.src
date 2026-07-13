@@ -1,0 +1,16 @@
+// select.src — native select styled to match ui_input. `options` are the
+// visible labels (value == label); `selected` marks one by label ("" for none).
+
+func ui_select_classes() (c) {
+    c = "w-full rounded-md border border-line dark:border-line-800 bg-surface dark:bg-surface-900 px-3 py-2 text-sm text-ink dark:text-ink-100 focus:outline-none focus:ring-2 focus:ring-line-300 dark:focus:ring-line-600 focus:border-line-300 dark:focus:border-line-600"
+}
+
+func ui_select(name, options, selected) (h) {
+    h = "<select class=\"" + ui_select_classes() + "\" name=\"" + name + "\">"
+    for _, o := range options {
+        sel := ""
+        if o == selected { sel = " selected" }
+        h = h + "<option value=\"" + ui_esc(o) + "\"" + sel + ">" + ui_esc(o) + "</option>"
+    }
+    h = h + "</select>"
+}

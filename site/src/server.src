@@ -1,0 +1,41 @@
+// server.src — the native binary: a CLI that runs an HTTP server. It serves
+// the SSR page (first paint works with JS off), its own wasm client, and a
+// JSON API. Composed with framework/machweb + framework/flags + models +
+// components (all resolved from the machin binary or vendored under
+// components/ — no Node, no bundler).
+
+func page() (h) {
+    h = "<!doctype html><html lang=en><head><meta charset=utf-8>"
+    h = h + "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
+    h = h + "<title>" + app_name() + "</title>"
+    h = h + "<style>" + tw_css_text() + "</style></head>"
+    h = h + "<body class=\"" + ui_page_classes() + "\">"
+    h = h + "<main id=app class=\"" + ui_main_classes() + "\">"
+    h = h + app_view("")
+    h = h + "</main>"
+    h = h + "<script type=module>" + host_js() + "</script>"
+    h = h + "</body></html>"
+}
+
+func handle(req) (res) {
+    if req.path == "/app.wasm" {
+        return ok_wasm(read_file_bytes("app.wasm"))   // one binary serves its own SPA
+    }
+    if has_prefix(req.path, "/api/health") {
+        return ok_json("{\"ok\":true,\"app\":\"" + app_name() + "\"}")
+    }
+    return ok_html(page())
+}
+
+func main() {
+    fs := new_flags("app")
+    fs = flag_int(fs, "port", "p", "48100", "HTTP port to listen on")
+    fs = parse_flags(fs, args())
+    if flag_on(fs, "help") {
+        println(flag_usage(fs))
+        return
+    }
+    port := flag_int_val(fs, "port")
+    println(app_name() + " on http://localhost:" + str(port))
+    serve(port, func(req) { return handle(req) })
+}

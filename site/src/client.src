@@ -1,0 +1,7 @@
+// client.src — the wasm client. hart's landing is static content, so the
+// client just hydrates the server-rendered markup (no interactivity).
+// Composed with framework/reactive + models + components, built to wasm.
+
+export func start() {
+    hydrate(app_view(""))
+}

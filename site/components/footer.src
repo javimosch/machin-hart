@@ -1,0 +1,14 @@
+// footer.src — quiet page footer above a hairline: left text, right link row.
+// `labels`/`hrefs` pair up for the links.
+
+func ui_footer(left, labels, hrefs) (h) {
+    h = "<footer class=\"mt-10 flex flex-wrap items-center justify-between gap-2 border-t border-line dark:border-line-800 pt-5 text-xs text-muted dark:text-muted-400\">"
+    h = h + "<span>" + left + "</span>"
+    h = h + "<nav class=\"flex items-center gap-4\">"
+    i := 0
+    for _, l := range labels {
+        h = h + "<a class=\"transition hover:text-ink dark:hover:text-ink-100\" href=\"" + hrefs[i] + "\">" + ui_esc(l) + "</a>"
+        i = i + 1
+    }
+    h = h + "</nav></footer>"
+}

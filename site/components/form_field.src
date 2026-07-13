@@ -1,0 +1,10 @@
+// form_field.src — label + control + quiet help line ("" to omit). Pass any
+// control markup (ui_input, ui_select, ...) as `control`.
+
+func ui_form_field(label, control, help) (h) {
+    h = "<label class=\"flex flex-col gap-1.5\">"
+    h = h + "<span class=\"text-sm font-medium text-ink dark:text-ink-100\">" + ui_esc(label) + "</span>"
+    h = h + control
+    if len(help) > 0 { h = h + "<span class=\"text-xs text-muted dark:text-muted-400\">" + ui_esc(help) + "</span>" }
+    h = h + "</label>"
+}
