@@ -140,11 +140,32 @@ Non-interactive and idempotent. `hart guide` prints the full manual.
 | `versions <id>` / `rollback <id> <v>` | history / instant revert |
 | `list [--owner <who>]` / `get <id>` / `rm <id>` | manage artifacts |
 | `explore [query]` | public discovery feed (JSON) |
+| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |
 | `serve [port]` | run the hosting daemon |
 | `login <token>` / `guide` | store creds / print the manual |
 
+## Admin — operator visibility (an instance you host)
+
+Running an instance others also use, but want to audit every artifact **your** agents/operators
+produced on your box? Set `HART_ADMIN_TOKEN` on the daemon — a god-token **separate** from
+`HART_TOKEN` (a publish token never grants admin). Then, from any operator machine:
+
+```sh
+export HART_ADMIN_TOKEN=<secret>        # or: hart admin login <secret>
+hart admin owners                       # → [{owner, artifacts, bytes, has_owner_key, updated}, …]
+hart admin list [--owner <who>]         # → [{id, owner, url, visibility, has_read_key, version, updated}, …]
+```
+
+Owner-keys and read-keys are stored **hashed**, so admin surfaces `has_owner_key` / `has_read_key`
+booleans — never the secret (to enter a private artifact, reset its key with `hart visibility <id>
+private --read-key <new>`). With `HART_ADMIN_TOKEN` unset the admin API is **off** (`403`), and on
+such multi-tenant instances a cross-owner `hart list` (no `--owner`) is admin-only — owner-scoped
+`list --owner X` is unaffected. It's your box and your SQLite file; this just exposes that reach
+over the CLI.
+
 **Env** — client: `HART_URL`, `HART_TOKEN` (publish token, if the instance requires one),
-`HART_OWNER_KEY` (namespace write key), `HART_READ_KEY` (read a private artifact). Server:
+`HART_OWNER_KEY` (namespace write key), `HART_READ_KEY` (read a private artifact),
+`HART_ADMIN_TOKEN` (operator admin API — cross-owner list; separate from `HART_TOKEN`). Server:
 `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10),
 `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.
 
