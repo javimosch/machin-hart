@@ -96,3 +96,153 @@ func serve_status(req) (res) {
     r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:")
     res = r
 }
+
+// ---- operator dashboard (/_fleet) -----------------------------------------
+// An admin-gated visual fleet cockpit: every owner + artifact (incl. unlisted/
+// private), views, freshness, and stale living-deliverables flagged. Auth is a
+// signed cookie holding the admin-token hash (rotating HART_ADMIN_TOKEN logs out
+// old cookies), set by posting the token to /_fleet/login. Renders the same data
+// the admin/stats/stale APIs return, server-side (nothing leaves the box).
+
+func admin_cookie() (n) { n = "hart_admin" }
+
+// admin_authed — 1 if the request carries a valid admin session cookie.
+func admin_authed(req) (ok) {
+    at := env("HART_ADMIN_TOKEN")
+    if at == "" { return 0 }
+    v, vok := get_session(req, cookie_secret(), admin_cookie())
+    if vok == 1 && v == to_hex(sha256_bytes(bytes(at))) { return 1 }
+    ok = 0
+}
+
+func fleet_login_page(errmsg) (res) {
+    em := ""
+    if errmsg != "" { em = "<p class=\"mt-3 text-xs text-danger-400\">" + ui_esc(errmsg) + "</p>" }
+    inner := "<div class=\"mx-auto max-w-sm\">"
+    inner = inner + "<header class=\"mb-4 flex items-center gap-3\"><h1 class=\"text-xl font-semibold tracking-tight\">hart</h1>" + ui_badge("operator", "blue") + "</header>"
+    inner = inner + ui_card("Operator sign-in", "<form method=\"POST\" action=\"/_fleet/login\" class=\"flex flex-col gap-3\"><p class=\"text-sm text-muted\">Enter the instance admin token (<code class=\"rounded bg-surface-100 px-1 py-0.5 text-ink\">HART_ADMIN_TOKEN</code>) to view the fleet.</p><input type=\"password\" name=\"token\" placeholder=\"admin token\" autofocus autocomplete=\"current-password\" class=\"w-full rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm text-ink\"><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">View fleet</button>" + em + "</form>")
+    inner = inner + "</div>"
+    r := response("401 Unauthorized", "text/html; charset=utf-8", dash_page(inner))
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'self'")
+    r = with_header(r, "Cache-Control", "no-store")
+    res = r
+}
+
+func h_fleet_login(req) (res) {
+    at := env("HART_ADMIN_TOKEN")
+    if at == "" { return response("404 Not Found", "text/plain; charset=utf-8", "operator dashboard disabled (set HART_ADMIN_TOKEN)") }
+    if query_form(req, "token") != at { return fleet_login_page("Wrong admin token.") }
+    r := response("303 See Other", "text/html; charset=utf-8", "")
+    r = with_header(r, "Location", "/_fleet")
+    r = set_session(r, cookie_secret(), admin_cookie(), to_hex(sha256_bytes(bytes(at))))
+    res = r
+}
+
+func h_fleet_logout(req) (res) {
+    r := response("303 See Other", "text/html; charset=utf-8", "")
+    r = with_header(r, "Location", "/_fleet")
+    r = set_session(r, cookie_secret(), admin_cookie(), "")   // value can't match the token hash -> deauthed
+    res = r
+}
+
+// vis_badge — a colored visibility pill.
+func vis_badge(v) (h) {
+    k := "neutral"
+    if v == "public" { k = "green" }
+    if v == "private" { k = "blue" }
+    h = ui_badge(v, k)
+}
+
+func serve_fleet(req) (res) {
+    if env("HART_ADMIN_TOKEN") == "" { return response("404 Not Found", "text/plain; charset=utf-8", "operator dashboard disabled (set HART_ADMIN_TOKEN)") }
+    if admin_authed(req) == 0 { return fleet_login_page("") }
+    db := opendb()
+    base := pubbase(req)
+    n := now()
+    nart := dash_count(db, "SELECT COUNT(*) AS n FROM artifacts")
+    nown := dash_count(db, "SELECT COUNT(DISTINCT owner) AS n FROM artifacts WHERE owner != ''")
+    nviews := dash_count(db, "SELECT COALESCE(SUM(total),0) AS n FROM views")
+    nstale := dash_count(db, "SELECT COUNT(*) AS n FROM artifacts WHERE fresh_ttl > 0 AND (" + str(n) + " - updated) > fresh_ttl")
+    bytes := dash_bytes(db)
+    ownrows := sqlite_query(db, "SELECT a.owner AS owner, COUNT(DISTINCT a.id) AS cnt, MAX(a.updated) AS updated, COALESCE(SUM(LENGTH(v.html)),0) AS bytes, CASE WHEN o.key_hash IS NOT NULL AND o.key_hash != '' THEN 1 ELSE 0 END AS has_key FROM artifacts a LEFT JOIN versions v ON v.artifact_id = a.id LEFT JOIN owners o ON o.owner = a.owner GROUP BY a.owner ORDER BY bytes DESC", []string{})
+    owns := parse(ownrows, []AdmOwn{})
+    artrows := sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views, a.fresh_ttl AS fresh_ttl FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id ORDER BY a.updated DESC LIMIT 500", []string{})
+    arts := parse(artrows, []AdmArt{})
+    sqlite_close(db)
+
+    // header
+    h := "<header class=\"flex flex-wrap items-center justify-between gap-3\">"
+    h = h + "<div class=\"flex items-center gap-3\"><h1 class=\"text-xl font-semibold tracking-tight\">hart</h1>" + ui_badge("operator", "blue") + "</div>"
+    h = h + "<div class=\"flex items-center gap-4 text-sm\"><a class=\"text-muted hover:text-ink hover:underline\" href=\"" + base + "/explore\">explore &rarr;</a><a class=\"text-muted hover:text-ink hover:underline\" href=\"/_fleet/logout\">sign out</a></div>"
+    h = h + "</header>"
+    h = h + "<p class=\"text-sm leading-6 text-muted\">Every artifact on <span class=\"text-ink\">" + ui_esc(base) + "</span> across all owners &mdash; the operator view (admin-gated). Views are counted server-side; stale = a living deliverable past its freshness SLA.</p>"
+
+    // stat tiles
+    stale_delta := "all fresh"
+    if nstale > 0 { stale_delta = "need a refresh" }
+    stats := "<div class=\"grid grid-cols-2 gap-3 md:grid-cols-5\">"
+    stats = stats + ui_stat("artifacts", str(nart), "all owners")
+    stats = stats + ui_stat("owners", str(nown), "namespaces")
+    stats = stats + ui_stat("views", str(nviews), "total, server-side")
+    stats = stats + ui_stat("stale", str(nstale), stale_delta)
+    stats = stats + ui_stat("stored", dash_hsize(bytes), "rendered HTML")
+    stats = stats + "</div>"
+    h = h + stats
+
+    // stale living deliverables (prominent, only if any)
+    if nstale > 0 {
+        srows := []string{}
+        for _, a := range arts {
+            if a.fresh_ttl > 0 && (n - a.updated) > a.fresh_ttl {
+                cells := ui_td("<a class=\"text-accent hover:underline\" href=\"" + base + "/a/" + a.id + "\">" + ui_esc(a.id) + "</a>")
+                cells = cells + ui_td(ui_badge("stale " + human_dur(n - a.updated), "red"))
+                cells = cells + ui_td("<span class=\"text-muted\">SLA " + human_dur(a.fresh_ttl) + "</span>")
+                srows = append(srows, ui_tr(cells))
+            }
+        }
+        h = h + ui_card("Stale living deliverables", ui_table([]string{"artifact", "quiet for", "sla"}, srows))
+    }
+
+    // owners
+    if len(owns) > 0 {
+        orows := []string{}
+        for _, o := range owns {
+            oname := o.owner
+            if oname == "" { oname = "(anonymous)" }
+            key := ui_badge("open", "neutral")
+            if o.has_key == 1 { key = ui_badge("keyed", "green") }
+            cells := ui_td("<a class=\"text-accent hover:underline\" href=\"" + base + "/o/" + o.owner + "\">" + ui_esc(oname) + "</a>")
+            cells = cells + ui_td("<span class=\"text-ink\">" + str(o.cnt) + "</span>")
+            cells = cells + ui_td("<span class=\"text-muted\">" + dash_hsize(o.bytes) + "</span>")
+            cells = cells + ui_td(key)
+            orows = append(orows, ui_tr(cells))
+        }
+        h = h + ui_card("Owners", ui_table([]string{"owner", "artifacts", "stored", "namespace"}, orows))
+    }
+
+    // all artifacts
+    arows := []string{}
+    for _, a := range arts {
+        title := a.title
+        if title == "" { title = a.name }
+        stbadge := ""
+        if a.fresh_ttl > 0 {
+            if (n - a.updated) > a.fresh_ttl { stbadge = " " + ui_badge("stale", "red") } else { stbadge = " " + ui_badge("live", "green") }
+        }
+        cells := ui_td("<a class=\"text-accent hover:underline\" href=\"" + base + "/a/" + a.id + "\">" + ui_esc(a.id) + "</a>" + stbadge)
+        cells = cells + ui_td(vis_badge(a.visibility))
+        cells = cells + ui_td("<span class=\"text-ink\">" + str(a.views) + "</span>")
+        cells = cells + ui_td("<span class=\"text-muted\">v" + str(a.latest) + " &middot; " + human_dur(n - a.updated) + " ago</span>")
+        arows = append(arows, ui_tr(cells))
+    }
+    h = h + ui_card("All artifacts", ui_table([]string{"artifact", "visibility", "views", "updated"}, arows))
+
+    h = h + ui_footer("hart operator dashboard - admin-gated, server-rendered from this instance's DB.",
+        []string{"guide", "admin API", "GitHub"},
+        []string{base + "/guide", base + "/guide#admin-operator-god-mode", "https://github.com/javimosch/machin-hart"})
+
+    r := ok_html(dash_page(h))
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'self'")
+    r = with_header(r, "Cache-Control", "no-store")
+    res = r
+}
