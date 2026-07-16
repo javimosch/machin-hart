@@ -164,6 +164,55 @@ func rate_ok(db, ip) (ok) {
     ok = 1
 }
 
+// ---- peage overage (optional) ----------------------------------------------
+// A caller past the free rate limit can pay per call by resending with an
+// X-Peage-Wallet header: the charge goes through the peage rail
+// (https://peage.intrane.fr) as merchant PEAGE_MERCHANT_KEY at
+// HART_PEAGE_PRICE_CENTS (default 1). Unconfigured instances keep the plain
+// 429 — metering is additive, never a new failure mode.
+
+func hart_peage_price() (c) {
+    c = parse_int(env("HART_PEAGE_PRICE_CENTS"))
+    if env("HART_PEAGE_PRICE_CENTS") == "" { c = 1 }
+}
+
+// peage_overage — called only when rate_ok said no. ok=1: the caller paid, proceed.
+// ok=0: res is the refusal to return (429, or peage's 402/403 passed through).
+func peage_overage(req, kind) (ok, res) {
+    ok = 0
+    w := header(req, "x-peage-wallet")
+    key := env("PEAGE_MERCHANT_KEY")
+    hint := ""
+    if key != "" { hint = " — or pay per call: resend with an X-Peage-Wallet header (see https://peage.intrane.fr/llms.txt)" }
+    if w == "" || key == "" {
+        res = response("429 Too Many Requests", "application/json", "{\"ok\":false,\"error\":\"rate limit: max " + str(max_submits_per_min()) + " submits/min — slow down" + hint + "\"}")
+        return ok, res
+    }
+    price := hart_peage_price()
+    body := "{\"wallet_token\":" + json(w) + ",\"amount_cents\":" + str(price) + ",\"memo\":" + json("hart " + kind)
+    idem := header(req, "x-peage-idempotency")
+    if idem != "" { body = body + ",\"idempotency_key\":" + json(idem) }
+    body = body + "}"
+    api := env("PEAGE_URL")
+    if api == "" { api = "https://peage.intrane.fr" }
+    status, resp, herr := http_request("POST", api + "/v1/charge", []string{"content-type: application/json", "authorization: Bearer " + key}, body)
+    if herr != "" {
+        res = response("429 Too Many Requests", "application/json", "{\"ok\":false,\"error\":\"rate limit (and the peage rail is unreachable right now) — slow down and retry\"}")
+        return ok, res
+    }
+    if status == 200 {
+        rc, _ := json_get(resp, ".receipt")
+        write(2, "{\"event\":\"peage_overage\",\"kind\":" + json(kind) + ",\"amount_cents\":" + str(price) + ",\"receipt\":" + rc + "}\n")
+        ok = 1
+        return ok, res
+    }
+    st := "402 Payment Required"
+    if status == 403 { st = "403 Forbidden" }
+    if status == 404 { st = "404 Not Found" }
+    res = response(st, "application/json", resp)
+    return ok, res
+}
+
 // owner_bytes — total stored HTML bytes for an owner (quota accounting).
 func owner_bytes(db, owner) (n) {
     srows := sqlite_query(db, "SELECT COALESCE(SUM(LENGTH(v.html)),0) AS s FROM versions v JOIN artifacts a ON v.artifact_id = a.id WHERE a.owner = ?", []string{owner})
@@ -270,8 +319,12 @@ func h_publish(req) (res) {
     if rk != "" { rkh = to_hex(sha256_bytes(bytes(rk))) }
     body := req.body
     if body == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty body\"}") }
-    // abuse limits: per-IP submit rate + per-owner storage quota (both customizable)
-    if rate_ok(db, hart_client_ip(req)) == 0 { sqlite_close(db); return response("429 Too Many Requests", "application/json", "{\"ok\":false,\"error\":\"rate limit: max " + str(max_submits_per_min()) + " submits/min — slow down\"}") }
+    // abuse limits: per-IP submit rate + per-owner storage quota (both customizable);
+    // past the rate limit an X-Peage-Wallet header buys the call (peage_overage)
+    if rate_ok(db, hart_client_ip(req)) == 0 {
+        pok, pres := peage_overage(req, "publish overage")
+        if pok == 0 { sqlite_close(db); return pres }
+    }
     if owner_bytes(db, owner) + len(body) > max_owner_bytes() { sqlite_close(db); return response("413 Payload Too Large", "application/json", "{\"ok\":false,\"error\":\"storage quota exceeded for owner '" + owner + "': max " + str(max_owner_bytes() / 1048576) + " MB total\"}") }
     // publish-time safety lint (see lint()); hard violations block unless ?force=1
     report := lint(body)
@@ -319,7 +372,10 @@ func h_publish(req) (res) {
 func h_data(req) (res) {
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    if rate_ok(db, hart_client_ip(req)) == 0 { sqlite_close(db); return response("429 Too Many Requests", "application/json", "{\"ok\":false,\"error\":\"rate limit\"}") }
+    if rate_ok(db, hart_client_ip(req)) == 0 {
+        pok, pres := peage_overage(req, "data overage")
+        if pok == 0 { sqlite_close(db); return pres }
+    }
     owner := slugify(query(req, "owner"))
     artifact := slugify(query(req, "artifact"))
     id := query(req, "id")
