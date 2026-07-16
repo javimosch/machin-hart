@@ -65,7 +65,7 @@ set -euo pipefail
 # rotate <name-glob> <keep>: keep the newest <keep> matches in \$DIR, delete the rest.
 # find does the wildcard match (no shell glob needed) so this is portable across bash/zsh/sh.
 DIR="$DIR"
-rotate() { find "\$DIR" -maxdepth 1 -name "\$1" -printf '%T@ %p\n' 2>/dev/null | sort -rn | tail -n +\$(( \$2 + 1 )) | cut -d' ' -f2- | xargs -r sudo rm -f; }
+rotate() { find "\$DIR" -maxdepth 1 -name "\$1" -printf '%T@\t%p\n' 2>/dev/null | sort -rn | tail -n +\$(( \$2 + 1 )) | cut -f2- | xargs -r sudo rm -f; }
 sudo chmod +x "\$DIR/hart.new"
 if [ "$DB_BACKUP" = 1 ] && [ -f "\$DIR/hart.db" ]; then
   sudo cp -a "\$DIR/hart.db" "\$DIR/hart.db.bak-$TS"
@@ -81,6 +81,12 @@ echo "  binary backup: hart.bin.bak-$TS ; service: \$(systemctl is-active $SERVI
 curl -fsS "http://127.0.0.1:$PORT/_health" && echo
 REMOTE_EOF
 )
-run "ssh $HOST '$REMOTE'"
+# Pipe the script to the host's shell via stdin — no outer quoting to collide with the
+# single-quotes inside REMOTE (e.g. find's -printf format). set -e on the remote aborts on error.
+if [ "$DRY" = 1 ]; then
+  echo "DRY  ssh $HOST bash -s <<'REMOTE'"; echo "$REMOTE"; echo "REMOTE"
+else
+  printf '%s\n' "$REMOTE" | ssh "$HOST" bash -s
+fi
 
-echo "deploy: done${DRY:+ (dry-run)}"
+if [ "$DRY" = 1 ]; then echo "deploy: done (dry-run)"; else echo "deploy: done"; fi
