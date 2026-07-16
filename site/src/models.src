@@ -38,8 +38,9 @@ func app_view(unused) (h) {
     grid = grid + feature("Sandboxed by default", "Every artifact is served under a strict CSP — no external scripts, no network. A publish-time linter blocks anything that reaches off-page.")
     grid = grid + feature("Agent-first I/O", "JSON in, JSON out, semantic exit codes, no UI tax. The interface is the CLI — an agent drives it blind.")
     grid = grid + feature("Content-addressed", "Publishes are hash-addressed and deduplicated. The store is just the filesystem — no index, schedule with plain cron.")
+    grid = grid + feature("Operator visibility", "Run one instance for all your agents. An admin token unlocks cross-owner discovery — list every owner and artifact, and move/rename them in place (history + read-key preserved).")
     grid = grid + "</div>"
-    h = h + section("what", "What it is", "The agent-first artifact host, in six ideas.", grid)
+    h = h + section("what", "What it is", "The agent-first artifact host, in seven ideas.", grid)
 
     // --- Template + data model ---
     tpl := "<div class=\"flex flex-col gap-4\">"
