@@ -148,6 +148,7 @@ Non-interactive and idempotent. `hart guide` prints the full manual.
 | `visibility <id> <unlisted\|public\|private> [--read-key --clear-read-key]` | change visibility |
 | `versions <id>` / `rollback <id> <v>` | history / instant revert |
 | `list [--owner <who>]` / `get <id>` / `rm <id>` | manage artifacts |
+| `stats <id>` | living-deliverable analytics — views, last view, freshness, top referrers (server-side, CSP-safe) |
 | `explore [query]` | public discovery feed (JSON) |
 | `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |
 | `serve [port]` | run the hosting daemon |

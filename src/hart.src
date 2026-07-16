@@ -14,7 +14,10 @@ type SumRow struct { s int }
 type CntRow struct { n int }
 type OwnerRow struct { owner string  key_hash string  created int }
 type ListRow struct { id string  owner string  name string  title string  visibility string  updated int }
-type AdmArt struct { id string  owner string  name string  title string  latest int  visibility string  read_key_hash string  updated int }
+type AdmArt struct { id string  owner string  name string  title string  latest int  visibility string  read_key_hash string  updated int  views int }
+type StatArt struct { id string  owner string  latest int  visibility string  updated int  data_updated int }
+type StatRow struct { total int  last_view int }
+type RefRow struct { host string  count int }
 type AdmOwn struct { owner string  cnt int  updated int  bytes int  has_key int }
 
 // the strict render sandbox — same envelope idea as Claude artifacts: renders the page while
@@ -51,6 +54,36 @@ func opendb() (db) {
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS versions(artifact_id TEXT, version INTEGER, title TEXT, format TEXT, html TEXT, hash TEXT, created INTEGER, PRIMARY KEY(artifact_id, version))", []string{})
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS hits(ip TEXT, ts INTEGER)", []string{})   // per-IP submit rate window
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS owners(owner TEXT PRIMARY KEY, key_hash TEXT DEFAULT '', created INTEGER)", []string{})   // namespace claim keys
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN data_updated INTEGER DEFAULT 0", []string{})   // last `hart data` push (living-deliverable freshness)
+    // living-deliverable analytics: server-side view counting (CSP blocks any client-side beacon,
+    // so the only privacy-respecting count is the HTTP GET the daemon serves). Aggregate counters,
+    // no event log -> O(1) storage, nothing to prune, no cookies/JS/third-party trackers.
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS views(artifact_id TEXT PRIMARY KEY, total INTEGER DEFAULT 0, last_view INTEGER DEFAULT 0)", []string{})
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS view_referers(artifact_id TEXT, host TEXT, count INTEGER DEFAULT 0, PRIMARY KEY(artifact_id, host))", []string{})
+}
+
+// referer_host — the bare host of an inbound Referer header ("" -> "direct"). Self-referrals
+// (same host the client hit) are dropped so internal navigation doesn't pollute the breakdown.
+func referer_host(ref, ownhost) (h) {
+    h = "direct"
+    if ref == "" { return "direct" }
+    r := ref
+    ci := index(r, "://")
+    if ci >= 0 { r = substr(r, ci + 3, len(r)) }
+    si := index(r, "/")
+    if si >= 0 { r = substr(r, 0, si) }
+    if r == "" { return "direct" }
+    if r == ownhost { return "" }   // self — skip
+    h = r
+}
+
+// record_view — count one authorized render of an artifact (aggregate upserts). Best-effort:
+// never blocks or fails the serve.
+func record_view(db, id, req) {
+    n := now()
+    sqlite_exec(db, "INSERT INTO views(artifact_id, total, last_view) VALUES(?,1,?) ON CONFLICT(artifact_id) DO UPDATE SET total = total + 1, last_view = excluded.last_view", []string{id, str(n)})
+    h := referer_host(header(req, "referer"), header(req, "host"))
+    if h != "" { sqlite_exec(db, "INSERT INTO view_referers(artifact_id, host, count) VALUES(?,?,1) ON CONFLICT(artifact_id, host) DO UPDATE SET count = count + 1", []string{id, h}) }
 }
 
 // owner_authorized — the namespace claim model (works even when the instance is free/tokenless):
@@ -298,7 +331,7 @@ func h_data(req) (res) {
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact — publish the template first\"}") }
     if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
-    sqlite_exec(db, "UPDATE artifacts SET data = ?, updated = ? WHERE id = ?", []string{body, str(now()), id})
+    sqlite_exec(db, "UPDATE artifacts SET data = ?, updated = ?, data_updated = ? WHERE id = ?", []string{body, str(now()), str(now()), id})
     sqlite_close(db)
     base := pubbase(req)
     res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"data_bytes\":" + str(len(body)) + ",\"url\":\"" + base + "/a/" + id + "\"}")
@@ -359,9 +392,9 @@ func h_admin_list(req) (res) {
     owner := slugify(query(req, "owner"))
     rows := ""
     if owner != "" {
-        rows = sqlite_query(db, "SELECT id, owner, name, title, latest, visibility, read_key_hash, updated FROM artifacts WHERE owner = ? ORDER BY updated DESC LIMIT 1000", []string{owner})
+        rows = sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id WHERE a.owner = ? ORDER BY a.updated DESC LIMIT 1000", []string{owner})
     } else {
-        rows = sqlite_query(db, "SELECT id, owner, name, title, latest, visibility, read_key_hash, updated FROM artifacts ORDER BY updated DESC LIMIT 1000", []string{})
+        rows = sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id ORDER BY a.updated DESC LIMIT 1000", []string{})
     }
     sqlite_close(db)
     arts := parse(rows, []AdmArt{})
@@ -373,7 +406,7 @@ func h_admin_list(req) (res) {
         if i > 0 { out = out + "," }
         hrk := "false"
         if ar.read_key_hash != "" { hrk = "true" }
-        out = out + "{\"id\":\"" + ar.id + "\",\"owner\":\"" + ar.owner + "\",\"name\":\"" + ar.name + "\",\"title\":\"" + jesc(ar.title) + "\",\"version\":" + str(ar.latest) + ",\"visibility\":\"" + ar.visibility + "\",\"has_read_key\":" + hrk + ",\"updated\":" + str(ar.updated) + ",\"url\":\"" + base + "/a/" + ar.id + "\"}"
+        out = out + "{\"id\":\"" + ar.id + "\",\"owner\":\"" + ar.owner + "\",\"name\":\"" + ar.name + "\",\"title\":\"" + jesc(ar.title) + "\",\"version\":" + str(ar.latest) + ",\"visibility\":\"" + ar.visibility + "\",\"has_read_key\":" + hrk + ",\"views\":" + str(ar.views) + ",\"updated\":" + str(ar.updated) + ",\"url\":\"" + base + "/a/" + ar.id + "\"}"
         i = i + 1
     }
     out = out + "]}"
@@ -412,6 +445,47 @@ func h_admin_mv(req) (res) {
     sqlite_close(db)
     base := pubbase(req)
     res = ok_json("{\"ok\":true,\"moved\":{\"from\":\"" + from + "\",\"to\":\"" + nnid + "\"},\"owner\":\"" + nowner + "\",\"name\":\"" + nname + "\",\"version\":" + str(ss[0].latest) + ",\"url\":\"" + base + "/a/" + nnid + "\"}")
+}
+
+// stats_authorized — READ gate for an artifact's stats: no side effects (unlike owner_authorized,
+// which claims an unclaimed owner). Open for an unclaimed/keyless owner; else needs the owner-key.
+func stats_authorized(db, owner, req) (ok) {
+    if owner == "" { return 1 }
+    rows := sqlite_query(db, "SELECT owner, key_hash, created FROM owners WHERE owner = ?", []string{owner})
+    os := parse(rows, []OwnerRow{})
+    if len(os) == 0 { return 1 }
+    if os[0].key_hash == "" { return 1 }
+    k := header(req, "x-hart-owner-key")
+    if k != "" { if to_hex(sha256_bytes(bytes(k))) == os[0].key_hash { return 1 } }
+    ok = 0
+}
+
+// GET /v1/artifacts/<id>/stats — living-deliverable analytics: total views, last view, freshness
+// (last publish + last data push), and top inbound referrers. Gated to the owner (owner-key) or an
+// admin; open for an unclaimed owner. View counts are server-side (CSP blocks client beacons).
+func h_stats(db, req, id) (res) {
+    arows := sqlite_query(db, "SELECT id, owner, latest, visibility, updated, data_updated FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []StatArt{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if check_admin(req) == 0 && stats_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key (--owner-key / HART_OWNER_KEY) or the admin token\"}") }
+    vrows := sqlite_query(db, "SELECT total, last_view FROM views WHERE artifact_id = ?", []string{id})
+    vs := parse(vrows, []StatRow{})
+    total := 0
+    last_view := 0
+    if len(vs) > 0 { total = vs[0].total; last_view = vs[0].last_view }
+    rrows := sqlite_query(db, "SELECT host, count FROM view_referers WHERE artifact_id = ? ORDER BY count DESC LIMIT 10", []string{id})
+    rfs := parse(rrows, []RefRow{})
+    sqlite_close(db)
+    refs := "["
+    i := 0
+    for i < len(rfs) {
+        if i > 0 { refs = refs + "," }
+        refs = refs + "{\"host\":\"" + jesc(rfs[i].host) + "\",\"count\":" + str(rfs[i].count) + "}"
+        i = i + 1
+    }
+    refs = refs + "]"
+    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + ars[0].owner + "\",\"version\":" + str(ars[0].latest) + ",\"visibility\":\"" + ars[0].visibility + "\",\"views\":" + str(total) + ",\"last_view\":" + str(last_view) + ",\"updated\":" + str(ars[0].updated) + ",\"data_updated\":" + str(ars[0].data_updated) + ",\"referrers\":" + refs + "}"
+    res = ok_json(out)
 }
 
 func h_versions(db, req, id) (res) {
@@ -568,6 +642,7 @@ func serve_artifact(db, req, id, ver) (res) {
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain; charset=utf-8", "artifact not found") }
     // private (gated) read: valid header or unlock cookie, else the unlock page
     if read_authorized(db, id, ars[0].read_key_hash, req) == 0 { r := unlock_page(id, ""); sqlite_close(db); return r }
+    record_view(db, id, req)   // authorized render -> count it (server-side; CSP blocks client beacons)
     v := ver
     if v == 0 { v = ars[0].latest }
     data := ars[0].data
@@ -828,7 +903,7 @@ func guide_md(base, authline) (g) {
     g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
     g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). Anonymous (no-owner) artifacts get a random id.\n\n"
     g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
-    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
+    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
     g = g + "## Env\n\n`HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key) · `HART_READ_KEY` (read key for a private artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.\n\nSource + releases: https://github.com/javimosch/machin-hart\n"
 }
 
@@ -846,7 +921,7 @@ func skill_md(base, authline) (s) {
     s = s + "## Setup (once)\n\n```sh\nexport HART_URL=" + base + "\n# if this instance requires a publish token: `hart login <token>` (or set HART_TOKEN)\n```\nNo `hart` binary on PATH? Every write is a plain HTTP POST — curl works (see the manual).\n\n"
     s = s + "## Publish — the core loop\n\n```sh\nhart publish deliverable.html --owner <you> --artifact <name>\n# -> {\"ok\":true,\"url\":\"" + base + "/a/<you>/<name>\",\"version\":1, ...}\n```\nParse `.url` from the JSON and hand it to the human. Re-publish the same `--owner/--artifact` to append a version (`latest` moves; old versions stay pinned; `hart rollback <id> <v>` reverts).\n\n"
     s = s + "## The contract (do this or publish is rejected)\n\nPages must be **self-contained**: inline ALL CSS/JS, embed images/fonts as `data:` URIs. Served under a strict CSP — **no external scripts/styles/fonts, no network** (`fetch`/XHR/WebSocket blocked). A linter rejects external refs (HTTP 422); `--dry-run` lints without storing, `--force` overrides. JSX: add `--format jsx` (in-browser React+Babel, no build step; render into `#root`).\n\n"
-    s = s + "## Living deliverables — update data without re-uploading\n\nPublish a template once, then push just the data; the same URL re-renders. The page reads `{{key}}` placeholders and/or the `window.HART_DATA` global.\n\n```sh\nhart publish chart.html --owner <you> --artifact sales\nhart data <you>/sales '{\"points\":[3,1,4,1,5]}'   # same URL, fresh render\n```\nGreat for status boards / dashboards an agent keeps current on a cron.\n\n"
+    s = s + "## Living deliverables — update data without re-uploading\n\nPublish a template once, then push just the data; the same URL re-renders. The page reads `{{key}}` placeholders and/or the `window.HART_DATA` global.\n\n```sh\nhart publish chart.html --owner <you> --artifact sales\nhart data <you>/sales '{\"points\":[3,1,4,1,5]}'   # same URL, fresh render\n```\nGreat for status boards / dashboards an agent keeps current on a cron. Check how a page is doing with `hart stats <you>/sales` — views, last view, freshness, top referrers (server-side, privacy-respecting).\n\n"
     s = s + "## Discover what you published\n\n```sh\nhart list --owner <you>          # your artifacts (JSON: id, title, latest, updated)\nhart get <owner>/<artifact>      # one artifact's metadata + versions\nhart explore [query]             # public discovery feed across the instance\n```\nOperators of an instance they host can set `HART_ADMIN_TOKEN` and use `hart admin owners` / `hart admin list` to discover **every** owner's artifacts (cross-owner) — the fleet-wide view.\n\n"
     s = s + "## Visibility\n\n`--visibility unlisted` (default: public-read, unlisted) · `public` (listed at `/explore`) · `private` (password-gated; agents send `X-Hart-Read-Key` / `HART_READ_KEY`). Set at publish (`--visibility --read-key`) or later via `hart visibility <id> <mode>`.\n\n"
     s = s + "## Full manual\n\nRun `hart guide` or GET `" + base + "/guide.md` — every command, flag, and the admin API, version-exact. AI-first sitemap: `" + base + "/llms.txt`.\n"
@@ -973,6 +1048,9 @@ func hart_route(req) (res) {
         if req.method == "GET" && has_suffix(tail, "/versions") {
             db := opendb(); return h_versions(db, req, substr(tail, 0, len(tail) - 9))
         }
+        if req.method == "GET" && has_suffix(tail, "/stats") {
+            db := opendb(); return h_stats(db, req, substr(tail, 0, len(tail) - 6))
+        }
         if req.method == "POST" && has_suffix(tail, "/rollback") {
             return h_rollback(req, substr(tail, 0, len(tail) - 9), parse_int(query(req, "to")))
         }
@@ -1094,6 +1172,22 @@ func cmd_skill() {
     al := "**free/open** — no token needed to publish"
     if env("HART_TOKEN") != "" { al = "publishing requires a token (set via `hart login <token>`)" }
     say(skill_md(hart_url(), al))
+}
+
+// hart stats <id> — living-deliverable analytics (views, last view, freshness, top referrers).
+// Sends the owner-key (for a claimed owner) and the admin token if present; either grants access.
+func cmd_stats(a) {
+    if len(a) < 3 { die(80, "usage: hart stats <id>  (views, last view, freshness, referrers)") }
+    h := []string{}
+    at := admin_token()
+    if at != "" { h = append(h, "authorization: Bearer " + at) }
+    ok := owner_key_of(a)
+    if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/stats", h, "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status == 403 { write(2, resp + "\n"); exit(80) }
+    if status != 200 { die(90, "stats failed (" + str(status) + ")") }
+    say(resp)
 }
 
 func cmd_get(a) {
@@ -1236,7 +1330,7 @@ func cmd_versions(a) {
 }
 
 func cmd_help() {
-    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private --read-key <pw> --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"visibility\":\"visibility <id> <unlisted|public|private> [--read-key <pw> --clear-read-key]\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id>\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"skill\":\"skill (print a drop-in agent SKILL.md; self-install: hart skill > ~/.claude/skills/hart/SKILL.md)\",\"admin\":\"admin <owners|list [--owner <who>]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
+    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private --read-key <pw> --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"visibility\":\"visibility <id> <unlisted|public|private> [--read-key <pw> --clear-read-key]\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id>\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"stats\":\"stats <id> (views, last view, freshness, top referrers; server-side, CSP-safe)\",\"skill\":\"skill (print a drop-in agent SKILL.md; self-install: hart skill > ~/.claude/skills/hart/SKILL.md)\",\"admin\":\"admin <owners|list [--owner <who>]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
 }
 
 func main() {
@@ -1256,6 +1350,7 @@ func main() {
     if cmd == "explore" { cmd_explore(a); return }
     if cmd == "guide" { cmd_guide(); return }
     if cmd == "skill" { cmd_skill(); return }
+    if cmd == "stats" { cmd_stats(a); return }
     if cmd == "rm" { cmd_rm(a); return }
     if cmd == "admin" { cmd_admin(a); return }
     write(2, "{\"ok\":false,\"error\":\"unknown command: " + cmd + "\"}\n")
