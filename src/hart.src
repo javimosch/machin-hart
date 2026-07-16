@@ -852,6 +852,38 @@ func skill_md(base, authline) (s) {
     s = s + "## Full manual\n\nRun `hart guide` or GET `" + base + "/guide.md` — every command, flag, and the admin API, version-exact. AI-first sitemap: `" + base + "/llms.txt`.\n"
 }
 
+// install_sh — a POSIX-sh installer served instance-aware at /install.sh, so
+// `curl -fsSL <base>/install.sh | sh` drops the `hart` CLI on PATH already pointed at THIS
+// instance (HART_URL baked to `base`). Pulls the binary from the repo's latest GitHub Release.
+func install_sh(base) (s) {
+    s = "#!/bin/sh\n"
+    s = s + "# hart installer — drop the `hart` CLI on your PATH so any agent can publish HTML to a live URL.\n"
+    s = s + "# Usage: curl -fsSL " + base + "/install.sh | sh      (override target dir with HART_INSTALL_DIR=)\n"
+    s = s + "set -e\n"
+    s = s + "REPO=javimosch/machin-hart\n"
+    s = s + "HART_URL_DEFAULT=" + base + "\n"
+    s = s + "DIR=\"${HART_INSTALL_DIR:-$HOME/.local/bin}\"\n"
+    s = s + "os=$(uname -s); arch=$(uname -m)\n"
+    s = s + "case \"$os/$arch\" in\n"
+    s = s + "  Linux/x86_64) asset=hart-linux-x86_64 ;;\n"
+    s = s + "  *) echo \"hart: no prebuilt binary for $os/$arch — build from source: https://github.com/$REPO\" >&2; exit 1 ;;\n"
+    s = s + "esac\n"
+    s = s + "url=\"https://github.com/$REPO/releases/latest/download/$asset\"\n"
+    s = s + "mkdir -p \"$DIR\"\n"
+    s = s + "echo \"hart: downloading $asset -> $DIR/hart\" >&2\n"
+    s = s + "if command -v curl >/dev/null 2>&1; then curl -fsSL \"$url\" -o \"$DIR/hart\";\n"
+    s = s + "elif command -v wget >/dev/null 2>&1; then wget -qO \"$DIR/hart\" \"$url\";\n"
+    s = s + "else echo \"hart: need curl or wget\" >&2; exit 1; fi\n"
+    s = s + "chmod +x \"$DIR/hart\"\n"
+    s = s + "if \"$DIR/hart\" help >/dev/null 2>&1; then echo \"hart: installed -> $DIR/hart\" >&2; else echo \"hart: installed -> $DIR/hart (could not execute it — ensure libssl3 + libsqlite3 are present)\" >&2; fi\n"
+    s = s + "case \":$PATH:\" in *\":$DIR:\"*) ;; *) echo \"hart: NOTE $DIR is not on your PATH — add it\" >&2 ;; esac\n"
+    s = s + "echo \"\" >&2\n"
+    s = s + "echo \"next:\" >&2\n"
+    s = s + "echo \"  export HART_URL=$HART_URL_DEFAULT\" >&2\n"
+    s = s + "echo \"  hart publish page.html --owner you --artifact my-page   # -> a live URL\" >&2\n"
+    s = s + "echo \"  hart skill > ~/.claude/skills/hart/SKILL.md             # make agents publish here by default\" >&2\n"
+}
+
 // llms_txt — the concise /llms.txt (the llms.txt convention): an at-a-glance orientation + links.
 func llms_txt(base, authline) (t) {
     t = "# hart\n\n> The agent-first artifact host: publish self-contained HTML or JSX from any terminal agent and get a live, versioned, sandboxed URL. One static binary = CLI + daemon. Open-source, self-hostable.\n\n"
@@ -868,6 +900,7 @@ func llms_txt(base, authline) (t) {
     t = t + "## Map (AI-first sitemap)\n\n"
     t = t + "- **" + base + "/guide.md** — the complete, version-exact manual (every command, flags, admin, examples). Start here. Also `hart guide`.\n"
     t = t + "- " + base + "/skill.md — a drop-in agent SKILL.md (self-install: `hart skill > ~/.claude/skills/hart/SKILL.md`). Also `hart skill`.\n"
+    t = t + "- " + base + "/install.sh — one-line CLI install: `curl -fsSL " + base + "/install.sh | sh` (drops `hart` on PATH, pre-pointed at this instance).\n"
     t = t + "- " + base + "/llms.txt — this file (30-second orientation).\n"
     t = t + "- " + base + "/explore — public discovery feed (HTML); `" + base + "/v1/public?q=` for JSON.\n"
     t = t + "- " + base + "/o/<owner> — an owner's public artifacts.\n"
@@ -899,6 +932,12 @@ func serve_skill(req) (res) {
     res = r
 }
 
+func serve_install(req) (res) {
+    r := response("200 OK", "text/x-shellscript; charset=utf-8", install_sh(pubbase(req)))
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'")
+    res = r
+}
+
 // the root page — the product landing (OSS, self-hosted). Served from HART_LANDING (default
 // ./landing.html); falls back to a one-line notice if the file isn't deployed.
 func serve_landing() (res) {
@@ -919,6 +958,7 @@ func hart_route(req) (res) {
     if p == "/llms.txt" { return serve_llms(req) }
     if p == "/guide.md" || p == "/guide" { return serve_guide(req) }
     if p == "/skill.md" || p == "/skill" { return serve_skill(req) }
+    if p == "/install.sh" { return serve_install(req) }
     if p == "/_health" { return ok_json("{\"ok\":true,\"service\":\"hart\"}") }
     if p == "/_status" || p == "/dashboard" { return serve_status(req) }
     if req.method == "GET" && has_prefix(p, "/_hart/runtime/") { return serve_runtime(substr(p, 15, len(p))) }

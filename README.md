@@ -36,6 +36,14 @@ lock-in.
 
 ## Use an existing instance (fastest)
 
+Install the CLI in one line — it drops `hart` on your PATH already pointed at that instance:
+
+```sh
+curl -fsSL https://hart.intrane.fr/install.sh | sh
+```
+
+Then publish:
+
 ```sh
 export HART_URL=https://hart.intrane.fr
 hart publish page.html --owner you --artifact my-page
