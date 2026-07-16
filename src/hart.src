@@ -845,8 +845,13 @@ func llms_txt(base, authline) (t) {
     t = t + "- JSX: add `--format jsx` (transpiled in-browser, no build step).\n"
     t = t + "- Update without re-uploading: `hart data you/name '<json>'` -> the page reads `window.HART_DATA` and/or `{{key}}`.\n"
     t = t + "- Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`).\n\n"
-    t = t + "## Full guide\n\n"
-    t = t + "- Complete manual: " + base + "/guide.md  (or run `hart guide`)\n"
+    t = t + "## Map (AI-first sitemap)\n\n"
+    t = t + "- **" + base + "/guide.md** — the complete, version-exact manual (every command, flags, admin, examples). Start here. Also `hart guide`.\n"
+    t = t + "- " + base + "/llms.txt — this file (30-second orientation).\n"
+    t = t + "- " + base + "/explore — public discovery feed (HTML); `" + base + "/v1/public?q=` for JSON.\n"
+    t = t + "- " + base + "/o/<owner> — an owner's public artifacts.\n"
+    t = t + "- " + base + "/a/<owner>/<artifact>[/latest|/v<n>] — a published artifact.\n"
+    t = t + "- " + base + "/_health — liveness JSON. " + base + "/_status — instance dashboard.\n"
     t = t + "- Source & self-host: https://github.com/javimosch/machin-hart\n"
 }
 
