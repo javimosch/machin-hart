@@ -63,6 +63,7 @@ curl -X POST 'https://hart.intrane.fr/v1/publish?owner=you&artifact=my-page' \
 # 1. get the binary — from a Release, or build it (needs `machin` on PATH)
 ./runtime/fetch.sh        # seed the JSX runtime (react/react-dom/babel)
 ./build.sh                # → ./hart   (vendors framework/machweb.src)
+./test.sh                 # optional: 38-check end-to-end regression suite (boots a throwaway daemon)
 
 # 2. run the daemon (SQLite store, your box). Free/open by default.
 HART_DB=~/.hart.db HART_RUNTIME_DIR=./runtime HART_LANDING=./landing.html ./hart serve 8799 &
