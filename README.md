@@ -154,7 +154,12 @@ produced on your box? Set `HART_ADMIN_TOKEN` on the daemon — a god-token **sep
 export HART_ADMIN_TOKEN=<secret>        # or: hart admin login <secret>
 hart admin owners                       # → [{owner, artifacts, bytes, has_owner_key, updated}, …]
 hart admin list [--owner <who>]         # → [{id, owner, url, visibility, has_read_key, version, updated}, …]
+hart admin mv <old-id> <new-owner/new-name>   # move/rename in place — keeps version history + read-key
 ```
+
+`admin mv` renames an artifact and **all its versions** to a new owner/name — history, visibility,
+live data, and read-key are preserved (nothing re-uploaded); the old URL 404s. e.g. `hart admin mv
+am/fleet-monitor intrane/am-fleet-monitor`.
 
 Owner-keys and read-keys are stored **hashed**, so admin surfaces `has_owner_key` / `has_read_key`
 booleans — never the secret (to enter a private artifact, reset its key with `hart visibility <id>
