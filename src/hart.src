@@ -14,10 +14,11 @@ type SumRow struct { s int }
 type CntRow struct { n int }
 type OwnerRow struct { owner string  key_hash string  created int }
 type ListRow struct { id string  owner string  name string  title string  visibility string  updated int }
-type AdmArt struct { id string  owner string  name string  title string  latest int  visibility string  read_key_hash string  updated int  views int }
-type StatArt struct { id string  owner string  latest int  visibility string  updated int  data_updated int }
+type AdmArt struct { id string  owner string  name string  title string  latest int  visibility string  read_key_hash string  updated int  views int  fresh_ttl int }
+type StatArt struct { id string  owner string  latest int  visibility string  updated int  data_updated int  fresh_ttl int }
 type StatRow struct { total int  last_view int }
 type RefRow struct { host string  count int }
+type StaleRow struct { id string  owner string  updated int  data_updated int  fresh_ttl int }
 type AdmOwn struct { owner string  cnt int  updated int  bytes int  has_key int }
 
 // the strict render sandbox — same envelope idea as Claude artifacts: renders the page while
@@ -55,6 +56,7 @@ func opendb() (db) {
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS hits(ip TEXT, ts INTEGER)", []string{})   // per-IP submit rate window
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS owners(owner TEXT PRIMARY KEY, key_hash TEXT DEFAULT '', created INTEGER)", []string{})   // namespace claim keys
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN data_updated INTEGER DEFAULT 0", []string{})   // last `hart data` push (living-deliverable freshness)
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN fresh_ttl INTEGER DEFAULT 0", []string{})   // freshness SLA in seconds (0 = not a monitored living deliverable) -> `hart stale`
     // living-deliverable analytics: server-side view counting (CSP blocks any client-side beacon,
     // so the only privacy-respecting count is the HTTP GET the daemon serves). Aggregate counters,
     // no event log -> O(1) storage, nothing to prune, no cookies/JS/third-party trackers.
@@ -84,6 +86,14 @@ func record_view(db, id, req) {
     sqlite_exec(db, "INSERT INTO views(artifact_id, total, last_view) VALUES(?,1,?) ON CONFLICT(artifact_id) DO UPDATE SET total = total + 1, last_view = excluded.last_view", []string{id, str(n)})
     h := referer_host(header(req, "referer"), header(req, "host"))
     if h != "" { sqlite_exec(db, "INSERT INTO view_referers(artifact_id, host, count) VALUES(?,?,1) ON CONFLICT(artifact_id, host) DO UPDATE SET count = count + 1", []string{id, h}) }
+}
+
+// human_dur — a compact age string for the stale report (37s / 12m / 5h / 3d).
+func human_dur(s) (o) {
+    if s < 60 { return str(s) + "s" }
+    if s < 3600 { return str(s / 60) + "m" }
+    if s < 86400 { return str(s / 3600) + "h" }
+    o = str(s / 86400) + "d"
 }
 
 // owner_authorized — the namespace claim model (works even when the instance is free/tokenless):
@@ -352,11 +362,12 @@ func h_publish(req) (res) {
         // visibility/read-key only change if explicitly provided (re-publish keeps them otherwise)
         if query(req, "visibility") != "" { sqlite_exec(db, "UPDATE artifacts SET visibility = ? WHERE id = ?", []string{vis, id}) }
         if rk != "" { sqlite_exec(db, "UPDATE artifacts SET read_key_hash = ? WHERE id = ?", []string{rkh, id}) }
+        if query(req, "fresh") != "" { sqlite_exec(db, "UPDATE artifacts SET fresh_ttl = ? WHERE id = ?", []string{str(parse_int(query(req, "fresh"))), id}) }
         vis = ars[0].visibility
         if query(req, "visibility") != "" { vis = query(req, "visibility") }
     } else {
         if id == "" { id = nid() }
-        sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, visibility, read_key_hash, created, updated) VALUES(?,?,?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), vis, rkh, str(n), str(n)})
+        sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, visibility, read_key_hash, created, updated, fresh_ttl) VALUES(?,?,?,?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), vis, rkh, str(n), str(n), str(parse_int(query(req, "fresh")))})
     }
     hash := to_hex(sha256_bytes(bytes(body)))
     sqlite_exec(db, "INSERT INTO versions(artifact_id, version, title, format, html, hash, created) VALUES(?,?,?,?,?,?,?)", []string{id, str(ver), title, format, body, hash, str(n)})
@@ -448,13 +459,14 @@ func h_admin_list(req) (res) {
     owner := slugify(query(req, "owner"))
     rows := ""
     if owner != "" {
-        rows = sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id WHERE a.owner = ? ORDER BY a.updated DESC LIMIT 1000", []string{owner})
+        rows = sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views, a.fresh_ttl AS fresh_ttl FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id WHERE a.owner = ? ORDER BY a.updated DESC LIMIT 1000", []string{owner})
     } else {
-        rows = sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id ORDER BY a.updated DESC LIMIT 1000", []string{})
+        rows = sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views, a.fresh_ttl AS fresh_ttl FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id ORDER BY a.updated DESC LIMIT 1000", []string{})
     }
     sqlite_close(db)
     arts := parse(rows, []AdmArt{})
     base := pubbase(req)
+    n := now()
     out := "{\"ok\":true,\"artifacts\":["
     i := 0
     for i < len(arts) {
@@ -462,7 +474,9 @@ func h_admin_list(req) (res) {
         if i > 0 { out = out + "," }
         hrk := "false"
         if ar.read_key_hash != "" { hrk = "true" }
-        out = out + "{\"id\":\"" + ar.id + "\",\"owner\":\"" + ar.owner + "\",\"name\":\"" + ar.name + "\",\"title\":\"" + jesc(ar.title) + "\",\"version\":" + str(ar.latest) + ",\"visibility\":\"" + ar.visibility + "\",\"has_read_key\":" + hrk + ",\"views\":" + str(ar.views) + ",\"updated\":" + str(ar.updated) + ",\"url\":\"" + base + "/a/" + ar.id + "\"}"
+        stale := "false"
+        if ar.fresh_ttl > 0 && (n - ar.updated) > ar.fresh_ttl { stale = "true" }
+        out = out + "{\"id\":\"" + ar.id + "\",\"owner\":\"" + ar.owner + "\",\"name\":\"" + ar.name + "\",\"title\":\"" + jesc(ar.title) + "\",\"version\":" + str(ar.latest) + ",\"visibility\":\"" + ar.visibility + "\",\"has_read_key\":" + hrk + ",\"views\":" + str(ar.views) + ",\"fresh_ttl\":" + str(ar.fresh_ttl) + ",\"stale\":" + stale + ",\"updated\":" + str(ar.updated) + ",\"url\":\"" + base + "/a/" + ar.id + "\"}"
         i = i + 1
     }
     out = out + "]}"
@@ -520,7 +534,7 @@ func stats_authorized(db, owner, req) (ok) {
 // (last publish + last data push), and top inbound referrers. Gated to the owner (owner-key) or an
 // admin; open for an unclaimed owner. View counts are server-side (CSP blocks client beacons).
 func h_stats(db, req, id) (res) {
-    arows := sqlite_query(db, "SELECT id, owner, latest, visibility, updated, data_updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, latest, visibility, updated, data_updated, fresh_ttl FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []StatArt{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     if check_admin(req) == 0 && stats_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key (--owner-key / HART_OWNER_KEY) or the admin token\"}") }
@@ -540,7 +554,78 @@ func h_stats(db, req, id) (res) {
         i = i + 1
     }
     refs = refs + "]"
-    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + ars[0].owner + "\",\"version\":" + str(ars[0].latest) + ",\"visibility\":\"" + ars[0].visibility + "\",\"views\":" + str(total) + ",\"last_view\":" + str(last_view) + ",\"updated\":" + str(ars[0].updated) + ",\"data_updated\":" + str(ars[0].data_updated) + ",\"referrers\":" + refs + "}"
+    stale := "false"
+    if ars[0].fresh_ttl > 0 && (now() - ars[0].updated) > ars[0].fresh_ttl { stale = "true" }
+    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + ars[0].owner + "\",\"version\":" + str(ars[0].latest) + ",\"visibility\":\"" + ars[0].visibility + "\",\"views\":" + str(total) + ",\"last_view\":" + str(last_view) + ",\"updated\":" + str(ars[0].updated) + ",\"data_updated\":" + str(ars[0].data_updated) + ",\"fresh_ttl\":" + str(ars[0].fresh_ttl) + ",\"stale\":" + stale + ",\"referrers\":" + refs + "}"
+    res = ok_json(out)
+}
+
+// POST /v1/fresh?id=&ttl=  — set an artifact's freshness SLA (seconds; 0 clears it). Owner-key
+// protected like other mutations. A monitored living deliverable (ttl>0) shows up in `hart stale`
+// once (now - updated) exceeds ttl.
+func h_fresh(req) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    id := query(req, "id")
+    if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need --id\"}") }
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
+    ttl := parse_int(query(req, "ttl"))
+    if ttl < 0 { ttl = 0 }
+    sqlite_exec(db, "UPDATE artifacts SET fresh_ttl = ? WHERE id = ?", []string{str(ttl), id})
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"fresh_ttl\":" + str(ttl) + "}")
+}
+
+// GET /v1/stale?owner=&older_than=  — the staleness signal: living deliverables that went quiet.
+// Without older_than: flag artifacts past their own SLA (fresh_ttl>0 && age>fresh_ttl). With
+// older_than=<seconds>: an ad-hoc scan of everything older than that. Cross-owner is admin-only;
+// owner-scoped is open (unclaimed) or owner-key gated. hart emits the signal; the agent alerts.
+func h_stale(req) (res) {
+    db := opendb()
+    owner := slugify(query(req, "owner"))
+    ot := parse_int(query(req, "older_than"))
+    if ot < 0 { ot = 0 }
+    if owner == "" {
+        if check_admin(req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"cross-owner stale is admin-only — pass --owner, or set HART_ADMIN_TOKEN\"}") }
+    } else {
+        if check_admin(req) == 0 && stats_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + owner + "' is claimed — pass the owner key or the admin token\"}") }
+    }
+    n := now()
+    ns := str(n)
+    rows := ""
+    mode := "sla"
+    // ns and ot are trusted integers (now() and parse_int) — inlined as literals so SQLite does
+    // numeric arithmetic/comparison (a string param would compare as TEXT, which sorts above any
+    // number and silently matches nothing). owner stays a bound param (user input).
+    if ot > 0 {
+        mode = "older_than"
+        if owner != "" {
+            rows = sqlite_query(db, "SELECT id, owner, updated, data_updated, fresh_ttl FROM artifacts WHERE owner = ? AND (" + ns + " - updated) > " + str(ot) + " ORDER BY updated ASC LIMIT 500", []string{owner})
+        } else {
+            rows = sqlite_query(db, "SELECT id, owner, updated, data_updated, fresh_ttl FROM artifacts WHERE (" + ns + " - updated) > " + str(ot) + " ORDER BY updated ASC LIMIT 500", []string{})
+        }
+    } else {
+        if owner != "" {
+            rows = sqlite_query(db, "SELECT id, owner, updated, data_updated, fresh_ttl FROM artifacts WHERE owner = ? AND fresh_ttl > 0 AND (" + ns + " - updated) > fresh_ttl ORDER BY updated ASC LIMIT 500", []string{owner})
+        } else {
+            rows = sqlite_query(db, "SELECT id, owner, updated, data_updated, fresh_ttl FROM artifacts WHERE fresh_ttl > 0 AND (" + ns + " - updated) > fresh_ttl ORDER BY updated ASC LIMIT 500", []string{})
+        }
+    }
+    sqlite_close(db)
+    sr := parse(rows, []StaleRow{})
+    base := pubbase(req)
+    out := "{\"ok\":true,\"now\":" + ns + ",\"mode\":\"" + mode + "\",\"count\":" + str(len(sr)) + ",\"stale\":["
+    i := 0
+    for i < len(sr) {
+        if i > 0 { out = out + "," }
+        age := n - sr[i].updated
+        out = out + "{\"id\":\"" + sr[i].id + "\",\"owner\":\"" + sr[i].owner + "\",\"updated\":" + str(sr[i].updated) + ",\"data_updated\":" + str(sr[i].data_updated) + ",\"fresh_ttl\":" + str(sr[i].fresh_ttl) + ",\"age_seconds\":" + str(age) + ",\"age\":\"" + human_dur(age) + "\",\"url\":\"" + base + "/a/" + sr[i].id + "\"}"
+        i = i + 1
+    }
+    out = out + "]}"
     res = ok_json(out)
 }
 
@@ -959,7 +1044,7 @@ func guide_md(base, authline) (g) {
     g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
     g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). Anonymous (no-owner) artifacts get a random id.\n\n"
     g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
-    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
+    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
     g = g + "## Env\n\n`HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key) · `HART_READ_KEY` (read key for a private artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.\n\nSource + releases: https://github.com/javimosch/machin-hart\n"
 }
 
@@ -977,7 +1062,7 @@ func skill_md(base, authline) (s) {
     s = s + "## Setup (once)\n\n```sh\nexport HART_URL=" + base + "\n# if this instance requires a publish token: `hart login <token>` (or set HART_TOKEN)\n```\nNo `hart` binary on PATH? Every write is a plain HTTP POST — curl works (see the manual).\n\n"
     s = s + "## Publish — the core loop\n\n```sh\nhart publish deliverable.html --owner <you> --artifact <name>\n# -> {\"ok\":true,\"url\":\"" + base + "/a/<you>/<name>\",\"version\":1, ...}\n```\nParse `.url` from the JSON and hand it to the human. Re-publish the same `--owner/--artifact` to append a version (`latest` moves; old versions stay pinned; `hart rollback <id> <v>` reverts).\n\n"
     s = s + "## The contract (do this or publish is rejected)\n\nPages must be **self-contained**: inline ALL CSS/JS, embed images/fonts as `data:` URIs. Served under a strict CSP — **no external scripts/styles/fonts, no network** (`fetch`/XHR/WebSocket blocked). A linter rejects external refs (HTTP 422); `--dry-run` lints without storing, `--force` overrides. JSX: add `--format jsx` (in-browser React+Babel, no build step; render into `#root`).\n\n"
-    s = s + "## Living deliverables — update data without re-uploading\n\nPublish a template once, then push just the data; the same URL re-renders. The page reads `{{key}}` placeholders and/or the `window.HART_DATA` global.\n\n```sh\nhart publish chart.html --owner <you> --artifact sales\nhart data <you>/sales '{\"points\":[3,1,4,1,5]}'   # same URL, fresh render\n```\nGreat for status boards / dashboards an agent keeps current on a cron. Check how a page is doing with `hart stats <you>/sales` — views, last view, freshness, top referrers (server-side, privacy-respecting).\n\n"
+    s = s + "## Living deliverables — update data without re-uploading\n\nPublish a template once, then push just the data; the same URL re-renders. The page reads `{{key}}` placeholders and/or the `window.HART_DATA` global.\n\n```sh\nhart publish chart.html --owner <you> --artifact sales\nhart data <you>/sales '{\"points\":[3,1,4,1,5]}'   # same URL, fresh render\n```\nGreat for status boards / dashboards an agent keeps current on a cron. Check how a page is doing with `hart stats <you>/sales` — views, last view, freshness, top referrers (server-side, privacy-respecting). Give a monitored dashboard a freshness SLA (`hart fresh <you>/sales 15m`) and `hart stale` flags it if the updates ever stop — hart emits the signal, your cron alerts.\n\n"
     s = s + "## Discover what you published\n\n```sh\nhart list --owner <you>          # your artifacts (JSON: id, title, latest, updated)\nhart get <owner>/<artifact>      # one artifact's metadata + versions\nhart explore [query]             # public discovery feed across the instance\n```\nOperators of an instance they host can set `HART_ADMIN_TOKEN` and use `hart admin owners` / `hart admin list` to discover **every** owner's artifacts (cross-owner) — the fleet-wide view.\n\n"
     s = s + "## Visibility\n\n`--visibility unlisted` (default: public-read, unlisted) · `public` (listed at `/explore`) · `private` (password-gated; agents send `X-Hart-Read-Key` / `HART_READ_KEY`). Set at publish (`--visibility --read-key`) or later via `hart visibility <id> <mode>`.\n\n"
     s = s + "## Full manual\n\nRun `hart guide` or GET `" + base + "/guide.md` — every command, flag, and the admin API, version-exact. AI-first sitemap: `" + base + "/llms.txt`.\n"
@@ -1114,6 +1199,8 @@ func hart_route(req) (res) {
         if req.method == "GET" { db := opendb(); return h_versions(db, req, tail) }
     }
     if req.method == "POST" && p == "/v1/visibility" { return h_visibility(req) }
+    if req.method == "POST" && p == "/v1/fresh" { return h_fresh(req) }
+    if req.method == "GET" && p == "/v1/stale" { return h_stale(req) }
     if req.method == "GET" && p == "/v1/public" { return h_public(req) }
     if req.method == "GET" && p == "/explore" { return serve_explore(req) }
     if req.method == "GET" && has_prefix(p, "/o/") { return serve_owner(req, substr(p, 3, len(p))) }
@@ -1146,6 +1233,22 @@ func flagv(a, name, dflt) (v) {
     }
 }
 
+// parse_duration — "30s" / "15m" / "2h" / "1d" (or a bare number = seconds) -> seconds.
+// "off" / "none" / "" -> 0 (clears an SLA).
+func parse_duration(s) (secs) {
+    secs = 0
+    if s == "" || s == "off" || s == "none" { return 0 }
+    n := len(s)
+    u := substr(s, n - 1, n)
+    mult := 0
+    if u == "s" { mult = 1 }
+    if u == "m" { mult = 60 }
+    if u == "h" { mult = 3600 }
+    if u == "d" { mult = 86400 }
+    if mult == 0 { secs = parse_int(s); return secs }
+    secs = parse_int(substr(s, 0, n - 1)) * mult
+}
+
 // token store: HART_TOKEN env wins; else ~/.hart-token (written by `hart login`)
 func client_token() (t) {
     t = env("HART_TOKEN")
@@ -1162,7 +1265,7 @@ func has_flag(a, name) (yes) {
 }
 
 func cmd_publish(a) {
-    if len(a) < 3 { die(80, "usage: hart publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--visibility unlisted|public|private] [--read-key <pw>] [--unguessable] [--dry-run] [--force]") }
+    if len(a) < 3 { die(80, "usage: hart publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--visibility unlisted|public|private] [--read-key <pw>] [--fresh <30s|15m|2h|1d>] [--unguessable] [--dry-run] [--force]") }
     file := a[2]
     html := read_file(file)
     if html == "" { die(90, "file empty or unreadable: " + file) }
@@ -1173,6 +1276,7 @@ func cmd_publish(a) {
     format := flagv(a, "--format", "html")
     vis := flagv(a, "--visibility", "")
     rk := flagv(a, "--read-key", "")
+    fresh := flagv(a, "--fresh", "")
     url := hart_url() + "/v1/publish?format=" + url_encode(format)
     if id != "" { url = url + "&id=" + url_encode(id) }
     if owner != "" { url = url + "&owner=" + url_encode(owner) }
@@ -1180,6 +1284,7 @@ func cmd_publish(a) {
     if title != "" { url = url + "&title=" + url_encode(title) }
     if vis != "" { url = url + "&visibility=" + url_encode(vis) }
     if rk != "" { url = url + "&read_key=" + url_encode(rk) }
+    if fresh != "" { url = url + "&fresh=" + str(parse_duration(fresh)) }
     if has_flag(a, "--unguessable") == 1 { url = url + "&unguessable=1" }
     if has_flag(a, "--dry-run") == 1 { url = url + "&dry=1" }
     if has_flag(a, "--force") == 1 { url = url + "&force=1" }
@@ -1243,6 +1348,39 @@ func cmd_stats(a) {
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status == 403 { write(2, resp + "\n"); exit(80) }
     if status != 200 { die(90, "stats failed (" + str(status) + ")") }
+    say(resp)
+}
+
+// hart fresh <id> <30s|15m|2h|1d|off> — set (or clear) an artifact's freshness SLA. A monitored
+// living deliverable then surfaces in `hart stale` once it hasn't been refreshed within the SLA.
+func cmd_fresh(a) {
+    if len(a) < 4 { die(80, "usage: hart fresh <id> <30s|15m|2h|1d|off>  (freshness SLA for `hart stale`)") }
+    ttl := parse_duration(a[3])
+    url := hart_url() + "/v1/fresh?id=" + url_encode(a[2]) + "&ttl=" + str(ttl)
+    status, resp, err := http_request("POST", url, auth_headers(), "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }
+    say(resp)
+}
+
+// hart stale [--owner <who>] [--older-than <dur>] — living deliverables that went quiet.
+// No --older-than: artifacts past their own SLA (see `hart fresh`). Cross-owner needs the admin
+// token; --owner scopes it (owner-key for a claimed owner). hart emits the signal; you alert.
+func cmd_stale(a) {
+    url := hart_url() + "/v1/stale?x=1"
+    owner := flagv(a, "--owner", "")
+    if owner != "" { url = url + "&owner=" + url_encode(owner) }
+    ot := flagv(a, "--older-than", "")
+    if ot != "" { url = url + "&older_than=" + str(parse_duration(ot)) }
+    h := []string{}
+    at := admin_token()
+    if at != "" { h = append(h, "authorization: Bearer " + at) }
+    ok := owner_key_of(a)
+    if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
+    status, resp, err := http_request("GET", url, h, "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status == 403 { write(2, resp + "\n"); exit(80) }
+    if status != 200 { die(90, "stale failed (" + str(status) + ")") }
     say(resp)
 }
 
@@ -1386,7 +1524,7 @@ func cmd_versions(a) {
 }
 
 func cmd_help() {
-    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private --read-key <pw> --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"visibility\":\"visibility <id> <unlisted|public|private> [--read-key <pw> --clear-read-key]\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id>\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"stats\":\"stats <id> (views, last view, freshness, top referrers; server-side, CSP-safe)\",\"skill\":\"skill (print a drop-in agent SKILL.md; self-install: hart skill > ~/.claude/skills/hart/SKILL.md)\",\"admin\":\"admin <owners|list [--owner <who>]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
+    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private --read-key <pw> --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"visibility\":\"visibility <id> <unlisted|public|private> [--read-key <pw> --clear-read-key]\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id>\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"stats\":\"stats <id> (views, last view, freshness, top referrers; server-side, CSP-safe)\",\"fresh\":\"fresh <id> <30s|15m|2h|1d|off> (set/clear a freshness SLA)\",\"stale\":\"stale [--owner <who>] [--older-than <dur>] (living deliverables that went quiet; JSON signal, you alert)\",\"skill\":\"skill (print a drop-in agent SKILL.md; self-install: hart skill > ~/.claude/skills/hart/SKILL.md)\",\"admin\":\"admin <owners|list [--owner <who>]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
 }
 
 func main() {
@@ -1407,6 +1545,8 @@ func main() {
     if cmd == "guide" { cmd_guide(); return }
     if cmd == "skill" { cmd_skill(); return }
     if cmd == "stats" { cmd_stats(a); return }
+    if cmd == "fresh" { cmd_fresh(a); return }
+    if cmd == "stale" { cmd_stale(a); return }
     if cmd == "rm" { cmd_rm(a); return }
     if cmd == "admin" { cmd_admin(a); return }
     write(2, "{\"ok\":false,\"error\":\"unknown command: " + cmd + "\"}\n")
