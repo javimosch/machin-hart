@@ -828,8 +828,28 @@ func guide_md(base, authline) (g) {
     g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
     g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). Anonymous (no-owner) artifacts get a random id.\n\n"
     g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
-    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `guide` | this manual |\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
+    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
     g = g + "## Env\n\n`HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key) · `HART_READ_KEY` (read key for a private artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.\n\nSource + releases: https://github.com/javimosch/machin-hart\n"
+}
+
+// skill_md — a drop-in, self-installable agent SKILL.md (the machin-web-ui `skill` convention).
+// Instance-aware and version-exact: `hart skill > ~/.claude/skills/hart/SKILL.md` and any terminal
+// agent reflexively publishes its HTML deliverables here + can discover what it already shipped.
+func skill_md(base, authline) (s) {
+    s = "---\n"
+    s = s + "name: hart\n"
+    s = s + "description: Publish a self-contained HTML or JSX deliverable to a live, shareable, sandboxed URL — and discover artifacts you already published. Use whenever you generate an HTML report, dashboard, mockup, one-pager, or data explorer and the human needs a link (not a local file), or to list/find/update prior artifacts.\n"
+    s = s + "---\n\n"
+    s = s + "# hart — publish your HTML deliverables to a live URL\n\n"
+    s = s + "You (an agent) generate rich HTML but have nowhere to put it: `open` dies at share-time, a gist mangles it. **hart** turns a self-contained file into a live, versioned, sandboxed URL in one call. This instance: `" + base + "` — " + authline + "\n\n"
+    s = s + "## When to use\n\n- You produced an HTML/JSX deliverable and the human needs a **shareable link**.\n- The data behind a page you published **changed** — refresh it in place (same URL).\n- You need to **find or list** artifacts you (or your fleet) published before.\n\n"
+    s = s + "## Setup (once)\n\n```sh\nexport HART_URL=" + base + "\n# if this instance requires a publish token: `hart login <token>` (or set HART_TOKEN)\n```\nNo `hart` binary on PATH? Every write is a plain HTTP POST — curl works (see the manual).\n\n"
+    s = s + "## Publish — the core loop\n\n```sh\nhart publish deliverable.html --owner <you> --artifact <name>\n# -> {\"ok\":true,\"url\":\"" + base + "/a/<you>/<name>\",\"version\":1, ...}\n```\nParse `.url` from the JSON and hand it to the human. Re-publish the same `--owner/--artifact` to append a version (`latest` moves; old versions stay pinned; `hart rollback <id> <v>` reverts).\n\n"
+    s = s + "## The contract (do this or publish is rejected)\n\nPages must be **self-contained**: inline ALL CSS/JS, embed images/fonts as `data:` URIs. Served under a strict CSP — **no external scripts/styles/fonts, no network** (`fetch`/XHR/WebSocket blocked). A linter rejects external refs (HTTP 422); `--dry-run` lints without storing, `--force` overrides. JSX: add `--format jsx` (in-browser React+Babel, no build step; render into `#root`).\n\n"
+    s = s + "## Living deliverables — update data without re-uploading\n\nPublish a template once, then push just the data; the same URL re-renders. The page reads `{{key}}` placeholders and/or the `window.HART_DATA` global.\n\n```sh\nhart publish chart.html --owner <you> --artifact sales\nhart data <you>/sales '{\"points\":[3,1,4,1,5]}'   # same URL, fresh render\n```\nGreat for status boards / dashboards an agent keeps current on a cron.\n\n"
+    s = s + "## Discover what you published\n\n```sh\nhart list --owner <you>          # your artifacts (JSON: id, title, latest, updated)\nhart get <owner>/<artifact>      # one artifact's metadata + versions\nhart explore [query]             # public discovery feed across the instance\n```\nOperators of an instance they host can set `HART_ADMIN_TOKEN` and use `hart admin owners` / `hart admin list` to discover **every** owner's artifacts (cross-owner) — the fleet-wide view.\n\n"
+    s = s + "## Visibility\n\n`--visibility unlisted` (default: public-read, unlisted) · `public` (listed at `/explore`) · `private` (password-gated; agents send `X-Hart-Read-Key` / `HART_READ_KEY`). Set at publish (`--visibility --read-key`) or later via `hart visibility <id> <mode>`.\n\n"
+    s = s + "## Full manual\n\nRun `hart guide` or GET `" + base + "/guide.md` — every command, flag, and the admin API, version-exact. AI-first sitemap: `" + base + "/llms.txt`.\n"
 }
 
 // llms_txt — the concise /llms.txt (the llms.txt convention): an at-a-glance orientation + links.
@@ -847,6 +867,7 @@ func llms_txt(base, authline) (t) {
     t = t + "- Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`).\n\n"
     t = t + "## Map (AI-first sitemap)\n\n"
     t = t + "- **" + base + "/guide.md** — the complete, version-exact manual (every command, flags, admin, examples). Start here. Also `hart guide`.\n"
+    t = t + "- " + base + "/skill.md — a drop-in agent SKILL.md (self-install: `hart skill > ~/.claude/skills/hart/SKILL.md`). Also `hart skill`.\n"
     t = t + "- " + base + "/llms.txt — this file (30-second orientation).\n"
     t = t + "- " + base + "/explore — public discovery feed (HTML); `" + base + "/v1/public?q=` for JSON.\n"
     t = t + "- " + base + "/o/<owner> — an owner's public artifacts.\n"
@@ -872,6 +893,12 @@ func serve_llms(req) (res) {
     res = r
 }
 
+func serve_skill(req) (res) {
+    r := response("200 OK", "text/markdown; charset=utf-8", skill_md(pubbase(req), auth_line()))
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'")
+    res = r
+}
+
 // the root page — the product landing (OSS, self-hosted). Served from HART_LANDING (default
 // ./landing.html); falls back to a one-line notice if the file isn't deployed.
 func serve_landing() (res) {
@@ -891,6 +918,7 @@ func hart_route(req) (res) {
     if p == "/" { if env("HART_HOME") == "dashboard" { return serve_status(req) }  return serve_landing() }
     if p == "/llms.txt" { return serve_llms(req) }
     if p == "/guide.md" || p == "/guide" { return serve_guide(req) }
+    if p == "/skill.md" || p == "/skill" { return serve_skill(req) }
     if p == "/_health" { return ok_json("{\"ok\":true,\"service\":\"hart\"}") }
     if p == "/_status" || p == "/dashboard" { return serve_status(req) }
     if req.method == "GET" && has_prefix(p, "/_hart/runtime/") { return serve_runtime(substr(p, 15, len(p))) }
@@ -1019,6 +1047,13 @@ func cmd_explore(a) {
 func cmd_guide() {
     al := "set HART_TOKEN on the daemon to require a publish token; unset = free/open"
     say(guide_md(hart_url(), al))
+}
+
+// hart skill — print a drop-in agent SKILL.md (self-install: `hart skill > ~/.claude/skills/hart/SKILL.md`).
+func cmd_skill() {
+    al := "**free/open** — no token needed to publish"
+    if env("HART_TOKEN") != "" { al = "publishing requires a token (set via `hart login <token>`)" }
+    say(skill_md(hart_url(), al))
 }
 
 func cmd_get(a) {
@@ -1161,7 +1196,7 @@ func cmd_versions(a) {
 }
 
 func cmd_help() {
-    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private --read-key <pw> --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"visibility\":\"visibility <id> <unlisted|public|private> [--read-key <pw> --clear-read-key]\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id>\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"admin\":\"admin <owners|list [--owner <who>]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
+    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private --read-key <pw> --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"visibility\":\"visibility <id> <unlisted|public|private> [--read-key <pw> --clear-read-key]\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id>\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"skill\":\"skill (print a drop-in agent SKILL.md; self-install: hart skill > ~/.claude/skills/hart/SKILL.md)\",\"admin\":\"admin <owners|list [--owner <who>]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
 }
 
 func main() {
@@ -1180,6 +1215,7 @@ func main() {
     if cmd == "visibility" { cmd_visibility(a); return }
     if cmd == "explore" { cmd_explore(a); return }
     if cmd == "guide" { cmd_guide(); return }
+    if cmd == "skill" { cmd_skill(); return }
     if cmd == "rm" { cmd_rm(a); return }
     if cmd == "admin" { cmd_admin(a); return }
     write(2, "{\"ok\":false,\"error\":\"unknown command: " + cmd + "\"}\n")
