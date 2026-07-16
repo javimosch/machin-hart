@@ -78,6 +78,11 @@ Gate publishing with `HART_TOKEN=<secret>`. Expose publicly behind any reverse p
 (e.g. Traefik + Cloudflare + Let's Encrypt via [hotify-cli](https://github.com/javimosch/hotify-cli))
 and set `HART_PUBLIC=https://your.domain` so returned URLs are canonical.
 
+Deploying an update to a systemd host? [`scripts/deploy.sh`](scripts/deploy.sh) stages the freshly
+built binary, verifies the transfer, backs up + swaps + restarts, health-checks, and **rotates old
+backups** (keeps the newest N binaries/DB snapshots). `./scripts/deploy.sh --build --db-backup`
+(config via `HART_DEPLOY_HOST` / `HART_KEEP_BINARY_BACKUPS` / …; `--dry-run` to preview).
+
 ## The publish contract
 
 `hart` hosts **self-contained** pages — one file, everything inlined. The daemon wraps your body
