@@ -1044,7 +1044,7 @@ func guide_md(base, authline) (g) {
     g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
     g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). Anonymous (no-owner) artifacts get a random id.\n\n"
     g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
-    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
+    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `mcp` | run as a stdio MCP server (native tools for MCP agents) |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## MCP (native tools for MCP-capable agents)\n\nBesides the CLI, hart can run as a **stdio MCP server** so MCP-native agents (Claude Desktop, Cursor, …) get hart as first-class tools. One binary, no extra runtime — it wraps hart's own HTTP API and inherits auth from env. Configure your MCP client:\n\n```json\n{\"mcpServers\":{\"hart\":{\"command\":\"hart\",\"args\":[\"mcp\"],\"env\":{\"HART_URL\":\"" + base + "\"}}}}\n```\nTools exposed: `hart_publish`, `hart_data`, `hart_list`, `hart_get`, `hart_stats`, `hart_stale`, `hart_explore`. (The CLI remains the primary interface; MCP is an additional surface.)\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
     g = g + "## Env\n\n`HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key) · `HART_READ_KEY` (read key for a private artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.\n\nSource + releases: https://github.com/javimosch/machin-hart\n"
 }
 
@@ -1523,8 +1523,151 @@ func cmd_versions(a) {
     say(resp)
 }
 
+// ---- MCP server (`hart mcp`) --------------------------------------------------
+// A stdio JSON-RPC 2.0 MCP server so MCP-native agents (Claude Desktop, Cursor, …) get hart as
+// native tools. One binary, no Node — configure {"command":"hart","args":["mcp"],"env":{"HART_URL":..}}.
+// It wraps hart's own HTTP API, inheriting auth from env (HART_TOKEN/HART_OWNER_KEY/HART_ADMIN_TOKEN).
+
+func mcp_send(s) { say(s); flush() }   // flush is mandatory — stdout is buffered; the client blocks without it.
+
+// json_field — a leaf value from the request JSON, unquoted, or a default.
+func json_field(line, path, dflt) (v) {
+    v = dflt
+    x, e := json_get(line, path)
+    if e == "" { v = unq(x) }
+}
+
+func mcp_result(id, resultjson) { mcp_send("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":" + resultjson + "}") }
+func mcp_error(id, code, msg)   { mcp_send("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"error\":{\"code\":" + str(code) + ",\"message\":\"" + jesc(msg) + "\"}}") }
+
+// mcp_content — a tools/call result: the tool's text output (isError flags a failed call).
+func mcp_content(id, text, iserr) {
+    e := "false"
+    if iserr == 1 { e = "true" }
+    mcp_result(id, "{\"content\":[{\"type\":\"text\",\"text\":\"" + jesc(text) + "\"}],\"isError\":" + e + "}")
+}
+
+// mcp_http — run one wrapped API call and answer the tools/call. iserr when status != 200.
+func mcp_http(id, method, url, headers, body) {
+    status, resp, err := http_request(method, url, headers, body)
+    if err != "" { mcp_content(id, "cannot reach hart daemon at " + hart_url() + ": " + err, 1); return }
+    ie := 0
+    if status != 200 { ie = 1 }
+    mcp_content(id, resp, ie)
+}
+
+func mcp_tools_json() (t) {
+    t = "{\"tools\":["
+    t = t + "{\"name\":\"hart_publish\",\"description\":\"Publish a self-contained HTML or JSX page to a live, versioned, sandboxed URL. Inline ALL CSS/JS (no external refs/network — strict CSP). Returns {url,version,...}.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"html\":{\"type\":\"string\",\"description\":\"the full self-contained HTML/JSX document\"},\"owner\":{\"type\":\"string\"},\"artifact\":{\"type\":\"string\",\"description\":\"stable name; re-publishing the same owner/artifact appends a version\"},\"title\":{\"type\":\"string\"},\"format\":{\"type\":\"string\",\"enum\":[\"html\",\"jsx\"]},\"visibility\":{\"type\":\"string\",\"enum\":[\"unlisted\",\"public\",\"private\"]},\"read_key\":{\"type\":\"string\",\"description\":\"password for private artifacts\"},\"fresh\":{\"type\":\"string\",\"description\":\"freshness SLA e.g. 15m, 2h, 1d\"}},\"required\":[\"html\"]}},"
+    t = t + "{\"name\":\"hart_data\",\"description\":\"Update a published artifact's live data (the page re-renders from window.HART_DATA / {{key}}); same URL. For living dashboards.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"owner/artifact\"},\"data\":{\"type\":\"string\",\"description\":\"a JSON string\"}},\"required\":[\"id\",\"data\"]}},"
+    t = t + "{\"name\":\"hart_list\",\"description\":\"List artifacts (optionally one owner): id, title, latest version, updated.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"owner\":{\"type\":\"string\"}}}},"
+    t = t + "{\"name\":\"hart_get\",\"description\":\"One artifact's metadata + version history.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\",\"description\":\"owner/artifact\"}},\"required\":[\"id\"]}},"
+    t = t + "{\"name\":\"hart_stats\",\"description\":\"Living-deliverable analytics for an artifact: views, last view, freshness, top referrers.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"]}},"
+    t = t + "{\"name\":\"hart_stale\",\"description\":\"Living deliverables that went quiet — past their freshness SLA, or (with older_than) any not touched within a window. JSON signal; you decide how to alert.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"owner\":{\"type\":\"string\"},\"older_than\":{\"type\":\"string\",\"description\":\"e.g. 2h, 1d\"}}}},"
+    t = t + "{\"name\":\"hart_explore\",\"description\":\"Public discovery feed across the instance (recency-ranked), optional text query.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}}"
+    t = t + "]}"
+}
+
+// mcp_tools_call — dispatch one tools/call to the wrapped API.
+func mcp_tools_call(line, id) {
+    name := json_field(line, ".params.name", "")
+    tok := client_token()
+    okey := env("HART_OWNER_KEY")
+    atok := admin_token()
+    ap := ".params.arguments."
+    if name == "hart_publish" {
+        html := json_field(line, ap + "html", "")
+        if html == "" { mcp_content(id, "hart_publish: 'html' is required", 1); return }
+        url := hart_url() + "/v1/publish?format=" + url_encode(json_field(line, ap + "format", "html"))
+        ow := json_field(line, ap + "owner", "");     if ow != "" { url = url + "&owner=" + url_encode(ow) }
+        ar := json_field(line, ap + "artifact", "");   if ar != "" { url = url + "&artifact=" + url_encode(ar) }
+        ti := json_field(line, ap + "title", "");      if ti != "" { url = url + "&title=" + url_encode(ti) }
+        vi := json_field(line, ap + "visibility", ""); if vi != "" { url = url + "&visibility=" + url_encode(vi) }
+        rk := json_field(line, ap + "read_key", "");   if rk != "" { url = url + "&read_key=" + url_encode(rk) }
+        fr := json_field(line, ap + "fresh", "");      if fr != "" { url = url + "&fresh=" + str(parse_duration(fr)) }
+        h := []string{"content-type: text/html; charset=utf-8"}
+        if tok != "" { h = append(h, "authorization: Bearer " + tok) }
+        if okey != "" { h = append(h, "x-hart-owner-key: " + okey) }
+        mcp_http(id, "POST", url, h, html)
+        return
+    }
+    if name == "hart_data" {
+        did := json_field(line, ap + "id", "")
+        dat := json_field(line, ap + "data", "")
+        if did == "" || dat == "" { mcp_content(id, "hart_data: 'id' and 'data' are required", 1); return }
+        url := hart_url() + "/v1/data?id=" + url_encode(did)
+        h := []string{"content-type: application/json"}
+        if tok != "" { h = append(h, "authorization: Bearer " + tok) }
+        if okey != "" { h = append(h, "x-hart-owner-key: " + okey) }
+        mcp_http(id, "POST", url, h, dat)
+        return
+    }
+    if name == "hart_list" {
+        url := hart_url() + "/v1/artifacts"
+        ow := json_field(line, ap + "owner", "")
+        if ow != "" { url = url + "?owner=" + url_encode(ow) }
+        mcp_http(id, "GET", url, auth_headers(), "")
+        return
+    }
+    if name == "hart_get" {
+        gid := json_field(line, ap + "id", "")
+        if gid == "" { mcp_content(id, "hart_get: 'id' is required", 1); return }
+        mcp_http(id, "GET", hart_url() + "/v1/artifacts/" + gid + "/versions", auth_headers(), "")
+        return
+    }
+    if name == "hart_stats" {
+        sid := json_field(line, ap + "id", "")
+        if sid == "" { mcp_content(id, "hart_stats: 'id' is required", 1); return }
+        h := []string{}
+        if atok != "" { h = append(h, "authorization: Bearer " + atok) }
+        if okey != "" { h = append(h, "x-hart-owner-key: " + okey) }
+        mcp_http(id, "GET", hart_url() + "/v1/artifacts/" + sid + "/stats", h, "")
+        return
+    }
+    if name == "hart_stale" {
+        url := hart_url() + "/v1/stale?x=1"
+        ow := json_field(line, ap + "owner", "");      if ow != "" { url = url + "&owner=" + url_encode(ow) }
+        ot := json_field(line, ap + "older_than", ""); if ot != "" { url = url + "&older_than=" + str(parse_duration(ot)) }
+        h := []string{}
+        if atok != "" { h = append(h, "authorization: Bearer " + atok) }
+        if okey != "" { h = append(h, "x-hart-owner-key: " + okey) }
+        mcp_http(id, "GET", url, h, "")
+        return
+    }
+    if name == "hart_explore" {
+        mcp_http(id, "GET", hart_url() + "/v1/public?q=" + url_encode(json_field(line, ap + "query", "")), []string{}, "")
+        return
+    }
+    mcp_content(id, "unknown tool: " + name, 1)
+}
+
+func cmd_mcp(a) {
+    for 1 == 1 {
+        line := input()
+        if line == "" { return }   // EOF (client closed stdin) -> exit
+        method, me := json_get(line, ".method")
+        if me != "" { continue }   // not a JSON-RPC message we recognize
+        m := unq(method)
+        _, ie := json_get(line, ".id")
+        hasid := 0
+        if ie == "" { hasid = 1 }
+        id := "null"
+        if hasid == 1 { idr, _ := json_get(line, ".id"); id = idr }   // echo id verbatim (number or string)
+        if m == "initialize" {
+            pv := json_field(line, ".params.protocolVersion", "2024-11-05")
+            mcp_result(id, "{\"protocolVersion\":\"" + jesc(pv) + "\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"hart\",\"version\":\"0.2.2\"}}")
+            continue
+        }
+        if m == "tools/list" { mcp_result(id, mcp_tools_json()); continue }
+        if m == "tools/call" { mcp_tools_call(line, id); continue }
+        if m == "ping" { mcp_result(id, "{}"); continue }
+        if has_prefix(m, "notifications/") { continue }   // notifications get no response
+        if hasid == 1 { mcp_error(id, -32601, "method not found: " + m) }
+    }
+}
+
 func cmd_help() {
-    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private --read-key <pw> --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"visibility\":\"visibility <id> <unlisted|public|private> [--read-key <pw> --clear-read-key]\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id>\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"stats\":\"stats <id> (views, last view, freshness, top referrers; server-side, CSP-safe)\",\"fresh\":\"fresh <id> <30s|15m|2h|1d|off> (set/clear a freshness SLA)\",\"stale\":\"stale [--owner <who>] [--older-than <dur>] (living deliverables that went quiet; JSON signal, you alert)\",\"skill\":\"skill (print a drop-in agent SKILL.md; self-install: hart skill > ~/.claude/skills/hart/SKILL.md)\",\"admin\":\"admin <owners|list [--owner <who>]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
+    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private --read-key <pw> --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"visibility\":\"visibility <id> <unlisted|public|private> [--read-key <pw> --clear-read-key]\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id>\",\"list\":\"list [--owner <who>]\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"stats\":\"stats <id> (views, last view, freshness, top referrers; server-side, CSP-safe)\",\"fresh\":\"fresh <id> <30s|15m|2h|1d|off> (set/clear a freshness SLA)\",\"stale\":\"stale [--owner <who>] [--older-than <dur>] (living deliverables that went quiet; JSON signal, you alert)\",\"mcp\":\"mcp (run as a stdio MCP server — native tools for MCP-capable agents; wraps the HTTP API)\",\"skill\":\"skill (print a drop-in agent SKILL.md; self-install: hart skill > ~/.claude/skills/hart/SKILL.md)\",\"admin\":\"admin <owners|list [--owner <who>]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
 }
 
 func main() {
@@ -1547,6 +1690,7 @@ func main() {
     if cmd == "stats" { cmd_stats(a); return }
     if cmd == "fresh" { cmd_fresh(a); return }
     if cmd == "stale" { cmd_stale(a); return }
+    if cmd == "mcp" { cmd_mcp(a); return }
     if cmd == "rm" { cmd_rm(a); return }
     if cmd == "admin" { cmd_admin(a); return }
     write(2, "{\"ok\":false,\"error\":\"unknown command: " + cmd + "\"}\n")

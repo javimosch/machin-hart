@@ -153,7 +153,21 @@ Non-interactive and idempotent. `hart guide` prints the full manual.
 | `explore [query]` | public discovery feed (JSON) |
 | `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |
 | `serve [port]` | run the hosting daemon |
+| `mcp` | run as a stdio MCP server (native tools for MCP-capable agents) |
 | `login <token>` / `guide` / `skill` | store creds / print the manual / print a drop-in agent SKILL.md |
+
+### MCP (native tools for MCP-capable agents)
+
+Besides the CLI + the drop-in skill, hart can run as a **stdio MCP server** so MCP-native agents
+(Claude Desktop, Cursor, …) get hart as first-class tools — one binary, no extra runtime. It wraps
+hart's own HTTP API and inherits auth from env. Configure your MCP client:
+
+```json
+{"mcpServers":{"hart":{"command":"hart","args":["mcp"],"env":{"HART_URL":"https://hart.intrane.fr"}}}}
+```
+
+Tools: `hart_publish`, `hart_data`, `hart_list`, `hart_get`, `hart_stats`, `hart_stale`,
+`hart_explore`. The CLI stays the primary interface; MCP is an additional surface.
 
 ## Admin — operator visibility (an instance you host)
 
