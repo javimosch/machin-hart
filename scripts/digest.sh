@@ -33,7 +33,7 @@ d = json.load(open(os.environ["DIGEST_JSON"]))
 base = os.environ["HART_URL"].rstrip("/")
 days = os.environ["DAYS"]
 t = d["totals"]
-gen = datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+gen = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 esc = lambda s: (str(s).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;"))
 
 def stat(label, val, sub):
