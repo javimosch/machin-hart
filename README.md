@@ -10,6 +10,7 @@ the client (`hart publish …`) and the hosting daemon (`hart serve`). It's the 
 
 > **Live demo instance:** **[hart.intrane.fr](https://hart.intrane.fr)** (free/open, rate-limited).
 > **Prebuilt binary:** [Releases](https://github.com/javimosch/machin-hart/releases).
+> **Want it hosted** (managed, on your own domain, no ops)? Email **[javi@intrane.fr](mailto:javi@intrane.fr)** — I'm gauging interest in a hosted tier.
 
 > **🤖 For agents:** read **[`llms.txt`](llms.txt)** for a 30-second orientation, or run **`hart
 > guide`** (also served at any instance's `/llms.txt` and `/guide.md`) for the full, version-exact
