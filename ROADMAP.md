@@ -221,6 +221,29 @@ when there's demand; until then hart is a complete, self-hostable, live agent-fi
 
 ---
 
+## Origin isolation — DECLINED for now (2026-07-17, founder)
+
+**Decision: hart stays single-origin.** No separate artifact origin (`a.host`), no
+per-artifact subdomains, no separate registrable domain — the added DNS/TLS/proxy surface
+isn't worth it for the current, mostly-personal fleet. Artifacts continue to be served from the
+same origin as the control plane + operator dashboard under `HART_PUBLIC`.
+
+- **Accepted residual risk:** a malicious artifact's inline JS runs on the control-plane origin.
+  The same-origin policy therefore does **not** isolate artifacts from `/_fleet` / `/v1` / their
+  cookies. This is a deliberate, accepted tradeoff at the current scale.
+- **What already mitigates it (in place):** every artifact is served under a strict
+  `default-src 'none'` CSP (no external scripts, **no network** — `fetch`/XHR/WebSocket blocked)
+  + a publish-time linter; the operator dashboard is hardened against the one same-origin vector
+  the CSP doesn't cover — `frame-ancestors 'none'` + `X-Frame-Options: DENY` on `/_fleet`
+  (no clickjacking), the admin session cookie is `HttpOnly; SameSite=Strict; Secure`, and the
+  admin API/dashboard are token-gated. (Shipped v0.2.6.)
+- **Revisit when:** the instance is opened to genuinely untrusted third-party publishers, or a
+  hosted multi-tenant tier (M3) ships — at which point origin isolation becomes non-optional.
+  The design is specced (single artifact host → wildcard per-artifact subdomains) and gated
+  behind a would-be `HART_ARTIFACT_HOST`; nothing is built, so there's no dead code to carry.
+
+---
+
 ## Landing + free + rate limits + template/data engine (2026-07-07, founder)
 
 - **hart.intrane.fr = the product landing** (OSS, self-hosted; "not a SaaS — yet"). Root `/`
