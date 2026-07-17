@@ -191,6 +191,11 @@ func serve_fleet(req) (res) {
     nown := dash_count(db, "SELECT COUNT(DISTINCT owner) AS n FROM artifacts WHERE owner != ''")
     nviews := dash_count(db, "SELECT COALESCE(SUM(total),0) AS n FROM views")
     nstale := dash_count(db, "SELECT COUNT(*) AS n FROM artifacts WHERE fresh_ttl > 0 AND (" + str(n) + " - updated) > fresh_ttl")
+    // 7-day adoption counts (computed while the db is open — serve_fleet closes it below)
+    cut7 := str(n - 604800)
+    d_own := dash_count(db, "SELECT COUNT(*) AS n FROM (SELECT owner FROM artifacts WHERE owner != '' GROUP BY owner HAVING MIN(created) > " + cut7 + ")")
+    d_art := dash_count(db, "SELECT COUNT(*) AS n FROM artifacts WHERE created > " + cut7)
+    d_act := dash_count(db, "SELECT COUNT(*) AS n FROM artifacts WHERE updated > " + cut7)
     bytes := dash_bytes(db)
     ownrows := sqlite_query(db, "SELECT a.owner AS owner, COUNT(DISTINCT a.id) AS cnt, MAX(a.updated) AS updated, COALESCE(SUM(LENGTH(v.html)),0) AS bytes, CASE WHEN o.key_hash IS NOT NULL AND o.key_hash != '' THEN 1 ELSE 0 END AS has_key FROM artifacts a LEFT JOIN versions v ON v.artifact_id = a.id LEFT JOIN owners o ON o.owner = a.owner GROUP BY a.owner ORDER BY bytes DESC", []string{})
     owns := parse(ownrows, []AdmOwn{})
@@ -204,6 +209,9 @@ func serve_fleet(req) (res) {
     h = h + "<div class=\"flex items-center gap-4 text-sm\"><a class=\"text-muted hover:text-ink hover:underline\" href=\"" + base + "/explore\">explore &rarr;</a><a class=\"text-muted hover:text-ink hover:underline\" href=\"/_fleet/logout\">sign out</a></div>"
     h = h + "</header>"
     h = h + "<p class=\"text-sm leading-6 text-muted\">Every artifact on <span class=\"text-ink\">" + ui_esc(base) + "</span> across all owners &mdash; the operator view (admin-gated). Views are counted server-side; stale = a living deliverable past its freshness SLA.</p>"
+
+    // adoption strip — activity in the last 7 days (values computed above, pre-close)
+    h = h + "<div class=\"rounded-lg border border-line dark:border-line-800 bg-surface-100 dark:bg-surface-800 px-4 py-3 text-sm\"><span class=\"text-xs uppercase tracking-wider text-muted\">Last 7 days</span> &nbsp; <span class=\"text-ink dark:text-ink-100 font-semibold\">+" + str(d_own) + "</span> owners &middot; <span class=\"text-ink dark:text-ink-100 font-semibold\">+" + str(d_art) + "</span> artifacts &middot; <span class=\"text-ink dark:text-ink-100 font-semibold\">" + str(d_act) + "</span> updated &middot; <span class=\"text-ink dark:text-ink-100 font-semibold\">" + str(nviews) + "</span> views all-time</div>"
 
     // stat tiles
     stale_delta := "all fresh"

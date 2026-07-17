@@ -86,6 +86,8 @@ echo "== admin API =="
 eq "admin owners: no token -> 403" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/admin/owners")" "403"
 has "admin owners: with token -> data" "$(curl -s -H "$ADMH" "$HART_URL/v1/admin/owners")" '"owners"'
 has "admin list carries views+stale" "$(curl -s -H "$ADMH" "$HART_URL/v1/admin/list")" '"stale"'
+has "admin digest: new artifacts + totals" "$(curl -s -H "$ADMH" "$HART_URL/v1/admin/digest?days=7")" '"new_artifacts"'
+eq  "admin digest: no token -> 403" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/admin/digest")" "403"
 MV=$(curl -s -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/pub&to=moved/pub")
 eq "admin mv ok" "$(echo "$MV" | jget ok)" "True"
 eq "moved: old id 404" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/acme/pub")" "404"
