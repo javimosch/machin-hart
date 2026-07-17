@@ -106,6 +106,21 @@ func serve_status(req) (res) {
 
 func admin_cookie() (n) { n = "hart_admin" }
 
+// set_admin_session — like set_session but SameSite=Strict (the admin cookie must never ride a
+// cross-site request — no CSRF logout, no cross-site send). Secure when served over HTTPS.
+func set_admin_session(r, value) (out) {
+    sec := ""
+    if pubbase_over_https() == 1 { sec = "; Secure" }
+    r.cookies = append(r.cookies, admin_cookie() + "=" + session_sign(cookie_secret(), value) + "; Path=/; HttpOnly; SameSite=Strict" + sec)
+    out = r
+}
+
+// no_frame — anti-clickjacking headers for the operator pages: an artifact page (same origin!)
+// must not be able to frame the dashboard and clickjack the operator.
+func no_frame(r) (out) {
+    out = with_header(r, "X-Frame-Options", "DENY")
+}
+
 // admin_authed — 1 if the request carries a valid admin session cookie.
 func admin_authed(req) (ok) {
     at := env("HART_ADMIN_TOKEN")
@@ -123,8 +138,9 @@ func fleet_login_page(errmsg) (res) {
     inner = inner + ui_card("Operator sign-in", "<form method=\"POST\" action=\"/_fleet/login\" class=\"flex flex-col gap-3\"><p class=\"text-sm text-muted\">Enter the instance admin token (<code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 text-ink dark:text-ink-100\">HART_ADMIN_TOKEN</code>) to view the fleet.</p><input type=\"password\" name=\"token\" placeholder=\"admin token\" autofocus autocomplete=\"current-password\" class=\"w-full rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm text-ink\"><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">View fleet</button>" + em + "</form>")
     inner = inner + "</div>"
     r := response("401 Unauthorized", "text/html; charset=utf-8", dash_page(inner))
-    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'self'")
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'self'; frame-ancestors 'none'")
     r = with_header(r, "Cache-Control", "no-store")
+    r = no_frame(r)
     res = r
 }
 
@@ -134,14 +150,14 @@ func h_fleet_login(req) (res) {
     if query_form(req, "token") != at { return fleet_login_page("Wrong admin token.") }
     r := response("303 See Other", "text/html; charset=utf-8", "")
     r = with_header(r, "Location", "/_fleet")
-    r = set_session(r, cookie_secret(), admin_cookie(), to_hex(sha256_bytes(bytes(at))))
+    r = set_admin_session(r, to_hex(sha256_bytes(bytes(at))))
     res = r
 }
 
 func h_fleet_logout(req) (res) {
     r := response("303 See Other", "text/html; charset=utf-8", "")
     r = with_header(r, "Location", "/_fleet")
-    r = set_session(r, cookie_secret(), admin_cookie(), "")   // value can't match the token hash -> deauthed
+    r = set_admin_session(r, "")   // value can't match the token hash -> deauthed
     res = r
 }
 
@@ -242,7 +258,8 @@ func serve_fleet(req) (res) {
         []string{base + "/guide", base + "/guide#admin-operator-god-mode", "https://github.com/javimosch/machin-hart"})
 
     r := ok_html(dash_page(h))
-    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'self'")
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'self'; frame-ancestors 'none'")
     r = with_header(r, "Cache-Control", "no-store")
+    r = no_frame(r)
     res = r
 }

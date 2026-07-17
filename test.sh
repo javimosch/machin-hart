@@ -111,6 +111,8 @@ eq "/_fleet unauth -> 401" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/
 curl -s -o /dev/null -c "$TMP/cj" -X POST -d "token=$HART_ADMIN_TOKEN" "$HART_URL/_fleet/login"
 eq "/_fleet with cookie -> 200" "$(curl -s -o /dev/null -w '%{http_code}' -b "$TMP/cj" "$HART_URL/_fleet")" "200"
 has "/_fleet shows private artifact (operator view)" "$(curl -s -b "$TMP/cj" "$HART_URL/_fleet")" "acme/secret"
+has "/_fleet is anti-clickjacking (X-Frame-Options DENY)" "$(curl -s -D - -o /dev/null -b "$TMP/cj" "$HART_URL/_fleet")" "X-Frame-Options: DENY"
+has "admin cookie is SameSite=Strict" "$(curl -s -D - -o /dev/null -X POST -d "token=$HART_ADMIN_TOKEN" "$HART_URL/_fleet/login")" "SameSite=Strict"
 
 echo
 echo "== $((PASS+FAIL)) checks: $PASS passed, $FAIL failed =="
