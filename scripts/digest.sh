@@ -14,11 +14,25 @@
 #   HART_DIGEST_READ_KEY   password to VIEW the private digest
 #   HART_DIGEST_DAYS       window (default 7) · HART_DIGEST_OWNER (default ops) · HART_DIGEST_ARTIFACT (default digest)
 #   HART_BIN               hart binary (default: hart on PATH)
+#
+# Flags:
+#   --stdout   render the HTML to stdout and exit — do NOT publish. Lets one renderer feed
+#              both the hart artifact and an emailer (e.g. machin-herald's target command).
 set -euo pipefail
+STDOUT_ONLY=0
+for arg in "$@"; do
+  case "$arg" in
+    --stdout) STDOUT_ONLY=1 ;;
+    *) echo "digest.sh: unknown flag: $arg (only --stdout)" >&2; exit 2 ;;
+  esac
+done
 : "${HART_URL:?set HART_URL}"
 : "${HART_ADMIN_TOKEN:?set HART_ADMIN_TOKEN}"
-: "${HART_DIGEST_OWNER_KEY:?set HART_DIGEST_OWNER_KEY}"
-: "${HART_DIGEST_READ_KEY:?set HART_DIGEST_READ_KEY}"
+if [ "$STDOUT_ONLY" = 0 ]; then
+  # only needed to publish
+  : "${HART_DIGEST_OWNER_KEY:?set HART_DIGEST_OWNER_KEY}"
+  : "${HART_DIGEST_READ_KEY:?set HART_DIGEST_READ_KEY}"
+fi
 DAYS="${HART_DIGEST_DAYS:-7}"
 OWNER="${HART_DIGEST_OWNER:-ops}"
 ART="${HART_DIGEST_ARTIFACT:-digest}"
@@ -89,6 +103,8 @@ a{color:#3ad0c4;text-decoration:none}a:hover{text-decoration:underline}
 """
 print(f'<div class="wrap"><style>{style}</style>{html}</div>')
 PY
+
+if [ "$STDOUT_ONLY" = 1 ]; then cat "$TMP/d.html"; exit 0; fi
 
 "$HART" publish "$TMP/d.html" --owner "$OWNER" --artifact "$ART" \
   --title "hart — operator digest" --format html --visibility private \
