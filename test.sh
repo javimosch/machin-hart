@@ -87,6 +87,10 @@ eq "admin owners: no token -> 403" "$(curl -s -o /dev/null -w '%{http_code}' "$H
 has "admin owners: with token -> data" "$(curl -s -H "$ADMH" "$HART_URL/v1/admin/owners")" '"owners"'
 has "admin list carries views+stale" "$(curl -s -H "$ADMH" "$HART_URL/v1/admin/list")" '"stale"'
 has "admin digest: new artifacts + totals" "$(curl -s -H "$ADMH" "$HART_URL/v1/admin/digest?days=7")" '"new_artifacts"'
+echo "== feedback =="
+has "feedback CLI dual-write (relay off -> stored locally)" "$(FEEDBACK_RELAY=off ./hart feedback 'a bug from the suite' --kind bug --context test.sh)" '"stored":true'
+has "feedback CLI reports relayed=false when relay off" "$(FEEDBACK_RELAY=off ./hart feedback 'idea' --kind idea)" '"relayed":false'
+eq  "feedback: empty message -> 400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/feedback" -d '{"message":""}')" "400"
 eq  "admin digest: no token -> 403" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/admin/digest")" "403"
 MV=$(curl -s -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/pub&to=moved/pub")
 eq "admin mv ok" "$(echo "$MV" | jget ok)" "True"

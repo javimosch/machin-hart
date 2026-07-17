@@ -201,6 +201,8 @@ func serve_fleet(req) (res) {
     owns := parse(ownrows, []AdmOwn{})
     artrows := sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views, a.fresh_ttl AS fresh_ttl FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id ORDER BY a.updated DESC LIMIT 500", []string{})
     arts := parse(artrows, []AdmArt{})
+    fbrows := sqlite_query(db, "SELECT id, kind, message, context, reporter, version, created FROM feedback ORDER BY created DESC LIMIT 8", []string{})
+    fbs := parse(fbrows, []FbRow{})
     sqlite_close(db)
 
     // header
@@ -272,6 +274,22 @@ func serve_fleet(req) (res) {
         arows = append(arows, ui_tr(cells))
     }
     h = h + ui_card("All artifacts", ui_table([]string{"artifact", "visibility", "views", "updated"}, arows))
+
+    // recent feedback (hart feedback + the relay dual-write land here)
+    if len(fbs) > 0 {
+        frows := []string{}
+        for _, f := range fbs {
+            k := f.kind
+            if k == "" { k = "note" }
+            rep := f.reporter
+            if rep == "" { rep = "anon" }
+            cells := ui_td(ui_badge(k, "blue"))
+            cells = cells + ui_td("<span class=\"text-ink dark:text-ink-100\">" + ui_esc(f.message) + "</span>")
+            cells = cells + ui_td("<span class=\"text-muted\">" + ui_esc(rep) + " · " + time_format(f.created, "%m-%d %H:%M") + "</span>")
+            frows = append(frows, ui_tr(cells))
+        }
+        h = h + ui_card("Recent feedback", ui_table([]string{"kind", "message", "from"}, frows))
+    }
 
     h = h + ui_footer("hart operator dashboard - admin-gated, server-rendered from this instance's DB.",
         []string{"guide", "admin API", "GitHub"},
