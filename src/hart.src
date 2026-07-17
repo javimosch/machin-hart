@@ -233,7 +233,7 @@ func owner_bytes(db, owner) (n) {
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
 // hart_version — single source of truth for the version reported to clients (MCP serverInfo).
-func hart_version() (s) { s = "0.2.7" }
+func hart_version() (s) { s = "0.2.8" }
 
 func unq(s) (o) {
     o = s
