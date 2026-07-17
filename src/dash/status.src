@@ -77,7 +77,7 @@ func serve_status(req) (res) {
         }
         h = h + ui_card("Public artifacts", ui_table([]string{"artifact", "owner", "updated"}, rows))
     } else {
-        h = h + ui_card("Public artifacts", "<p class=\"text-sm text-muted\">Nothing public yet. Published artifacts are unlisted by default; set visibility to <code class=\"rounded bg-surface-100 px-1 py-0.5 text-ink\">public</code> to list them here.</p>")
+        h = h + ui_card("Public artifacts", "<p class=\"text-sm text-muted\">Nothing public yet. Published artifacts are unlisted by default; set visibility to <code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 text-ink dark:text-ink-100\">public</code> to list them here.</p>")
     }
 
     // limits + safety
@@ -120,7 +120,7 @@ func fleet_login_page(errmsg) (res) {
     if errmsg != "" { em = "<p class=\"mt-3 text-xs text-danger-400\">" + ui_esc(errmsg) + "</p>" }
     inner := "<div class=\"mx-auto max-w-sm\">"
     inner = inner + "<header class=\"mb-4 flex items-center gap-3\"><h1 class=\"text-xl font-semibold tracking-tight\">hart</h1>" + ui_badge("operator", "blue") + "</header>"
-    inner = inner + ui_card("Operator sign-in", "<form method=\"POST\" action=\"/_fleet/login\" class=\"flex flex-col gap-3\"><p class=\"text-sm text-muted\">Enter the instance admin token (<code class=\"rounded bg-surface-100 px-1 py-0.5 text-ink\">HART_ADMIN_TOKEN</code>) to view the fleet.</p><input type=\"password\" name=\"token\" placeholder=\"admin token\" autofocus autocomplete=\"current-password\" class=\"w-full rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm text-ink\"><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">View fleet</button>" + em + "</form>")
+    inner = inner + ui_card("Operator sign-in", "<form method=\"POST\" action=\"/_fleet/login\" class=\"flex flex-col gap-3\"><p class=\"text-sm text-muted\">Enter the instance admin token (<code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 text-ink dark:text-ink-100\">HART_ADMIN_TOKEN</code>) to view the fleet.</p><input type=\"password\" name=\"token\" placeholder=\"admin token\" autofocus autocomplete=\"current-password\" class=\"w-full rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm text-ink\"><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">View fleet</button>" + em + "</form>")
     inner = inner + "</div>"
     r := response("401 Unauthorized", "text/html; charset=utf-8", dash_page(inner))
     r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'self'")
