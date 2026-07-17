@@ -64,6 +64,18 @@ func serve_status(req) (res) {
     pub := ui_code_block("publish to this instance", "export HART_URL=" + base + "\nhart publish page.html --owner you --artifact my-page\n# -> " + base + "/a/you/my-page")
     h = h + ui_card("Publish here", "<div class=\"flex flex-col gap-3\"><p class=\"text-sm text-muted\">One POST; the page is the body. Or drive it with the CLI:</p>" + pub + "<p class=\"text-xs text-muted\">Full contract: <a class=\"text-accent hover:underline\" href=\"" + base + "/guide\">/guide</a> &middot; <a class=\"text-accent hover:underline\" href=\"" + base + "/llms.txt\">/llms.txt</a></p></div>")
 
+    // connect an agent: install one-liner, MCP config, drop-in skill
+    setup := "<div class=\"flex flex-col gap-3\">"
+    setup = setup + "<p class=\"text-sm text-muted\">Install the CLI, pre-pointed at this instance:</p>"
+    setup = setup + ui_code_block("install", "curl -fsSL " + base + "/install.sh | sh")
+    setup = setup + "<p class=\"text-sm text-muted\">Or wire hart into an <span class=\"text-ink\">MCP</span>-native agent (Claude Desktop, Cursor, &hellip;) as native tools &mdash; add to your MCP client config:</p>"
+    setup = setup + ui_code_block("mcp client config", "{\"mcpServers\":{\"hart\":{\"command\":\"hart\",\"args\":[\"mcp\"],\"env\":{\"HART_URL\":\"" + base + "\"}}}}")
+    setup = setup + "<p class=\"text-xs text-muted\">Tools: <code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 text-ink dark:text-ink-100\">hart_publish · hart_data · hart_list · hart_get · hart_stats · hart_stale · hart_explore</code></p>"
+    setup = setup + "<p class=\"text-sm text-muted\">Make any terminal agent publish here by default &mdash; self-install the drop-in skill:</p>"
+    setup = setup + ui_code_block("agent skill", "hart skill > ~/.claude/skills/hart/SKILL.md")
+    setup = setup + "</div>"
+    h = h + ui_card("Connect an agent", setup)
+
     // public artifacts table
     if len(arts) > 0 {
         rows := []string{}

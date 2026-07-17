@@ -232,6 +232,9 @@ func owner_bytes(db, owner) (n) {
 
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
+// hart_version — single source of truth for the version reported to clients (MCP serverInfo).
+func hart_version() (s) { s = "0.2.7" }
+
 func unq(s) (o) {
     o = s
     n := len(s)
@@ -1658,7 +1661,7 @@ func cmd_mcp(a) {
         if hasid == 1 { idr, _ := json_get(line, ".id"); id = idr }   // echo id verbatim (number or string)
         if m == "initialize" {
             pv := json_field(line, ".params.protocolVersion", "2024-11-05")
-            mcp_result(id, "{\"protocolVersion\":\"" + jesc(pv) + "\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"hart\",\"version\":\"0.2.2\"}}")
+            mcp_result(id, "{\"protocolVersion\":\"" + jesc(pv) + "\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"hart\",\"version\":\"" + hart_version() + "\"}}")
             continue
         }
         if m == "tools/list" { mcp_result(id, mcp_tools_json()); continue }
