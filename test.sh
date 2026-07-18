@@ -152,6 +152,8 @@ has "still free after invalid key" "$(./hart license status)" '"licensed":false'
 has "status exposes limits + free ceiling" "$(./hart license status)" '"free_ceiling_mb"'
 has "default effective quota is 30MB (unchanged for free)" "$(./hart license status)" '"owner_mb":30'
 has "free tier is not unlimited" "$(./hart license status)" '"unlimited":false'
+# audit log is a pro feature: gated when unlicensed
+has "audit log gated to Pro (403)" "$(./hart audit 2>&1)" "hart Pro feature"
 
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status; do
