@@ -410,7 +410,7 @@ func owner_bytes(db, owner) (n) {
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
 // hart_version — single source of truth for the version reported to clients (MCP serverInfo).
-func hart_version() (s) { s = "0.4.1" }
+func hart_version() (s) { s = "0.4.2" }
 
 func unq(s) (o) {
     o = s
@@ -1369,6 +1369,7 @@ func skill_md(base, authline) (s) {
     s = s + "## Living deliverables — update data without re-uploading\n\nPublish a template once, then push just the data; the same URL re-renders. The page reads `{{key}}` placeholders and/or the `window.HART_DATA` global.\n\n```sh\nhart publish chart.html --owner <you> --artifact sales\nhart data <you>/sales '{\"points\":[3,1,4,1,5]}'   # same URL, fresh render\n```\nGreat for status boards / dashboards an agent keeps current on a cron. Check how a page is doing with `hart stats <you>/sales` — views, last view, freshness, top referrers (server-side, privacy-respecting). Give a monitored dashboard a freshness SLA (`hart fresh <you>/sales 15m`) and `hart stale` flags it if the updates ever stop — hart emits the signal, your cron alerts.\n\n"
     s = s + "## Discover what you published\n\n```sh\nhart list --owner <you>          # your artifacts (JSON: id, title, latest, updated)\nhart get <owner>/<artifact>      # one artifact's metadata + versions\nhart explore [query]             # public discovery feed across the instance\n```\nOperators of an instance they host can set `HART_ADMIN_TOKEN` and use `hart admin owners` / `hart admin list` to discover **every** owner's artifacts (cross-owner) — the fleet-wide view.\n\n"
     s = s + "## Visibility\n\n`--visibility unlisted` (default: public-read, unlisted) · `public` (listed at `/explore`) · `private` (password-gated; agents send `X-Hart-Read-Key` / `HART_READ_KEY`). Set at publish (`--visibility --read-key`) or later via `hart visibility <id> <mode>`.\n\n"
+    s = s + "## Teams, SSO & Pro\n\nSome features need a **hart Pro** license — run `hart upgrade` for a checkout link (hand the URL to the human; they're emailed a key; then `hart license <key>`, or set `HART_LICENSE_KEY` on the daemon; `hart license status` shows your tier). Pro unlocks higher storage limits, `hart audit` (who changed what), and **teams**.\n\n**Teams** — share an `--owner` namespace with per-member keys: an admin runs `hart team invite <owner> <email>`; each member holds their own key (send it as `HART_MEMBER_KEY` or `--member-key`), and the audit log records who did what. Revoke with `hart team rm`.\n\n**SSO self-onboarding** — a member runs `hart join <owner>`, opens the returned link to sign in, and their agent receives the member key (no key hand-off). hart is a **generic OpenID Connect client**: to enable it, the operator sets on the daemon `HART_OIDC_ISSUER` (your IdP — Auth0/Okta/Keycloak/Google/machin-idp/…), `HART_OIDC_CLIENT_ID`, `HART_OIDC_CLIENT_SECRET` (optional `HART_OIDC_SCOPES`, default `openid email`), and registers `" + base + "/team/callback` as the redirect URI at that IdP. Unset = SSO off (teams still work via member keys).\n\n"
     s = s + "## Full manual\n\nRun `hart guide` or GET `" + base + "/guide.md` — every command, flag, and the admin API, version-exact. AI-first sitemap: `" + base + "/llms.txt`.\n"
 }
 
@@ -1402,6 +1403,7 @@ func install_sh(base) (s) {
     s = s + "echo \"  export HART_URL=$HART_URL_DEFAULT\" >&2\n"
     s = s + "echo \"  hart publish page.html --owner you --artifact my-page   # -> a live URL\" >&2\n"
     s = s + "echo \"  hart skill > ~/.claude/skills/hart/SKILL.md             # make agents publish here by default\" >&2\n"
+    s = s + "echo \"  hart upgrade                                            # hart Pro: limits, audit, teams (+SSO: set HART_OIDC_ISSUER/CLIENT_ID/CLIENT_SECRET)\" >&2\n"
 }
 
 // llms_txt — the concise /llms.txt (the llms.txt convention): an at-a-glance orientation + links.
