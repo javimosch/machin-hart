@@ -154,6 +154,9 @@ has "default effective quota is 30MB (unchanged for free)" "$(./hart license sta
 has "free tier is not unlimited" "$(./hart license status)" '"unlimited":false'
 # audit log is a pro feature: gated when unlicensed
 has "audit log gated to Pro (403)" "$(./hart audit 2>&1)" "hart Pro feature"
+# teams gated to Pro
+has "team add gated to Pro" "$(./hart team add acme x@y.co 2>&1)" "hart Pro feature"
+has "team list gated to Pro" "$(./hart team list acme 2>&1)" "hart Pro feature"
 
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status; do
