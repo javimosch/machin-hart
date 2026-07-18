@@ -58,7 +58,7 @@ func csp_jsx_live() (c) {
 // can run their own hart-cloud. (Current default is a DEV key — replace before selling.)
 func license_pubkey() (h) {
     h = env("HART_LICENSE_PUBKEY")
-    if h == "" { h = "6818ae460984533bd68168e5e2ffafdd3e2790a549d6378cd809dd0a27f4cc8b" }
+    if h == "" { h = "284381ce529e6971c46f4b403fefb33c50468b50de8b1302af37ebfd0b04ac05" }
 }
 
 func lic_b64pad(s) (t) {
@@ -407,8 +407,7 @@ func owner_bytes(db, owner) (n) {
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
 // hart_version — single source of truth for the version reported to clients (MCP serverInfo).
-func hart_version() (s) { s = "0.3.5" }
-// (teams part 1: per-member keys; SSO dashboard is part 2)
+func hart_version() (s) { s = "0.3.6" }
 
 func unq(s) (o) {
     o = s
