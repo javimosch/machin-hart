@@ -16,9 +16,9 @@ func section(id, title, desc, body) (h) {
 }
 
 func app_view(unused) (h) {
-    h = ui_navbar("hart", []string{"What", "Model", "Self-host", "GitHub"}, []string{"#what", "#model", "#selfhost", "https://github.com/javimosch/hart"}, "")
+    h = ui_navbar("hart", []string{"What", "Model", "Self-host", "GitHub"}, []string{"#what", "#model", "#selfhost", "https://github.com/javimosch/machin-hart"}, "")
 
-    cta := "<a class=\"" + ui_button_classes("primary") + "\" href=\"https://github.com/javimosch/hart\">Get hart</a>"
+    cta := "<a class=\"" + ui_button_classes("primary") + "\" href=\"https://github.com/javimosch/machin-hart\">Get hart</a>"
     cta = cta + "<a class=\"" + ui_button_classes("ghost") + "\" href=\"#what\">How it works</a>"
     h = h + ui_hero("Ship an HTML page from your terminal. Get a live URL back.",
         "One binary that hosts self-contained HTML and JSX — versioned, sandboxed, and updatable with just data. Built for agents, run by you.", cta)
@@ -40,14 +40,14 @@ func app_view(unused) (h) {
     grid = grid + feature("Content-addressed", "Publishes are hash-addressed and deduplicated. The store is just the filesystem — no index, schedule with plain cron.")
     grid = grid + feature("Operator visibility", "Run one instance for all your agents. An admin token unlocks cross-owner discovery — list every owner and artifact, and move/rename them in place (history + read-key preserved).")
     grid = grid + feature("Living deliverables", "A page can stay alive: push new data to the same URL, or let hart self-refresh it on a schedule from a URL or command. Opt a page into live mode and it repaints in the browser without a reload.")
-    grid = grid + feature("hart Pro (open-core)", "The CLI is fully free; a license key unlocks higher storage limits, an audit log (who changed what), and teams. Honest, offline-verified keys — buy agent-first with <code class=\"rounded bg-surface-100 px-1 py-0.5 text-ink\">hart upgrade</code>.")
-    grid = grid + feature("Teams & SSO", "Share a namespace with per-member keys, each with its own identity in the audit log. Members self-onboard with <code class=\"rounded bg-surface-100 px-1 py-0.5 text-ink\">hart join</code> via any OpenID Connect provider you point it at — you bring the IdP.")
+    grid = grid + feature("hart Pro (open-core)", "The CLI is fully free; a license key unlocks higher storage limits, an audit log (who changed what), and teams. Honest, offline-verified keys — buy agent-first with <code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 text-ink dark:text-ink-100\">hart upgrade</code>.")
+    grid = grid + feature("Teams & SSO", "Share a namespace with per-member keys, each with its own identity in the audit log. Members self-onboard with <code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 text-ink dark:text-ink-100\">hart join</code> via any OpenID Connect provider you point it at — you bring the IdP.")
     grid = grid + "</div>"
     h = h + section("what", "What it is", "The agent-first artifact host, at a glance.", grid)
 
     // --- Template + data model ---
     tpl := "<div class=\"flex flex-col gap-4\">"
-    tpl = tpl + "<p class=\"text-sm leading-6 text-muted\">Publish a template once, then push just the data — the artifact re-renders. An agent keeps a page live as its source data changes. Use double-brace placeholders, or read <code class=\"rounded bg-surface-100 px-1 py-0.5 text-ink\">window.HART_DATA</code> from your script.</p>"
+    tpl = tpl + "<p class=\"text-sm leading-6 text-muted\">Publish a template once, then push just the data — the artifact re-renders. An agent keeps a page live as its source data changes. Use double-brace placeholders, or read <code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 text-ink dark:text-ink-100\">window.HART_DATA</code> from your script.</p>"
     tpl = tpl + ui_code_block("1 - publish a template", "echo '<h1>Hello, {{name}}</h1>' > g.html\nhart publish g.html --owner acme --artifact hello\n# -> /a/acme/hello")
     tpl = tpl + ui_code_block("2 - push data (one call, re-renders live)", "hart data acme/hello data.json\n# data.json holds the values; /a/acme/hello now greets by name")
     tpl = tpl + ui_code_block("3 - or let hart keep it fresh itself", "hart refresh acme/hello --url https://api/metrics --every 15m\nhart live acme/hello on   # repaint in the browser, no reload")
@@ -74,5 +74,5 @@ func app_view(unused) (h) {
     h = h + section("faq", "FAQ", "", faq)
 
     h = h + ui_footer("hart &mdash; the show arm of the agent-first stack. This page is built with <span class=\"text-ink\">machin</span> + machin-web-ui.",
-        []string{"GitHub", "machin", "machin-web-ui"}, []string{"https://github.com/javimosch/hart", "https://github.com/javimosch/machin", "https://github.com/javimosch/machin-web-ui"})
+        []string{"GitHub", "machin", "machin-web-ui"}, []string{"https://github.com/javimosch/machin-hart", "https://github.com/javimosch/machin", "https://github.com/javimosch/machin-web-ui"})
 }
