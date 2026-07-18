@@ -129,6 +129,20 @@ has "refresh --off disables" "$(./hart refresh acme/page --off)" '"enabled":fals
 ./hart publish "$P" --owner acme --artifact rtmp >/dev/null
 has "rm cleans up the refresh row" "$(./hart refresh acme/rtmp)" '"configured":false'
 
+echo "== live repaint (browser, D2 slice 2) =="
+LIVE="$TMP/live.html"; printf '<div id=x></div><script>window.addEventListener("hart:data",function(e){})</script>' > "$LIVE"
+./hart publish "$LIVE" --owner acme --artifact live --live >/dev/null
+./hart data acme/live '{"count":7}' >/dev/null
+has "live page relaxes CSP to connect-src 'self'" "$(curl -s -D - -o /dev/null "$HART_URL/a/acme/live")" "connect-src 'self'"
+has "live page injects the self-poller" "$(curl -s "$HART_URL/a/acme/live")" "/a/acme/live/data.json"
+eq  "data.json serves current data" "$(curl -s "$HART_URL/a/acme/live/data.json")" '{"count":7}'
+# a pristine (never-live) artifact stays fully locked down
+./hart publish "$LIVE" --owner acme --artifact plainx >/dev/null
+has "non-live page keeps default-src 'none'" "$(curl -s -D - -o /dev/null "$HART_URL/a/acme/plainx")" "default-src 'none'"
+case "$(curl -s -D - -o /dev/null "$HART_URL/a/acme/plainx")" in *"connect-src"*) bad "non-live page has NO connect-src";; *) ok "non-live page has NO connect-src";; esac
+has "hart live off returns to lockdown" "$(./hart live acme/live off; curl -s -D - -o /dev/null "$HART_URL/a/acme/live")" "default-src 'none'"
+case "$(curl -s -D - -o /dev/null "$HART_URL/a/acme/live")" in *"connect-src"*) bad "live off removed connect-src";; *) ok "live off removed connect-src";; esac
+
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status; do
   eq "GET /$ep -> 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/$ep")" "200"
