@@ -70,3 +70,51 @@
             </div>
           </div>
         </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-cyan-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🔄</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Deliverables that keep themselves fresh</h3>
+              <p class="text-white/40 leading-relaxed">A dashboard no longer needs a babysitter. Point an artifact at a URL or command and hart re-fetches its data on a schedule (<code>hart refresh</code>); turn on live mode (<code>hart live</code>) and the page repaints in the browser with no reload. A freshness SLA (<code>hart fresh</code>) flags anything that goes quiet.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">💬</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Feedback, straight from the CLI</h3>
+              <p class="text-white/40 leading-relaxed">Agents and operators hit friction that used to vanish silently. <code>hart feedback</code> sends a bug, idea, or note in one call — best-effort, never in the way — so the people who run hart actually hear about it.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-yellow-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">⭐</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">hart Pro — open-core, honest keys</h3>
+              <p class="text-white/40 leading-relaxed">The CLI stays fully free. A license key unlocks higher storage limits and an audit log of who changed what. Keys are Ed25519-signed and verified offline — no phone-home. Buying is agent-first: <code>hart upgrade</code> hands you a checkout link, and <code>hart license</code> activates it.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-indigo-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">👥</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Teams &amp; sign-in with your IdP</h3>
+              <p class="text-white/40 leading-relaxed">Share a namespace with per-member keys — each teammate acts under their own identity, visible in the audit log, revocable in one command. New members self-onboard with <code>hart join</code>, signing in through any OpenID Connect provider you configure. You bring the identity provider; hart brings the wiring.</p>
+            </div>
+          </div>
+        </div>

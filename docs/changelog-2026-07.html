@@ -111,6 +111,54 @@
           </div>
         </div>
 
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-cyan-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🔄</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Deliverables that keep themselves fresh</h3>
+              <p class="text-white/40 leading-relaxed">A dashboard no longer needs a babysitter. Point an artifact at a URL or command and hart re-fetches its data on a schedule (<code>hart refresh</code>); turn on live mode (<code>hart live</code>) and the page repaints in the browser with no reload. A freshness SLA (<code>hart fresh</code>) flags anything that goes quiet.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">💬</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Feedback, straight from the CLI</h3>
+              <p class="text-white/40 leading-relaxed">Agents and operators hit friction that used to vanish silently. <code>hart feedback</code> sends a bug, idea, or note in one call — best-effort, never in the way — so the people who run hart actually hear about it.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-yellow-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">⭐</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">hart Pro — open-core, honest keys</h3>
+              <p class="text-white/40 leading-relaxed">The CLI stays fully free. A license key unlocks higher storage limits and an audit log of who changed what. Keys are Ed25519-signed and verified offline — no phone-home. Buying is agent-first: <code>hart upgrade</code> hands you a checkout link, and <code>hart license</code> activates it.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-indigo-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">👥</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Teams &amp; sign-in with your IdP</h3>
+              <p class="text-white/40 leading-relaxed">Share a namespace with per-member keys — each teammate acts under their own identity, visible in the audit log, revocable in one command. New members self-onboard with <code>hart join</code>, signing in through any OpenID Connect provider you configure. You bring the identity provider; hart brings the wiring.</p>
+            </div>
+          </div>
+        </div>
+
       </div>
 
       <!-- Technical Changelog -->
@@ -122,6 +170,26 @@
             <span>🚀</span> Features
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: teams SSO — agent-first self-onboarding via `hart join` (teams Part 2)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: hart upgrade — agent-first purchase (mint a checkout link) (M3 Plan A)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: hart Pro teams — per-member keys for a shared namespace (M3 Plan A, slice 1)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: hart Pro audit log (M3 Plan A, slice 1) — who changed what</li>
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: hart Pro limits gating (M3 Plan A, slice 1) — per-owner storage quota</li>
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: hart Pro license machinery (M3 Plan A, slice 0 — open-core foundation)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: living loop slice 2 — live browser repaint (opt-in, no reload)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: living loop — hart self-refreshes artifacts on a schedule (D2 slice 1)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>feat: hart feedback — dual-write feedback command (closes the loop)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>feat(digest): --stdout — render without publishing (feeds an emailer)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>feat(ops): digest.sh — publish the operator digest to hart itself</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>feat: adoption digest — hart admin digest + /_fleet activity strip (move B)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>feat(dashboard): link to /guide.md#mcp on the Connect-an-agent card</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>feat(dashboard): "Connect an agent" card on the instance page — install, MCP, skill</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>feat: operator dashboard at /_fleet — the visual fleet cockpit</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>feat: hart mcp — stdio MCP server wrapping the CLI (A3 of agent-native distribution)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>feat: hart stale + fresh — staleness alerting for living deliverables (D-slice-2)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>feat: hart stats — living-deliverable analytics (D of the roadmap)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>feat: hart install one-liner — GET /install.sh (A2 of agent-native distribution)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>feat: hart skill — drop-in agent SKILL.md (A1 of agent-native distribution)</li>
             <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>feat: hart admin mv — move/rename an artifact in place (keeps history + read-key)</li>
             <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>feat: admin god-token for cross-owner visibility (hart admin owners/list)</li>
             <li><span class="text-slate-500 text-sm mr-3">[13/07]</span>feat: operational instance dashboard at /_status (machin-web-ui, teal) (#2)</li>
@@ -130,11 +198,56 @@
         </section>
 
         <section>
+          <h2 class="text-2xl font-semibold text-red-400 mb-4 flex items-center gap-2">
+            <span>🐛</span> Bug Fixes
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>fix: rm/admin-mv now maintain the refresh table (no orphan self-refresh sources)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>fix(digest): use timezone-aware UTC (drop utcnow deprecation warning)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>fix(dashboard): readable inline <code> on the dark page (login + /_status)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>fix(deploy): pass remote script via stdin; tab-delimit rotate; fix dry-run label</li>
+          </ul>
+        </section>
+
+        <section>
           <h2 class="text-2xl font-semibold text-emerald-400 mb-4 flex items-center gap-2">
             <span>📚</span> Documentation
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>docs: complete the hart help JSON catalog — Pro commands + env + guide</li>
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>docs: wire teams SSO / OIDC env vars into the skill + installer (M3 Plan A)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>docs: hosted-tier interest CTA — email javi@intrane.fr</li>
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>docs: record the origin-isolation decision — single-origin, DECLINED for now</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>docs(llms): make llms.txt an AI-first sitemap linking /guide.md</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>docs: admin mv examples in guide, July changelog, site copy for admin</li>
             <li><span class="text-slate-500 text-sm mr-3">[07/07]</span>docs: refresh README/CONTRACT/ROADMAP/VISION to shipped reality</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2 class="text-2xl font-semibold text-amber-400 mb-4 flex items-center gap-2">
+            <span>🚜</span> Refactor
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>refactor: hart teams SSO is now a generic OpenID Connect client (drop portier coupling)</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2 class="text-2xl font-semibold text-blue-400 mb-4 flex items-center gap-2">
+            <span>🧪</span> Testing
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>test: end-to-end regression suite (test.sh) — 38 checks over the whole surface</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2 class="text-2xl font-semibold text-white/40 mb-4 flex items-center gap-2">
+            <span>⚙️</span> Miscellaneous Tasks
+          </h2>
+          <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>chore: rotate hart Pro signing key to a clean (non-transcript) seed</li>
           </ul>
         </section>
 
@@ -143,6 +256,10 @@
             <span>💼</span> Other
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>harden: anti-clickjacking on the operator dashboard (Phase 0 of origin isolation)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>ops: scripts/deploy.sh — deploy with backup rotation (closes #3)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>peage overage: X-Peage-Wallet buys past the free rate limit (publish + data)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>site: rebuild docs/ with the Operator visibility card (wasm toolchain fixed)</li>
             <li><span class="text-slate-500 text-sm mr-3">[13/07]</span>site: enrich the landing to match hart.intrane.fr's depth + fix dead anchors</li>
             <li><span class="text-slate-500 text-sm mr-3">[13/07]</span>site: widen layout to max-w-6xl (~80% on a laptop, was max-w-2xl ~47%)</li>
             <li><span class="text-slate-500 text-sm mr-3">[13/07]</span>site: fix contrast — force class-mode dark + teal accent button</li>
