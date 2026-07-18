@@ -157,6 +157,8 @@ has "audit log gated to Pro (403)" "$(./hart audit 2>&1)" "hart Pro feature"
 # teams gated to Pro
 has "team add gated to Pro" "$(./hart team add acme x@y.co 2>&1)" "hart Pro feature"
 has "team list gated to Pro" "$(./hart team list acme 2>&1)" "hart Pro feature"
+# upgrade: agent-first buy — fails gracefully when hart-cloud is unreachable
+eq "upgrade errors cleanly if hart-cloud down" "$(HART_CLOUD_URL=http://127.0.0.1:1 ./hart upgrade >/dev/null 2>&1; echo $?)" "100"
 
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status; do
