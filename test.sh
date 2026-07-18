@@ -143,6 +143,12 @@ case "$(curl -s -D - -o /dev/null "$HART_URL/a/acme/plainx")" in *"connect-src"*
 has "hart live off returns to lockdown" "$(./hart live acme/live off; curl -s -D - -o /dev/null "$HART_URL/a/acme/live")" "default-src 'none'"
 case "$(curl -s -D - -o /dev/null "$HART_URL/a/acme/live")" in *"connect-src"*) bad "live off removed connect-src";; *) ok "live off removed connect-src";; esac
 
+echo "== pro license (M3 slice 0) =="
+has "no license -> free tier" "$(./hart license status)" '"tier":"free"'
+has "no license -> not licensed" "$(./hart license status)" '"licensed":false'
+has "garbage key stored but invalid" "$(./hart license 'hart_pro.bogus.sig')" '"valid":false'
+has "still free after invalid key" "$(./hart license status)" '"licensed":false'
+
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status; do
   eq "GET /$ep -> 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/$ep")" "200"

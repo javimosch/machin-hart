@@ -48,6 +48,76 @@ func csp_jsx_live() (c) {
     c = "default-src 'none'; connect-src 'self'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; font-src data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 }
 
+// ---- hart Pro license (M3 Plan A, slice 0) --------------------------------
+// Open-core: pro features gate behind `licensed(feature)`. A key is an Ed25519-signed token
+// (`hart_pro.<b64url(payload)>.<b64url(sig)>`) minted by hart-cloud and verified OFFLINE here —
+// the binary embeds the public key, no phone-home. Enforcement is honest, not DRM: the source
+// is public and the check is removable; people pay for support/updates/compliance.
+
+// The signing public key. Default is the intrane key; HART_LICENSE_PUBKEY overrides it so anyone
+// can run their own hart-cloud. (Current default is a DEV key — replace before selling.)
+func license_pubkey() (h) {
+    h = env("HART_LICENSE_PUBKEY")
+    if h == "" { h = "6818ae460984533bd68168e5e2ffafdd3e2790a549d6378cd809dd0a27f4cc8b" }
+}
+
+func lic_b64pad(s) (t) {
+    t = replace(s, "-", "+")
+    t = replace(t, "_", "/")
+    while (len(t) % 4) != 0 { t = t + "=" }
+}
+func lic_b64_str(s) (o) { o = base64_decode(lic_b64pad(s)) }
+func lic_b64_bytes(s) (o) { o = base64_decode_bytes(lic_b64pad(s)) }
+
+func lic_split3(s) (a, b, c) {
+    a = ""  b = ""  c = ""
+    i := index(s, ".")
+    if i < 0 { return }
+    a = substr(s, 0, i)
+    rest := substr(s, i + 1, len(s))
+    j := index(rest, ".")
+    if j < 0 { b = rest  return }
+    b = substr(rest, 0, j)
+    c = substr(rest, j + 1, len(rest))
+}
+
+// parse_license — verify signature + expiry. valid=1 only if the sig checks against the embedded
+// pubkey AND exp is in the future. features is the raw JSON array string from the payload.
+func parse_license(token) (valid, plan, features, exp) {
+    valid = 0  plan = ""  features = "[]"  exp = 0
+    if token == "" { return }
+    p, si, sigb := lic_split3(token)
+    if p != "hart_pro" || si == "" || sigb == "" { return }
+    if ed25519_verify(from_hex(license_pubkey()), bytes("hart_pro." + si), lic_b64_bytes(sigb)) == false { return }
+    payload := lic_b64_str(si)
+    pv, _ := json_get(payload, ".plan")
+    plan = unq(pv)
+    ev, _ := json_get(payload, ".exp")
+    exp = parse_int(ev)
+    fv, ferr := json_get(payload, ".features")
+    if ferr == "" { features = fv }
+    if exp > now() { valid = 1 }
+}
+
+// current_license — the active key: HART_LICENSE_KEY env first, else the stored license row.
+func current_license() (tok) {
+    tok = env("HART_LICENSE_KEY")
+    if tok != "" { return }
+    db := opendb()
+    rows := sqlite_query(db, "SELECT token FROM license WHERE id = 1", []string{})
+    sqlite_close(db)
+    tv, _ := json_get(rows, "[0].token")
+    tok = unq(tv)
+}
+
+// licensed — is `feature` unlocked by the current, valid license? The gate every pro feature calls.
+func licensed(feature) (ok) {
+    ok = 0
+    valid, plan, features, exp := parse_license(current_license())
+    if valid == 0 { return }
+    if index(features, "\"" + feature + "\"") >= 0 { ok = 1 }
+}
+
 func runtime_dir() (d) {
     d = env("HART_RUNTIME_DIR")
     if d == "" { d = "runtime" }
@@ -84,6 +154,7 @@ func opendb() (db) {
     // itself (kind 'url' = GET the URL; 'cmd' = run a shell command, operator/admin only). D2.
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS refresh(artifact_id TEXT PRIMARY KEY, kind TEXT DEFAULT 'url', source TEXT DEFAULT '', header TEXT DEFAULT '', every INTEGER DEFAULT 0, next INTEGER DEFAULT 0, last INTEGER DEFAULT 0, last_status TEXT DEFAULT '', enabled INTEGER DEFAULT 1)", []string{})
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN live INTEGER DEFAULT 0", []string{})   // D2 slice 2: page may fetch its own /data.json and repaint (relaxes CSP to connect-src 'self')
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS license(id INTEGER PRIMARY KEY, token TEXT DEFAULT '', updated INTEGER DEFAULT 0)", []string{})   // M3 Plan A: hart Pro license key (single row id=1)
 }
 
 // referer_host — the bare host of an inbound Referer header ("" -> "direct"). Self-referrals
@@ -255,7 +326,7 @@ func owner_bytes(db, owner) (n) {
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
 // hart_version — single source of truth for the version reported to clients (MCP serverInfo).
-func hart_version() (s) { s = "0.3.1" }
+func hart_version() (s) { s = "0.3.2" }
 
 func unq(s) (o) {
     o = s
@@ -1180,7 +1251,7 @@ func guide_md(base, authline) (g) {
     g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
     g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). Anonymous (no-owner) artifacts get a random id.\n\n"
     g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
-    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `feedback <msg> [--kind bug\\|idea\\|praise] [--context <c>]` | send feedback (dual-writes to this instance + a central relay) |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `refresh <id> [--url <URL>\\|--cmd '<sh>'] --every <dur> [--header 'H: v']\\|--off\\|--now` | daemon self-refreshes the artifact's data on a schedule (living loop) |\n| `live <id> <on\\|off>` | allow the page to poll its own data.json and repaint live (opt-in CSP relax) |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `mcp` | run as a stdio MCP server (native tools for MCP agents) |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## MCP (native tools for MCP-capable agents)\n\nBesides the CLI, hart can run as a **stdio MCP server** so MCP-native agents (Claude Desktop, Cursor, …) get hart as first-class tools. One binary, no extra runtime — it wraps hart's own HTTP API and inherits auth from env. Configure your MCP client:\n\n```json\n{\"mcpServers\":{\"hart\":{\"command\":\"hart\",\"args\":[\"mcp\"],\"env\":{\"HART_URL\":\"" + base + "\"}}}}\n```\nTools exposed: `hart_publish`, `hart_data`, `hart_list`, `hart_get`, `hart_stats`, `hart_stale`, `hart_explore`. (The CLI remains the primary interface; MCP is an additional surface.)\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Living loop (self-refreshing deliverables)\n\n`hart data` and `hart fresh`/`hart stale` assume **something external** keeps pushing data. `hart refresh` closes the loop: the daemon runs a **source** on a schedule and pushes the result as the artifact's live data itself — no external cron. Pair it with `hart fresh` and the SLA stays green because hart is the one keeping it green.\n\n```sh\n# GET a JSON URL every 15 min and make it the artifact's data (url sources need the owner key)\nhart refresh you/board --url https://api.example.com/metrics --every 15m --header 'Authorization: Bearer XYZ'\n\n# or run a shell command (pipes/curl|jq ok) — arbitrary shell on the server, so ADMIN ONLY\nhart refresh you/board --cmd 'curl -s https://api.example.com/m | jq .summary' --every 15m\n\nhart refresh you/board            # show config + last run status\nhart refresh you/board --now      # run once, right now, inline\nhart refresh you/board --off      # stop refreshing\n```\nThe source's output must be a JSON object or array (it becomes `window.HART_DATA` + `{{key}}`); non-JSON or a failed fetch is recorded in `last_status` and the existing data is left untouched. Minimum interval 30s. `--url` sources need the owner key; `--cmd` sources require `HART_ADMIN_TOKEN` (they execute shell on your box). The daemon runs due sources every few seconds in-process — one binary, no scheduler to deploy.\n\n**Live repaint (no reload).** By default a refreshed page shows new data on the *next load*. Mark an artifact **live** and it repaints while someone's watching it: hart injects a small poller that fetches the artifact's own `" + base + "/a/<id>/data.json` and updates `window.HART_DATA`, then fires a `hart:data` event. Your template paints from `window.HART_DATA` on load and repaints on the event:\n\n```html\n<script>\n  function paint(d){ /* render d */ }\n  paint(window.HART_DATA);                               // initial\n  addEventListener('hart:data', e => paint(e.detail));   // live updates\n</script>\n```\n```sh\nhart publish board.html --owner you --artifact board --live   # publish as live\nhart live you/board on|off                                    # toggle anytime (setting a refresh source turns it on)\n```\nLive is **opt-in per artifact**: only a live page's CSP is relaxed to `connect-src 'self'` (so it can fetch *its own* data.json and nothing else) — every other artifact keeps the full `default-src 'none'` lockdown. The poll interval tracks the refresh cadence (override with `window.HART_LIVE_MS`). `data.json` uses the same read-gating as the page (a private artifact's poll rides its unlock cookie).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin digest [--days N]       # adoption: new owners/artifacts (default 7d), totals, top by views\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**Visual operator dashboard:** point a browser at `" + base + "/_fleet` and sign in with the admin token — every owner + artifact (incl. unlisted/private), view counts, and stale living-deliverables flagged, server-rendered. The JSON API above is for agents; `/_fleet` is for you.\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
+    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `feedback <msg> [--kind bug\\|idea\\|praise] [--context <c>]` | send feedback (dual-writes to this instance + a central relay) |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `refresh <id> [--url <URL>\\|--cmd '<sh>'] --every <dur> [--header 'H: v']\\|--off\\|--now` | daemon self-refreshes the artifact's data on a schedule (living loop) |\n| `live <id> <on\\|off>` | allow the page to poll its own data.json and repaint live (opt-in CSP relax) |\n| `license <key>` / `license status` | set / inspect the hart Pro license (unlocks pro features) |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `mcp` | run as a stdio MCP server (native tools for MCP agents) |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## MCP (native tools for MCP-capable agents)\n\nBesides the CLI, hart can run as a **stdio MCP server** so MCP-native agents (Claude Desktop, Cursor, …) get hart as first-class tools. One binary, no extra runtime — it wraps hart's own HTTP API and inherits auth from env. Configure your MCP client:\n\n```json\n{\"mcpServers\":{\"hart\":{\"command\":\"hart\",\"args\":[\"mcp\"],\"env\":{\"HART_URL\":\"" + base + "\"}}}}\n```\nTools exposed: `hart_publish`, `hart_data`, `hart_list`, `hart_get`, `hart_stats`, `hart_stale`, `hart_explore`. (The CLI remains the primary interface; MCP is an additional surface.)\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Living loop (self-refreshing deliverables)\n\n`hart data` and `hart fresh`/`hart stale` assume **something external** keeps pushing data. `hart refresh` closes the loop: the daemon runs a **source** on a schedule and pushes the result as the artifact's live data itself — no external cron. Pair it with `hart fresh` and the SLA stays green because hart is the one keeping it green.\n\n```sh\n# GET a JSON URL every 15 min and make it the artifact's data (url sources need the owner key)\nhart refresh you/board --url https://api.example.com/metrics --every 15m --header 'Authorization: Bearer XYZ'\n\n# or run a shell command (pipes/curl|jq ok) — arbitrary shell on the server, so ADMIN ONLY\nhart refresh you/board --cmd 'curl -s https://api.example.com/m | jq .summary' --every 15m\n\nhart refresh you/board            # show config + last run status\nhart refresh you/board --now      # run once, right now, inline\nhart refresh you/board --off      # stop refreshing\n```\nThe source's output must be a JSON object or array (it becomes `window.HART_DATA` + `{{key}}`); non-JSON or a failed fetch is recorded in `last_status` and the existing data is left untouched. Minimum interval 30s. `--url` sources need the owner key; `--cmd` sources require `HART_ADMIN_TOKEN` (they execute shell on your box). The daemon runs due sources every few seconds in-process — one binary, no scheduler to deploy.\n\n**Live repaint (no reload).** By default a refreshed page shows new data on the *next load*. Mark an artifact **live** and it repaints while someone's watching it: hart injects a small poller that fetches the artifact's own `" + base + "/a/<id>/data.json` and updates `window.HART_DATA`, then fires a `hart:data` event. Your template paints from `window.HART_DATA` on load and repaints on the event:\n\n```html\n<script>\n  function paint(d){ /* render d */ }\n  paint(window.HART_DATA);                               // initial\n  addEventListener('hart:data', e => paint(e.detail));   // live updates\n</script>\n```\n```sh\nhart publish board.html --owner you --artifact board --live   # publish as live\nhart live you/board on|off                                    # toggle anytime (setting a refresh source turns it on)\n```\nLive is **opt-in per artifact**: only a live page's CSP is relaxed to `connect-src 'self'` (so it can fetch *its own* data.json and nothing else) — every other artifact keeps the full `default-src 'none'` lockdown. The poll interval tracks the refresh cadence (override with `window.HART_LIVE_MS`). `data.json` uses the same read-gating as the page (a private artifact's poll rides its unlock cookie).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin digest [--days N]       # adoption: new owners/artifacts (default 7d), totals, top by views\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**Visual operator dashboard:** point a browser at `" + base + "/_fleet` and sign in with the admin token — every owner + artifact (incl. unlisted/private), view counts, and stale living-deliverables flagged, server-rendered. The JSON API above is for agents; `/_fleet` is for you.\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
     g = g + "## Env\n\n`HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key) · `HART_READ_KEY` (read key for a private artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.\n\nSource + releases: https://github.com/javimosch/machin-hart\n"
 }
 
@@ -1345,6 +1416,8 @@ func hart_route(req) (res) {
     if req.method == "POST" && p == "/v1/refresh" { return h_refresh_set(req) }
     if req.method == "GET" && p == "/v1/refresh" { return h_refresh_get(req) }
     if req.method == "POST" && p == "/v1/live" { return h_live(req) }
+    if req.method == "GET" && p == "/v1/license/status" { return h_license_status(req) }
+    if req.method == "POST" && p == "/v1/license" { return h_license_set(req) }
     if req.method == "GET" && p == "/v1/stale" { return h_stale(req) }
     if req.method == "GET" && p == "/v1/public" { return h_public(req) }
     if req.method == "GET" && p == "/explore" { return serve_explore(req) }
@@ -1435,6 +1508,38 @@ func h_refresh_run(req) (res) {
     st := ""
     if len(rl2) > 0 { st = rl2[0].last_status }
     res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"ran\":true,\"last_status\":\"" + jesc(st) + "\"}")
+}
+
+// POST /v1/license  body = the license key. Operator-only (admin token if configured, else the
+// publish-token gate). Validates before storing. HART_LICENSE_KEY env is the other way to set it.
+func h_license_set(req) (res) {
+    db := opendb()
+    if env("HART_ADMIN_TOKEN") != "" {
+        if check_admin(req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"admin token required to set the license\"}") }
+    } else {
+        if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    }
+    key := trim(req.body)
+    if key == "" { key = query(req, "key") }
+    if key == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty license key\"}") }
+    valid, plan, features, exp := parse_license(key)
+    sqlite_exec(db, "INSERT OR REPLACE INTO license(id, token, updated) VALUES(1, ?, ?)", []string{key, str(now())})
+    sqlite_close(db)
+    v := "false"
+    if valid == 1 { v = "true" }
+    res = ok_json("{\"ok\":true,\"stored\":true,\"valid\":" + v + ",\"plan\":\"" + jesc(plan) + "\",\"features\":" + features + ",\"exp\":" + str(exp) + "}")
+}
+
+// GET /v1/license/status — the active tier/plan/features/expiry (never echoes the raw key). Open read.
+func h_license_status(req) (res) {
+    tok := current_license()
+    valid, plan, features, exp := parse_license(tok)
+    src := "none"
+    if env("HART_LICENSE_KEY") != "" { src = "env" } else { if tok != "" { src = "stored" } }
+    v := "false"
+    tier := "free"
+    if valid == 1 { v = "true"  tier = plan }
+    res = ok_json("{\"ok\":true,\"licensed\":" + v + ",\"tier\":\"" + jesc(tier) + "\",\"plan\":\"" + jesc(plan) + "\",\"features\":" + features + ",\"exp\":" + str(exp) + ",\"source\":\"" + src + "\"}")
 }
 
 // POST /v1/live?id=&on=1|0  — toggle live mode (D2 slice 2). Live pages get connect-src 'self'
@@ -1706,6 +1811,28 @@ func refresh_headers(a, want_admin) (h) {
     if bt != "" { h = append(h, "authorization: Bearer " + bt) }
     ok := owner_key_of(a)
     if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
+}
+
+// hart license <key> | hart license status — set/inspect the hart Pro license (M3 Plan A).
+func cmd_license(a) {
+    if len(a) >= 3 && a[2] == "status" {
+        status, resp, err := http_request("GET", hart_url() + "/v1/license/status", auth_headers(), "")
+        if err != "" { die(100, "cannot reach hart daemon: " + err) }
+        if status != 200 { write(2, resp + "\n"); exit(80) }
+        say(resp); return
+    }
+    if len(a) < 3 { die(80, "usage: hart license <key>  |  hart license status") }
+    h := []string{}
+    at := admin_token()
+    if at != "" { h = append(h, "authorization: Bearer " + at) } else {
+        t := client_token()
+        if t != "" { h = append(h, "authorization: Bearer " + t) }
+    }
+    h = append(h, "content-type: text/plain")
+    status, resp, err := http_request("POST", hart_url() + "/v1/license", h, a[2])
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }
+    say(resp)
 }
 
 // hart live <id> <on|off> — toggle whether the page may fetch its own data.json and repaint live.
@@ -2105,6 +2232,7 @@ func main() {
     if cmd == "fresh" { cmd_fresh(a); return }
     if cmd == "refresh" { cmd_refresh(a); return }
     if cmd == "live" { cmd_live(a); return }
+    if cmd == "license" { cmd_license(a); return }
     if cmd == "stale" { cmd_stale(a); return }
     if cmd == "mcp" { cmd_mcp(a); return }
     if cmd == "feedback" { cmd_feedback(a); return }

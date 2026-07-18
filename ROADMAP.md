@@ -65,21 +65,59 @@ Legend: 🎯 goal · 📦 deliverable · ✅ done-when.
 - ✅ An artifact has a stable URL, a version history with one-command rollback, an access mode,
   and can live on the user's own domain and storage.
 
-## M3 — Hosted tier + billing (the micro-SaaS)
+## M3 — hart Pro (self-host, open-core) — **DECIDED 2026-07-18: Plan A**
 
-🎯 Sell "not having to run it" without ever selling commodity infra.
-- 📦 **Thin hosted control plane** (mirrors grepapi on dk1): managed daemon, BYO storage/domain.
-- 📦 **Stripe billing**: free tier (N artifacts, unlisted-only, hart-subdomain); Pro flat monthly
-  (custom domains, private/auth artifacts, higher limits, version retention, analytics). Same
-  `metadata`-tagged checkout + webhook pattern grepapi uses.
-- 📦 **Usage/limits**: per-account artifact count, storage bytes, bandwidth surfaced in
-  `hart usage`. Bandwidth is the only metered dimension (the one real variable cost); everything
-  else flat.
-- 📦 **Landing + guide**: `hart guide` (in-binary, version-exact agent skill) + a self-serve
-  install (`curl … | sh`) that drops the CLI + a one-liner to point it at the hosted control
-  plane or a self-host.
-- ✅ A stranger can `hart upgrade`, publish to their own domain on their own bucket, and be
-  billed a flat, predictable price.
+🎯 Monetize *without* building multi-tenant hosting or reversing the declined origin-isolation
+decision (C). A team runs its **own** hart and pays for a **license key** to unlock pro features.
+Single-tenant → no shared-origin risk. Managed multi-tenant Cloud is **M3.5**, deferred behind C.
+
+**Model:** open-core with license keys. The OSS `machin-hart` CLI stays fully functional for the
+free tier; pro capabilities ship *in the same binary* behind an `if licensed(feature)` gate.
+Enforcement is honest, not DRM — the source is public and the check is patchable; people pay for
+support, updates, and compliance, not because they can't remove an `if`. Never claw back a
+shipped-free feature — **Pro is strictly additive.**
+
+**Delivery/gating (decided):** in-binary, **Ed25519 key-gated, verified offline** (no phone-home).
+Reuse machin-idp's EdDSA signing. A key is a signed `{email, plan, features:[…], iat, exp, kid}`
+token; the OSS binary embeds the public key and verifies signature + expiry + feature flags locally.
+
+**Billing (decided): support both, combine later.** Issuance is billing-agnostic — a key is minted
+by `hart-cloud` regardless of how it was paid for. Start with manual issuance for design partners,
+then wire Stripe (flat, chatsnip's `billing.src` pattern) and/or peage (metered — hart is *already*
+wired to peage via `peage_overage`). The key doesn't care which rail sold it.
+
+**Repos:**
+- `machin-hart` (OSS, existing): the engine + `hart license` + `licensed()` gate + pro features.
+- `hart-cloud` (**new, private**): the seller/issuer — Ed25519 private key, `issue` command, Stripe
+  webhook → auto-issue, peage option, and (later) a buyer self-serve panel. Never ships the private key.
+
+**Enforcement lives on the daemon** (limits, domains, teams are server-side): `HART_LICENSE_KEY` env
+on the daemon (like `HART_ADMIN_TOKEN`), or a `license` row set via `hart license <key>` (admin) so
+it persists without a restart. Honest degradation: no key → free tier (unchanged); expired → new pro
+*actions* blocked, existing artifacts never bricked (warn, grandfather what's already serving).
+
+### Slices
+- **Slice 0 — license machinery (foundation).** `hart-cloud` repo + Ed25519 keypair + `issue`;
+  OSS embeds the pubkey, adds `licensed(feature)`, `hart license <key>` / `hart license status`,
+  `HART_LICENSE_KEY`. Gate one trivial flag end-to-end to prove the path. No billing yet
+  (manual `hart-cloud issue --email --plan --exp` for design partners).
+- **Slice 1 — first pro features (the reason to pay).** Start with **limits** (free tier caps
+  owners/storage/retention via the existing `HART_MAX_OWNER_MB`; Pro unlocks configurable/higher)
+  + a flagship: **custom domains** (`hart domain <id> <sub.you.dev>` → Cloudflare+Traefik via the
+  hotify pattern). Then **team ACLs via portier SSO** and an **audit log**.
+- **Slice 2 — billing automation.** Stripe checkout + HMAC webhook → auto-issue key (lift
+  chatsnip `billing.src`); optional peage-metered overage. `hart upgrade` opens checkout.
+- **Slice 3 — buyer self-serve panel** (hart-cloud, optional): see/renew/manage the license.
+
+- ✅ A team can `hart license <key>` on their own box and unlock custom domains, teams, and higher
+  limits — billed a flat, predictable price — with zero multi-tenant infra on our side.
+
+## M3.5 — managed Cloud (multi-tenant) — deferred, GATED ON C
+
+🎯 Host strangers' artifacts (signup + billing on hart.intrane.fr). **Requires origin isolation (C)**
+— tenant JS on a shared origin is the exact case C exists for. Reuses M3's license/billing plumbing;
+adds accounts, per-tenant quotas, per-artifact subdomains, provisioning, abuse heuristics. Build only
+once Pro-self-host demand proves the market.
 
 ## M4 — Agent-native distribution + observability
 
