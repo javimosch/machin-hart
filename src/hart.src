@@ -526,6 +526,7 @@ func h_admin_mv(req) (res) {
     sqlite_exec(db, "BEGIN", []string{})
     sqlite_exec(db, "UPDATE artifacts SET id = ?, owner = ?, name = ? WHERE id = ?", []string{nnid, nowner, nname, from})
     sqlite_exec(db, "UPDATE versions SET artifact_id = ? WHERE artifact_id = ?", []string{nnid, from})
+    sqlite_exec(db, "UPDATE refresh SET artifact_id = ? WHERE artifact_id = ?", []string{nnid, from})   // self-refresh source follows the move
     sqlite_exec(db, "COMMIT", []string{})
     sqlite_close(db)
     base := pubbase(req)
@@ -724,6 +725,7 @@ func h_delete(req, id) (res) {
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     if owner_authorized(db, oa[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + oa[0].owner + "' is claimed — pass the owner key\"}") }
     sqlite_exec(db, "DELETE FROM versions WHERE artifact_id = ?", []string{id})
+    sqlite_exec(db, "DELETE FROM refresh WHERE artifact_id = ?", []string{id})   // no orphan self-refresh source
     sqlite_exec(db, "DELETE FROM artifacts WHERE id = ?", []string{id})
     sqlite_close(db)
     res = ok_json("{\"ok\":true,\"deleted\":\"" + id + "\"}")

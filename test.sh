@@ -122,6 +122,12 @@ has "cmd --now pushes JSON" "$(./hart refresh acme/page --now && curl -s "$HART_
 # non-JSON output is rejected, existing data preserved
 has "non-JSON source rejected" "$(./hart refresh acme/page --cmd 'echo nope' --every 30s >/dev/null; ./hart refresh acme/page --now)" "not JSON"
 has "refresh --off disables" "$(./hart refresh acme/page --off)" '"enabled":false'
+# rm must clean up the refresh row (no orphan self-refresh source)
+./hart publish "$P" --owner acme --artifact rtmp >/dev/null
+./hart refresh acme/rtmp --url "$HART_URL/_health" --every 30s >/dev/null
+./hart rm acme/rtmp >/dev/null
+./hart publish "$P" --owner acme --artifact rtmp >/dev/null
+has "rm cleans up the refresh row" "$(./hart refresh acme/rtmp)" '"configured":false'
 
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status; do
