@@ -107,6 +107,22 @@ has "mcp initialize -> serverInfo" "$MCP" '"serverInfo"'
 has "mcp tools/list -> hart_publish" "$MCP" 'hart_publish'
 has "mcp tools/call hart_list works" "$MCP" 'acme/page'
 
+echo "== living loop (refresh) =="
+# url source: point at the daemon's own /_health (valid JSON), min-interval clamps 5s -> 30s
+RS=$(./hart refresh acme/page --url "$HART_URL/_health" --every 5s)
+eq "refresh set ok" "$(echo "$RS" | jget ok)" "True"
+eq "sub-30s interval clamps to 30" "$(echo "$RS" | jget every)" "30"
+has "refresh --now runs and reports ok" "$(./hart refresh acme/page --now)" '"last_status":"ok"'
+has "page now embeds the fetched data" "$(curl -s "$HART_URL/a/acme/page")" '"service":"hart"'
+has "refresh status shows configured" "$(./hart refresh acme/page)" '"configured":true'
+# cmd source requires the admin token; without it -> 403
+has "cmd source needs admin (403 without)" "$(HART_ADMIN_TOKEN= ./hart refresh acme/page --cmd 'echo x' --every 30s 2>&1)" "admin only"
+has "cmd source ok with admin token" "$(./hart refresh acme/page --cmd 'printf "{\"n\":1}"' --every 30s)" '"kind":"cmd"'
+has "cmd --now pushes JSON" "$(./hart refresh acme/page --now && curl -s "$HART_URL/a/acme/page")" '"n":1'
+# non-JSON output is rejected, existing data preserved
+has "non-JSON source rejected" "$(./hart refresh acme/page --cmd 'echo nope' --every 30s >/dev/null; ./hart refresh acme/page --now)" "not JSON"
+has "refresh --off disables" "$(./hart refresh acme/page --off)" '"enabled":false'
+
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status; do
   eq "GET /$ep -> 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/$ep")" "200"
