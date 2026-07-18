@@ -148,6 +148,10 @@ has "no license -> free tier" "$(./hart license status)" '"tier":"free"'
 has "no license -> not licensed" "$(./hart license status)" '"licensed":false'
 has "garbage key stored but invalid" "$(./hart license 'hart_pro.bogus.sig')" '"valid":false'
 has "still free after invalid key" "$(./hart license status)" '"licensed":false'
+# limits gating (slice 1): status exposes the effective quota; default free ceiling = 30MB (no regression)
+has "status exposes limits + free ceiling" "$(./hart license status)" '"free_ceiling_mb"'
+has "default effective quota is 30MB (unchanged for free)" "$(./hart license status)" '"owner_mb":30'
+has "free tier is not unlimited" "$(./hart license status)" '"unlimited":false'
 
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status; do
