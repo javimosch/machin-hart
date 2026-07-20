@@ -769,8 +769,12 @@ func h_admin_mv(req) (res) {
     if valid_id(from) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
     si := index(to, "/")
     if si <= 0 { return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"to must be <owner>/<name>\"}") }
-    nowner := slugify(substr(to, 0, si))
-    nname := slugify(substr(to, si + 1, len(to)))
+    raw_nowner := substr(to, 0, si)
+    raw_nname := substr(to, si + 1, len(to))
+    if reject_bad_slug(raw_nowner) == 1 { return response("400 Bad Request", "application/json", invalid_owner_json()) }
+    if reject_bad_slug(raw_nname) == 1 { return response("400 Bad Request", "application/json", invalid_artifact_json()) }
+    nowner := slugify(raw_nowner)
+    nname := slugify(raw_nname)
     if nowner == "" || nname == "" { return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"to must be <owner>/<name> (both non-empty after slugify)\"}") }
     nnid := nowner + "/" + nname
     if valid_id(nnid) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
@@ -1145,7 +1149,7 @@ func render_page_jsx(jsx, title, data) (page) {
 
 // serve a same-origin runtime asset (react/react-dom/babel) from disk. Path-safe (no traversal).
 func serve_runtime(fname) (res) {
-    if index(fname, "..") >= 0 || index(fname, "/") >= 0 { return response("400 Bad Request", "text/plain", "bad path") }
+    if index(fname, "..") >= 0 || index(fname, "/") >= 0 || index(fname, "\\") >= 0 { return response("400 Bad Request", "text/plain", "bad path") }
     body := read_file(runtime_dir() + "/" + fname)
     if body == "" { return response("404 Not Found", "text/plain; charset=utf-8", "runtime asset not found — deploy the hart runtime dir") }
     r := response("200 OK", "application/javascript; charset=utf-8", body)
@@ -1777,6 +1781,9 @@ func h_license_status(req) (res) {
 // GET /v1/audit?owner=&action=&since=&limit=  — the pro audit log (who changed what). Operator-gated
 // (admin token if configured, else the publish token) AND requires the audit-log license feature.
 func h_audit(req) (res) {
+    raw_owner := query(req, "owner")
+    if reject_bad_slug(raw_owner) == 1 { return response("400 Bad Request", "application/json", invalid_owner_json()) }
+    owner := slugify(raw_owner)
     db := opendb()
     if env("HART_ADMIN_TOKEN") != "" {
         if check_admin(req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"admin token required\"}") }
@@ -1786,9 +1793,6 @@ func h_audit(req) (res) {
     if licensed_db(db, "audit-log") == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"the audit log is a hart Pro feature — hart license\",\"pro\":0}") }
     w := "1=1"
     params := []string{}
-    raw_owner := query(req, "owner")
-    owner := slugify(raw_owner)
-    if reject_bad_slug(raw_owner) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_owner_json()) }
     if owner != "" { w = w + " AND owner = ?"  params = append(params, owner) }
     action := query(req, "action")
     if action != "" { w = w + " AND action = ?"  params = append(params, action) }
