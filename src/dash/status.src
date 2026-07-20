@@ -93,11 +93,14 @@ func serve_status(req) (res) {
     }
 
     // limits + safety
+    hard := "off (set HART_PUBLIC or HART_HARDEN=1 for production)"
+    if hardening_active() == 1 { hard = "on — body cap, access log, read timeout (see /byok.md)" }
     lim := ui_list_group([]string{
         "sandbox", "strict CSP - no external scripts, no network",
         "versions", "immutable, hash-addressed, instant rollback",
         "rate limit", "per-IP submit cap (HART_MAX_SUBMITS_PER_MIN)",
-        "namespace size", "per-owner cap (HART_MAX_OWNER_MB)"})
+        "namespace size", "per-owner cap (HART_MAX_OWNER_MB)",
+        "production hardening", hard})
     h = h + ui_card("Limits and safety", lim)
 
     h = h + ui_footer("hart - one self-hosted binary. This is the instance status page.",
