@@ -134,6 +134,62 @@ hart license status             # tier, features, storage limits
 
 ---
 
+## Production layout (systemd)
+
+Minimal unit — adjust paths and user:
+
+```ini
+# /etc/systemd/system/hart.service
+[Unit]
+Description=hart artifact host
+After=network.target
+
+[Service]
+Type=simple
+User=hart
+EnvironmentFile=/etc/hart/env
+ExecStart=/usr/local/bin/hart serve 8799
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Behind nginx or Traefik, terminate TLS at the proxy and forward to `:8799`. Set
+`HART_PUBLIC=https://hart.example.com` and `HART_TRUST_PROXY=1` so rate limits use the real
+client IP and returned URLs are canonical.
+
+---
+
+## Post-deploy verification
+
+After first deploy, confirm the instance is locked down:
+
+```sh
+# health + agent onboarding docs
+curl -sf "$HART_PUBLIC/_health"
+curl -sf "$HART_PUBLIC/byok.md" | head
+curl -sf "$HART_PUBLIC/llms.txt" | head
+
+# publish gate (when HART_TOKEN is set)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?owner=test&artifact=x" \
+  -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 401
+
+# input validation
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?owner=!!!&artifact=x" \
+  -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 400
+
+# body cap (when HART_PUBLIC / HART_HARDEN is on)
+python3 -c 'print("x"*20000000)' | curl -s -o /dev/null -w '%{http_code}\n' \
+  -X POST "$HART_PUBLIC/v1/publish?owner=t&artifact=big" -H 'content-type: text/html' --data-binary @-  # expect 413
+```
+
+Run `./test.sh` from a release checkout (or `./build.sh && ./test.sh`) for the full 90+ check
+regression suite before marking production ready.
+
+---
+
 ## Related docs
 
 - [`README.md`](../README.md) — overview and self-host quickstart

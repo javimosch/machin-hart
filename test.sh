@@ -106,6 +106,10 @@ MCP=$(printf '%s\n' \
 has "mcp initialize -> serverInfo" "$MCP" '"serverInfo"'
 has "mcp tools/list -> hart_publish" "$MCP" 'hart_publish'
 has "mcp tools/call hart_list works" "$MCP" 'acme/page'
+MCP_BAD=$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hart_get","arguments":{"id":"bad$/x"}}}' \
+  | ./hart mcp 2>/dev/null)
+has "mcp hart_get rejects invalid id" "$MCP_BAD" 'invalid id'
 
 echo "== living loop (refresh) =="
 # url source: point at the daemon's own /_health (valid JSON), min-interval clamps 5s -> 30s
@@ -169,6 +173,11 @@ eq "traversal id rejected at publish (400)" "$(curl -s -o /dev/null -w '%{http_c
 eq "GET /a traversal rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "$HART_URL/a/acme/../page")" "400"
 eq "GET /a/bad\$/data.json rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/bad\$/data.json")" "400"
 eq "CLI invalid owner rejected locally (80)" "$(printf '<h1>x</h1>' > "$TMP/x2.html"; ./hart publish "$TMP/x2.html" --owner '!!!' --artifact x >/dev/null 2>&1; echo $?)" "80"
+eq "CLI rm invalid id rejected locally (80)" "$(./hart rm 'acme/../page' >/dev/null 2>&1; echo $?)" "80"
+eq "CLI admin mv invalid from rejected locally (80)" "$(./hart admin mv '!!!/x' moved/y >/dev/null 2>&1; echo $?)" "80"
+eq "CLI admin mv invalid to rejected locally (80)" "$(./hart admin mv acme/page '!!!' >/dev/null 2>&1; echo $?)" "80"
+eq "API visibility invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/visibility?id=bad\$&visibility=public")" "400"
+eq "API DELETE invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$HART_URL/v1/artifacts/bad\$")" "400"
 # boot a hardened daemon (HART_PUBLIC triggers machweb harden + body cap)
 HPORT=$((PORT + 1))
 export HART_DB="$TMP/harden.db"
@@ -198,6 +207,7 @@ echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status byok.md; do
   eq "GET /$ep -> 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/$ep")" "200"
 done
+has "byok.md documents HART_ADMIN_TOKEN" "$(curl -s "$HART_URL/byok.md")" "HART_ADMIN_TOKEN"
 
 echo "== operator dashboard =="
 eq "/_fleet unauth -> 401" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/_fleet")" "401"

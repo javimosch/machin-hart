@@ -511,6 +511,15 @@ func require_owner_slug(raw, label) (out) {
     if raw != "" && out == "" { die(80, "invalid " + label + " — use letters, digits, or hyphens") }
 }
 
+// require_mv_to — CLI-side guard for admin mv destination (owner/name).
+func require_mv_to(raw) {
+    si := index(raw, "/")
+    if si <= 0 { die(80, "target must be owner/name") }
+    nowner := require_owner_slug(substr(raw, 0, si), "owner")
+    nname := require_owner_slug(substr(raw, si + 1, len(raw)), "name")
+    require_valid_id(nowner + "/" + nname)
+}
+
 // cli_resolve_id — pick id from --id, --owner+--artifact, or a positional arg; validate locally.
 func cli_resolve_id(a, pos) (id) {
     owner := flagv(a, "--owner", "")
@@ -2284,7 +2293,7 @@ func cmd_license(a) {
 // hart join <owner> — SSO self-onboarding: get a login link, sign in once, receive your member key.
 func cmd_join(a) {
     if len(a) < 3 { die(80, "usage: hart join <owner>  (sign in via SSO to claim your team member key)") }
-    owner := a[2]
+    owner := require_owner_slug(a[2], "owner")
     status, resp, err := http_request("POST", hart_url() + "/v1/join/start?owner=" + url_encode(owner), []string{}, "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
@@ -2315,7 +2324,8 @@ func cmd_team(a) {
     if sub == "add" {
         if len(a) < 5 { die(80, "usage: hart team add <owner> <email> [--role writer|admin]") }
         role := flagv(a, "--role", "writer")
-        url := base + "/v1/team?owner=" + url_encode(a[3]) + "&email=" + url_encode(a[4]) + "&role=" + url_encode(role)
+        owner := require_owner_slug(a[3], "owner")
+        url := base + "/v1/team?owner=" + url_encode(owner) + "&email=" + url_encode(a[4]) + "&role=" + url_encode(role)
         status, resp, err := http_request("POST", url, refresh_headers(a, 1), "")
         if err != "" { die(100, "cannot reach hart daemon: " + err) }
         if status != 200 { write(2, resp + "\n"); exit(80) }
@@ -2324,7 +2334,8 @@ func cmd_team(a) {
     if sub == "invite" {
         if len(a) < 5 { die(80, "usage: hart team invite <owner> <email> [--role writer|admin]  (member self-claims a key via `hart join`)") }
         role := flagv(a, "--role", "writer")
-        url := base + "/v1/team?owner=" + url_encode(a[3]) + "&email=" + url_encode(a[4]) + "&role=" + url_encode(role) + "&invite=1"
+        owner := require_owner_slug(a[3], "owner")
+        url := base + "/v1/team?owner=" + url_encode(owner) + "&email=" + url_encode(a[4]) + "&role=" + url_encode(role) + "&invite=1"
         status, resp, err := http_request("POST", url, refresh_headers(a, 1), "")
         if err != "" { die(100, "cannot reach hart daemon: " + err) }
         if status != 200 { write(2, resp + "\n"); exit(80) }
@@ -2332,14 +2343,16 @@ func cmd_team(a) {
     }
     if sub == "list" {
         if len(a) < 4 { die(80, "usage: hart team list <owner>") }
-        status, resp, err := http_request("GET", base + "/v1/team?owner=" + url_encode(a[3]), refresh_headers(a, 1), "")
+        owner := require_owner_slug(a[3], "owner")
+        status, resp, err := http_request("GET", base + "/v1/team?owner=" + url_encode(owner), refresh_headers(a, 1), "")
         if err != "" { die(100, "cannot reach hart daemon: " + err) }
         if status != 200 { write(2, resp + "\n"); exit(80) }
         say(resp); return
     }
     if sub == "rm" {
         if len(a) < 5 { die(80, "usage: hart team rm <owner> <email>") }
-        url := base + "/v1/team/rm?owner=" + url_encode(a[3]) + "&email=" + url_encode(a[4])
+        owner := require_owner_slug(a[3], "owner")
+        url := base + "/v1/team/rm?owner=" + url_encode(owner) + "&email=" + url_encode(a[4])
         status, resp, err := http_request("POST", url, refresh_headers(a, 1), "")
         if err != "" { die(100, "cannot reach hart daemon: " + err) }
         if status != 200 { write(2, resp + "\n"); exit(80) }
@@ -2558,6 +2571,8 @@ func cmd_admin(a) {
     }
     if sub == "mv" {
         if len(a) < 5 { die(80, "usage: hart admin mv <old-id> <new-owner/new-name>  (move/rename, keeps version history + read-key)") }
+        require_valid_id(a[3])
+        require_mv_to(a[4])
         murl := hart_url() + "/v1/admin/mv?from=" + url_encode(a[3]) + "&to=" + url_encode(a[4])
         status, resp, err := http_request("POST", murl, admin_headers(), "")
         if err != "" { die(100, "cannot reach hart daemon: " + err) }
@@ -2571,7 +2586,7 @@ func cmd_admin(a) {
     if sub == "list" {
         url = hart_url() + "/v1/admin/list"
         owner := flagv(a, "--owner", "")
-        if owner != "" { url = url + "?owner=" + url_encode(owner) }
+        if owner != "" { owner = require_owner_slug(owner, "owner"); url = url + "?owner=" + url_encode(owner) }
     }
     if sub == "digest" {
         url = hart_url() + "/v1/admin/digest"
@@ -2589,7 +2604,7 @@ func cmd_admin(a) {
 func cmd_list(a) {
     url := hart_url() + "/v1/artifacts"
     owner := flagv(a, "--owner", "")
-    if owner != "" { url = url + "?owner=" + url_encode(owner) }
+    if owner != "" { owner = require_owner_slug(owner, "owner"); url = url + "?owner=" + url_encode(owner) }
     status, resp, err := http_request("GET", url, auth_headers(), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status == 401 { die(80, "not authenticated — hart login <token>") }
@@ -2679,6 +2694,7 @@ func mcp_tools_call(line, id) {
         did := json_field(line, ap + "id", "")
         dat := json_field(line, ap + "data", "")
         if did == "" || dat == "" { mcp_content(id, "hart_data: 'id' and 'data' are required", 1); return }
+        if valid_id(did) == 0 { mcp_content(id, "hart_data: invalid id — use owner/artifact (lowercase alnum and hyphens, no ..)", 1); return }
         url := hart_url() + "/v1/data?id=" + url_encode(did)
         h := []string{"content-type: application/json"}
         if tok != "" { h = append(h, "authorization: Bearer " + tok) }
@@ -2696,12 +2712,14 @@ func mcp_tools_call(line, id) {
     if name == "hart_get" {
         gid := json_field(line, ap + "id", "")
         if gid == "" { mcp_content(id, "hart_get: 'id' is required", 1); return }
+        if valid_id(gid) == 0 { mcp_content(id, "hart_get: invalid id — use owner/artifact (lowercase alnum and hyphens, no ..)", 1); return }
         mcp_http(id, "GET", hart_url() + "/v1/artifacts/" + gid + "/versions", auth_headers(), "")
         return
     }
     if name == "hart_stats" {
         sid := json_field(line, ap + "id", "")
         if sid == "" { mcp_content(id, "hart_stats: 'id' is required", 1); return }
+        if valid_id(sid) == 0 { mcp_content(id, "hart_stats: invalid id — use owner/artifact (lowercase alnum and hyphens, no ..)", 1); return }
         h := []string{}
         if atok != "" { h = append(h, "authorization: Bearer " + atok) }
         if okey != "" { h = append(h, "x-hart-owner-key: " + okey) }
