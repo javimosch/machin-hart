@@ -2458,7 +2458,7 @@ func cmd_fresh(a) {
 func cmd_stale(a) {
     url := hart_url() + "/v1/stale?x=1"
     owner := flagv(a, "--owner", "")
-    if owner != "" { url = url + "&owner=" + url_encode(owner) }
+    if owner != "" { owner = require_owner_slug(owner, "owner"); url = url + "&owner=" + url_encode(owner) }
     ot := flagv(a, "--older-than", "")
     if ot != "" { url = url + "&older_than=" + str(parse_duration(ot)) }
     h := []string{}
@@ -2677,9 +2677,14 @@ func mcp_tools_call(line, id) {
     if name == "hart_publish" {
         html := json_field(line, ap + "html", "")
         if html == "" { mcp_content(id, "hart_publish: 'html' is required", 1); return }
+        ow := json_field(line, ap + "owner", "")
+        ar := json_field(line, ap + "artifact", "")
+        if ow != "" && slugify(ow) == "" { mcp_content(id, "hart_publish: invalid owner — use letters, digits, or hyphens", 1); return }
+        if ar != "" && slugify(ar) == "" { mcp_content(id, "hart_publish: invalid artifact — use letters, digits, or hyphens", 1); return }
+        if ow != "" && ar != "" && valid_id(slugify(ow) + "/" + slugify(ar)) == 0 { mcp_content(id, "hart_publish: invalid id — use owner/artifact (lowercase alnum and hyphens, no ..)", 1); return }
         url := hart_url() + "/v1/publish?format=" + url_encode(json_field(line, ap + "format", "html"))
-        ow := json_field(line, ap + "owner", "");     if ow != "" { url = url + "&owner=" + url_encode(ow) }
-        ar := json_field(line, ap + "artifact", "");   if ar != "" { url = url + "&artifact=" + url_encode(ar) }
+        if ow != "" { url = url + "&owner=" + url_encode(ow) }
+        if ar != "" { url = url + "&artifact=" + url_encode(ar) }
         ti := json_field(line, ap + "title", "");      if ti != "" { url = url + "&title=" + url_encode(ti) }
         vi := json_field(line, ap + "visibility", ""); if vi != "" { url = url + "&visibility=" + url_encode(vi) }
         rk := json_field(line, ap + "read_key", "");   if rk != "" { url = url + "&read_key=" + url_encode(rk) }
@@ -2705,7 +2710,10 @@ func mcp_tools_call(line, id) {
     if name == "hart_list" {
         url := hart_url() + "/v1/artifacts"
         ow := json_field(line, ap + "owner", "")
-        if ow != "" { url = url + "?owner=" + url_encode(ow) }
+        if ow != "" {
+            if slugify(ow) == "" { mcp_content(id, "hart_list: invalid owner — use letters, digits, or hyphens", 1); return }
+            url = url + "?owner=" + url_encode(slugify(ow))
+        }
         mcp_http(id, "GET", url, auth_headers(), "")
         return
     }
@@ -2728,7 +2736,11 @@ func mcp_tools_call(line, id) {
     }
     if name == "hart_stale" {
         url := hart_url() + "/v1/stale?x=1"
-        ow := json_field(line, ap + "owner", "");      if ow != "" { url = url + "&owner=" + url_encode(ow) }
+        ow := json_field(line, ap + "owner", "")
+        if ow != "" {
+            if slugify(ow) == "" { mcp_content(id, "hart_stale: invalid owner — use letters, digits, or hyphens", 1); return }
+            url = url + "&owner=" + url_encode(slugify(ow))
+        }
         ot := json_field(line, ap + "older_than", ""); if ot != "" { url = url + "&older_than=" + str(parse_duration(ot)) }
         h := []string{}
         if atok != "" { h = append(h, "authorization: Bearer " + atok) }

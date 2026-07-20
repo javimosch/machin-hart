@@ -101,8 +101,8 @@ func serve_status(req) (res) {
     h = h + ui_card("Limits and safety", lim)
 
     h = h + ui_footer("hart - one self-hosted binary. This is the instance status page.",
-        []string{"guide", "llms.txt", "GitHub"},
-        []string{base + "/guide", base + "/llms.txt", "https://github.com/javimosch/machin-hart"})
+        []string{"guide", "BYOK", "llms.txt", "GitHub"},
+        []string{base + "/guide", base + "/byok.md", base + "/llms.txt", "https://github.com/javimosch/machin-hart"})
 
     r := ok_html(dash_page(h))
     r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:")
