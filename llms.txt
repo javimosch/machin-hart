@@ -20,6 +20,7 @@ This instance: https://hart.intrane.fr (**free/open** — no token needed to pub
 ## Map (AI-first sitemap)
 
 - **https://hart.intrane.fr/guide.md** — the complete, version-exact manual (every command, flags, admin, examples). Start here. Also `hart guide`.
+- **https://hart.intrane.fr/byok.md** — BYOK key map (publish token, owner key, admin, Pro license, production hardening env). Also `docs/BYOK.md` in the repo.
 - https://hart.intrane.fr/skill.md — a drop-in agent SKILL.md (self-install: `hart skill > ~/.claude/skills/hart/SKILL.md`). Also `hart skill`.
 - https://hart.intrane.fr/install.sh — one-line CLI install: `curl -fsSL https://hart.intrane.fr/install.sh | sh` (drops `hart` on PATH, pre-pointed at this instance).
 - https://hart.intrane.fr/llms.txt — this file (30-second orientation).

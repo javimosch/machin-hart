@@ -110,6 +110,18 @@ MCP_BAD=$(printf '%s\n' \
   '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"hart_get","arguments":{"id":"bad$/x"}}}' \
   | ./hart mcp 2>/dev/null)
 has "mcp hart_get rejects invalid id" "$MCP_BAD" 'invalid id'
+MCP_DATA_BAD=$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"hart_data","arguments":{"id":"bad$/x","data":"{}"}}}' \
+  | ./hart mcp 2>/dev/null)
+has "mcp hart_data rejects invalid id" "$MCP_DATA_BAD" 'invalid id'
+MCP_PUB_BAD=$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"hart_publish","arguments":{"html":"<h1>x</h1>","owner":"!!!","artifact":"x"}}}' \
+  | ./hart mcp 2>/dev/null)
+has "mcp hart_publish rejects invalid owner" "$MCP_PUB_BAD" 'invalid owner'
+MCP_LIST_BAD=$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"hart_list","arguments":{"owner":"!!!"}}}' \
+  | ./hart mcp 2>/dev/null)
+has "mcp hart_list rejects invalid owner" "$MCP_LIST_BAD" 'invalid owner'
 
 echo "== living loop (refresh) =="
 # url source: point at the daemon's own /_health (valid JSON), min-interval clamps 5s -> 30s
@@ -178,6 +190,12 @@ eq "CLI admin mv invalid from rejected locally (80)" "$(./hart admin mv '!!!/x' 
 eq "CLI admin mv invalid to rejected locally (80)" "$(./hart admin mv acme/page '!!!' >/dev/null 2>&1; echo $?)" "80"
 eq "API visibility invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/visibility?id=bad\$&visibility=public")" "400"
 eq "API DELETE invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$HART_URL/v1/artifacts/bad\$")" "400"
+eq "API rollback invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/artifacts/bad\$/rollback?to=1")" "400"
+eq "API stats invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/artifacts/bad\$/stats")" "400"
+eq "API fresh invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/fresh?id=bad\$&ttl=60")" "400"
+eq "API refresh invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/refresh?id=bad\$")" "400"
+eq "GET /a/bad\$ rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/bad\$")" "400"
+eq "CLI stale invalid owner rejected locally (80)" "$(./hart stale --owner '!!!' >/dev/null 2>&1; echo $?)" "80"
 # boot a hardened daemon (HART_PUBLIC triggers machweb harden + body cap)
 HPORT=$((PORT + 1))
 export HART_DB="$TMP/harden.db"
