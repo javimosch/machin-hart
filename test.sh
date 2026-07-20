@@ -166,6 +166,9 @@ has "team invite gated to Pro" "$(./hart team invite acme x@y.co 2>&1)" "hart Pr
 echo "== hardening (input validation + production defaults) =="
 eq "invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?owner=!!!&artifact=x" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
 eq "traversal id rejected at publish (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?id=acme/evil/../page" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+eq "GET /a traversal rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "$HART_URL/a/acme/../page")" "400"
+eq "GET /a/bad\$/data.json rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/bad\$/data.json")" "400"
+eq "CLI invalid owner rejected locally (80)" "$(printf '<h1>x</h1>' > "$TMP/x2.html"; ./hart publish "$TMP/x2.html" --owner '!!!' --artifact x >/dev/null 2>&1; echo $?)" "80"
 # boot a hardened daemon (HART_PUBLIC triggers machweb harden + body cap)
 HPORT=$((PORT + 1))
 export HART_DB="$TMP/harden.db"
@@ -176,11 +179,23 @@ sleep 1
 kill -0 "$HSRV" 2>/dev/null || { echo "test: hardened daemon failed to boot"; cat "$TMP/harden.log"; exit 1; }
 BIG="$(python3 -c 'print("x"*200)')"
 eq "hardened daemon rejects oversized body (413)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$HPORT/v1/publish?owner=t&artifact=big" -H 'content-type: text/html' --data-binary "$BIG")" "413"
+curl -s -o /dev/null "http://127.0.0.1:$HPORT/_health" >/dev/null
+has "hardened daemon emits JSON access log" "$(grep -q '"method"' "$TMP/harden.log" && echo yes || echo no)" "yes"
 kill "$HSRV" 2>/dev/null
+# HART_PUBLIC alone (no explicit HART_HARDEN=1) still enables body cap
+HPORT2=$((PORT + 2))
+export HART_DB="$TMP/harden2.db"
+HART_PUBLIC="http://127.0.0.1:$HPORT2" HART_MAX_BODY_BYTES=100 HART_MAX_SUBMITS_PER_MIN=100000 \
+  ./hart serve "$HPORT2" >"$TMP/harden2.log" 2>&1 &
+HSRV2=$!
+sleep 1
+kill -0 "$HSRV2" 2>/dev/null || { echo "test: HART_PUBLIC-only daemon failed to boot"; cat "$TMP/harden2.log"; exit 1; }
+eq "HART_PUBLIC alone rejects oversized body (413)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$HPORT2/v1/publish?owner=t&artifact=big" -H 'content-type: text/html' --data-binary "$BIG")" "413"
+kill "$HSRV2" 2>/dev/null
 export HART_DB="$TMP/test.db"   # restore primary daemon db
 
 echo "== served endpoints =="
-for ep in _health guide.md skill.md llms.txt install.sh _status; do
+for ep in _health guide.md skill.md llms.txt install.sh _status byok.md; do
   eq "GET /$ep -> 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/$ep")" "200"
 done
 
