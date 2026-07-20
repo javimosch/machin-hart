@@ -1804,11 +1804,13 @@ func h_audit(req) (res) {
 // POST /v1/team?owner=&email=&role=  — add a team member; returns a one-time member key. Managing a
 // team needs the owner-key or admin (not a member key), and the teams pro feature.
 func h_team_add(req) (res) {
+    raw_owner := query(req, "owner")
+    if reject_bad_slug(raw_owner) == 1 { return response("400 Bad Request", "application/json", invalid_owner_json()) }
+    owner := slugify(raw_owner)
+    email := query(req, "email")
+    if owner == "" || email == "" { return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?owner= and ?email=\"}") }
     db := opendb()
     if licensed_db(db, "teams") == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"teams is a hart Pro feature — hart license\",\"pro\":0}") }
-    owner := slugify(query(req, "owner"))
-    email := query(req, "email")
-    if owner == "" || email == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?owner= and ?email=\"}") }
     if owner_key_only(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"managing team '" + owner + "' needs its owner-key (or admin); claim the owner first if unclaimed\"}") }
     role := query(req, "role")
     if role == "" { role = "writer" }
@@ -1830,9 +1832,12 @@ func h_team_add(req) (res) {
 
 // GET /v1/team?owner=  — list members (emails + roles, never key hashes).
 func h_team_list(req) (res) {
+    raw_owner := query(req, "owner")
+    if reject_bad_slug(raw_owner) == 1 { return response("400 Bad Request", "application/json", invalid_owner_json()) }
+    owner := slugify(raw_owner)
+    if owner == "" { return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?owner=\"}") }
     db := opendb()
     if licensed_db(db, "teams") == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"teams is a hart Pro feature — hart license\",\"pro\":0}") }
-    owner := slugify(query(req, "owner"))
     if owner_key_only(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"managing team '" + owner + "' needs its owner-key (or admin)\"}") }
     rows := sqlite_query(db, "SELECT owner, email, role, created FROM members WHERE owner = ? ORDER BY created", []string{owner})
     sqlite_close(db)
@@ -1841,11 +1846,13 @@ func h_team_list(req) (res) {
 
 // POST /v1/team/rm?owner=&email=  — remove a member (revokes their key immediately).
 func h_team_rm(req) (res) {
+    raw_owner := query(req, "owner")
+    if reject_bad_slug(raw_owner) == 1 { return response("400 Bad Request", "application/json", invalid_owner_json()) }
+    owner := slugify(raw_owner)
+    email := query(req, "email")
+    if owner == "" || email == "" { return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?owner= and ?email=\"}") }
     db := opendb()
     if licensed_db(db, "teams") == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"teams is a hart Pro feature — hart license\",\"pro\":0}") }
-    owner := slugify(query(req, "owner"))
-    email := query(req, "email")
-    if owner == "" || email == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?owner= and ?email=\"}") }
     if owner_key_only(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"managing team '" + owner + "' needs its owner-key (or admin)\"}") }
     sqlite_exec(db, "DELETE FROM members WHERE owner = ? AND email = ?", []string{owner, email})
     audit(db, "team-rm", owner, "", 0, email, req)
@@ -1907,11 +1914,13 @@ func sso_page(msg, okflag) (res) {
 
 // POST /v1/join/start?owner= — begin onboarding; returns login_url (human opens) + token (CLI polls).
 func h_join_start(req) (res) {
+    raw_owner := query(req, "owner")
+    if reject_bad_slug(raw_owner) == 1 { return response("400 Bad Request", "application/json", invalid_owner_json()) }
+    owner := slugify(raw_owner)
+    if owner == "" { return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?owner=\"}") }
     db := opendb()
     if licensed_db(db, "teams") == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"teams is a hart Pro feature — hart license\",\"pro\":0}") }
     if sso_configured() == 0 { sqlite_close(db); return response("501 Not Implemented", "application/json", "{\"ok\":false,\"error\":\"SSO not configured on this instance (set HART_OIDC_ISSUER/CLIENT_ID/CLIENT_SECRET)\"}") }
-    owner := slugify(query(req, "owner"))
-    if owner == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?owner=\"}") }
     authz, _, _, dok := oidc_endpoints(db)
     if dok == 0 { sqlite_close(db); return response("502 Bad Gateway", "application/json", "{\"ok\":false,\"error\":\"OIDC discovery failed for " + jesc(oidc_issuer()) + "\"}") }
     token := to_hex(rand_bytes(18))
@@ -2060,17 +2069,21 @@ func is_jsonish(s) (ok) {
     if c == "{" || c == "[" { ok = 1 }
 }
 
+// hardening_active — 1 when machweb harden() is enabled (mirrors apply_serve_hardening gates).
+func hardening_active() (on) {
+    on = 0
+    if env("HART_HARDEN") == "0" { return }
+    if env("HART_HARDEN") == "1" { on = 1; return }
+    if env("HART_PUBLIC") != "" { on = 1; return }
+    if env("HART_TRUST_PROXY") == "1" { on = 1 }
+}
+
 // apply_serve_hardening — production defaults via machweb harden(): proxy-aware client IP,
 // Secure cookies, access logs, per-request body cap, read timeout. On when HART_PUBLIC or
 // HART_HARDEN=1 is set; opt out with HART_HARDEN=0 (local dev). HART_TRUST_PROXY=0 keeps
 // direct-socket IP even if harden is on (rate limits can't be spoofed via X-Forwarded-For).
 func apply_serve_hardening() {
-    if env("HART_HARDEN") == "0" { return }
-    on := 0
-    if env("HART_HARDEN") == "1" { on = 1 }
-    if env("HART_PUBLIC") != "" { on = 1 }
-    if env("HART_TRUST_PROXY") == "1" { on = 1 }
-    if on == 0 { return }
+    if hardening_active() == 0 { return }
     mb := parse_int(env("HART_MAX_BODY_BYTES"))
     if mb <= 0 { mb = 10485760 }   // 10 MiB per request
     rt := parse_int(env("HART_READ_TIMEOUT_MS"))

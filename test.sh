@@ -122,6 +122,14 @@ MCP_LIST_BAD=$(printf '%s\n' \
   '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"hart_list","arguments":{"owner":"!!!"}}}' \
   | ./hart mcp 2>/dev/null)
 has "mcp hart_list rejects invalid owner" "$MCP_LIST_BAD" 'invalid owner'
+MCP_STATS_BAD=$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"hart_stats","arguments":{"id":"bad$/x"}}}' \
+  | ./hart mcp 2>/dev/null)
+has "mcp hart_stats rejects invalid id" "$MCP_STATS_BAD" 'invalid id'
+MCP_STALE_BAD=$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"hart_stale","arguments":{"owner":"!!!"}}}' \
+  | ./hart mcp 2>/dev/null)
+has "mcp hart_stale rejects invalid owner" "$MCP_STALE_BAD" 'invalid owner'
 
 echo "== living loop (refresh) =="
 # url source: point at the daemon's own /_health (valid JSON), min-interval clamps 5s -> 30s
@@ -207,6 +215,14 @@ eq "API list invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_co
 eq "API stale invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" "$HART_URL/v1/stale?owner=!!!")" "400"
 eq "API admin list invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" "$HART_URL/v1/admin/list?owner=!!!")" "400"
 eq "GET /o invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/o/!!!")" "400"
+eq "GET /v1/public invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/public?owner=!!!")" "400"
+eq "POST /a/bad\$/unlock rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/a/bad\$/unlock" -d 'key=x')" "400"
+eq "POST /v1/join/start invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/join/start?owner=!!!")" "400"
+has "join/start invalid owner body" "$(curl -s -X POST "$HART_URL/v1/join/start?owner=!!!")" "invalid owner"
+eq "POST /v1/team invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/team?owner=!!!&email=x@y.co")" "400"
+eq "CLI get invalid id rejected locally (80)" "$(./hart get 'bad$/x' >/dev/null 2>&1; echo $?)" "80"
+eq "CLI versions invalid id rejected locally (80)" "$(./hart versions 'bad$/x' >/dev/null 2>&1; echo $?)" "80"
+eq "CLI rollback invalid id rejected locally (80)" "$(./hart rollback 'bad$/x' 1 >/dev/null 2>&1; echo $?)" "80"
 eq "runtime path traversal rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "$HART_URL/_hart/runtime/../react.js")" "400"
 # boot a hardened daemon (HART_PUBLIC triggers machweb harden + body cap)
 HPORT=$((PORT + 1))
@@ -232,12 +248,26 @@ kill -0 "$HSRV2" 2>/dev/null || { echo "test: HART_PUBLIC-only daemon failed to 
 eq "HART_PUBLIC alone rejects oversized body (413)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$HPORT2/v1/publish?owner=t&artifact=big" -H 'content-type: text/html' --data-binary "$BIG")" "413"
 kill "$HSRV2" 2>/dev/null
 export HART_DB="$TMP/test.db"   # restore primary daemon db
+# rate-limit smoke: 2 submits/min → third publish in the same window gets 429
+RPORT=$((PORT + 3))
+export HART_DB="$TMP/rate.db"
+HART_MAX_SUBMITS_PER_MIN=2 ./hart serve "$RPORT" >"$TMP/rate.log" 2>&1 &
+RSRV=$!
+sleep 1
+kill -0 "$RSRV" 2>/dev/null || { echo "test: rate-limit daemon failed to boot"; cat "$TMP/rate.log"; exit 1; }
+RB="$TMP/rate.html"; printf '<h1>r</h1>' > "$RB"
+curl -s -o /dev/null -X POST "http://127.0.0.1:$RPORT/v1/publish?owner=rl&artifact=a" -H 'content-type: text/html' --data-binary @"$RB" >/dev/null
+curl -s -o /dev/null -X POST "http://127.0.0.1:$RPORT/v1/publish?owner=rl&artifact=b" -H 'content-type: text/html' --data-binary @"$RB" >/dev/null
+eq "rate limit: third submit in window -> 429" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$RPORT/v1/publish?owner=rl&artifact=c" -H 'content-type: text/html' --data-binary @"$RB")" "429"
+kill "$RSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
 
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status byok.md; do
   eq "GET /$ep -> 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/$ep")" "200"
 done
 has "byok.md documents HART_ADMIN_TOKEN" "$(curl -s "$HART_URL/byok.md")" "HART_ADMIN_TOKEN"
+has "/_status shows production hardening row" "$(curl -s "$HART_URL/_status")" "production hardening"
 
 echo "== operator dashboard =="
 eq "/_fleet unauth -> 401" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/_fleet")" "401"
