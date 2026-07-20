@@ -176,13 +176,17 @@ curl -sf "$HART_PUBLIC/llms.txt" | head
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?owner=test&artifact=x" \
   -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 401
 
-# input validation
+# input validation (owner + artifact slugs)
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?owner=!!!&artifact=x" \
   -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 400
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?owner=you&artifact=!!!" \
+  -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 400
 
-# input validation (owner slugs + artifact ids)
+# input validation (list/data/admin routes)
 curl -s -o /dev/null -w '%{http_code}\n' "$HART_PUBLIC/v1/artifacts?owner=!!!"   # expect 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/data?id=bad\$" \
+  -H 'content-type: application/json' --data-binary '{}'                         # expect 400
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/data?owner=you&artifact=!!!" \
   -H 'content-type: application/json' --data-binary '{}'                         # expect 400
 
 # body cap (when HART_PUBLIC / HART_HARDEN is on)

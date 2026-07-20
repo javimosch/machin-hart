@@ -130,6 +130,10 @@ MCP_STALE_BAD=$(printf '%s\n' \
   '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"hart_stale","arguments":{"owner":"!!!"}}}' \
   | ./hart mcp 2>/dev/null)
 has "mcp hart_stale rejects invalid owner" "$MCP_STALE_BAD" 'invalid owner'
+MCP_PUB_ART_BAD=$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"hart_publish","arguments":{"html":"<h1>x</h1>","owner":"acme","artifact":"!!!"}}}' \
+  | ./hart mcp 2>/dev/null)
+has "mcp hart_publish rejects invalid artifact" "$MCP_PUB_ART_BAD" 'invalid artifact'
 
 echo "== living loop (refresh) =="
 # url source: point at the daemon's own /_health (valid JSON), min-interval clamps 5s -> 30s
@@ -189,10 +193,13 @@ has "team invite gated to Pro" "$(./hart team invite acme x@y.co 2>&1)" "hart Pr
 
 echo "== hardening (input validation + production defaults) =="
 eq "invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?owner=!!!&artifact=x" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+eq "invalid artifact rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?owner=acme&artifact=!!!" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+has "publish invalid artifact body" "$(curl -s -X POST "$HART_URL/v1/publish?owner=acme&artifact=!!!" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "invalid artifact"
 eq "traversal id rejected at publish (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?id=acme/evil/../page" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
 eq "GET /a traversal rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "$HART_URL/a/acme/../page")" "400"
 eq "GET /a/bad\$/data.json rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/bad\$/data.json")" "400"
 eq "CLI invalid owner rejected locally (80)" "$(printf '<h1>x</h1>' > "$TMP/x2.html"; ./hart publish "$TMP/x2.html" --owner '!!!' --artifact x >/dev/null 2>&1; echo $?)" "80"
+eq "CLI invalid artifact rejected locally (80)" "$(printf '<h1>x</h1>' > "$TMP/x3.html"; ./hart publish "$TMP/x3.html" --owner acme --artifact '!!!' >/dev/null 2>&1; echo $?)" "80"
 eq "CLI rm invalid id rejected locally (80)" "$(./hart rm 'acme/../page' >/dev/null 2>&1; echo $?)" "80"
 eq "CLI admin mv invalid from rejected locally (80)" "$(./hart admin mv '!!!/x' moved/y >/dev/null 2>&1; echo $?)" "80"
 eq "CLI admin mv invalid to rejected locally (80)" "$(./hart admin mv acme/page '!!!' >/dev/null 2>&1; echo $?)" "80"
@@ -210,6 +217,7 @@ eq "CLI fresh invalid id rejected locally (80)" "$(./hart fresh 'bad$/x' 1m >/de
 eq "CLI live invalid id rejected locally (80)" "$(./hart live 'bad$/x' on >/dev/null 2>&1; echo $?)" "80"
 eq "CLI list invalid owner rejected locally (80)" "$(./hart list --owner '!!!' >/dev/null 2>&1; echo $?)" "80"
 eq "API data invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/data?id=bad\$" -H 'content-type: application/json' --data-binary '{}')" "400"
+eq "API data invalid artifact rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/data?owner=acme&artifact=!!!" -H 'content-type: application/json' --data-binary '{}')" "400"
 eq "API live invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/live?id=bad\$&on=1")" "400"
 eq "API list invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/artifacts?owner=!!!")" "400"
 eq "API stale invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" "$HART_URL/v1/stale?owner=!!!")" "400"
@@ -220,10 +228,18 @@ eq "POST /a/bad\$/unlock rejected (400)" "$(curl -s -o /dev/null -w '%{http_code
 eq "POST /v1/join/start invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/join/start?owner=!!!")" "400"
 has "join/start invalid owner body" "$(curl -s -X POST "$HART_URL/v1/join/start?owner=!!!")" "invalid owner"
 eq "POST /v1/team invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/team?owner=!!!&email=x@y.co")" "400"
+eq "POST /v1/team/rm invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/team/rm?owner=!!!&email=x@y.co")" "400"
+eq "GET /v1/audit invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" "$HART_URL/v1/audit?owner=!!!")" "400"
 eq "CLI get invalid id rejected locally (80)" "$(./hart get 'bad$/x' >/dev/null 2>&1; echo $?)" "80"
 eq "CLI versions invalid id rejected locally (80)" "$(./hart versions 'bad$/x' >/dev/null 2>&1; echo $?)" "80"
 eq "CLI rollback invalid id rejected locally (80)" "$(./hart rollback 'bad$/x' 1 >/dev/null 2>&1; echo $?)" "80"
+eq "CLI audit invalid owner rejected locally (80)" "$(./hart audit --owner '!!!' >/dev/null 2>&1; echo $?)" "80"
+eq "CLI team list invalid owner rejected locally (80)" "$(./hart team list '!!!' >/dev/null 2>&1; echo $?)" "80"
+eq "API admin mv invalid to owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/page&to=!!!/x")" "400"
+eq "API admin mv invalid to artifact rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/page&to=acme/!!!")" "400"
+eq "API refresh/run invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/refresh/run?id=bad\$")" "400"
 eq "runtime path traversal rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "$HART_URL/_hart/runtime/../react.js")" "400"
+eq "runtime backslash rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/_hart/runtime/%5C..%5Creact.js")" "400"
 # boot a hardened daemon (HART_PUBLIC triggers machweb harden + body cap)
 HPORT=$((PORT + 1))
 export HART_DB="$TMP/harden.db"
