@@ -196,6 +196,18 @@ eq "API fresh invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code
 eq "API refresh invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/refresh?id=bad\$")" "400"
 eq "GET /a/bad\$ rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/bad\$")" "400"
 eq "CLI stale invalid owner rejected locally (80)" "$(./hart stale --owner '!!!' >/dev/null 2>&1; echo $?)" "80"
+eq "CLI data invalid id rejected locally (80)" "$(./hart data 'bad$/x' '{}' >/dev/null 2>&1; echo $?)" "80"
+eq "CLI visibility invalid id rejected locally (80)" "$(./hart visibility 'bad$/x' public >/dev/null 2>&1; echo $?)" "80"
+eq "CLI fresh invalid id rejected locally (80)" "$(./hart fresh 'bad$/x' 1m >/dev/null 2>&1; echo $?)" "80"
+eq "CLI live invalid id rejected locally (80)" "$(./hart live 'bad$/x' on >/dev/null 2>&1; echo $?)" "80"
+eq "CLI list invalid owner rejected locally (80)" "$(./hart list --owner '!!!' >/dev/null 2>&1; echo $?)" "80"
+eq "API data invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/data?id=bad\$" -H 'content-type: application/json' --data-binary '{}')" "400"
+eq "API live invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/live?id=bad\$&on=1")" "400"
+eq "API list invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/artifacts?owner=!!!")" "400"
+eq "API stale invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" "$HART_URL/v1/stale?owner=!!!")" "400"
+eq "API admin list invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" "$HART_URL/v1/admin/list?owner=!!!")" "400"
+eq "GET /o invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/o/!!!")" "400"
+eq "runtime path traversal rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "$HART_URL/_hart/runtime/../react.js")" "400"
 # boot a hardened daemon (HART_PUBLIC triggers machweb harden + body cap)
 HPORT=$((PORT + 1))
 export HART_DB="$TMP/harden.db"

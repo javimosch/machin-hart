@@ -496,6 +496,16 @@ func valid_id(id) (ok) {
 // invalid_id_json — consistent 400 body for rejected artifact ids (daemon handlers).
 func invalid_id_json() (s) { s = "{\"ok\":false,\"error\":\"invalid id — use owner/artifact (lowercase alnum and hyphens)\"}" }
 
+// invalid_owner_json / invalid_artifact_json — consistent 400 bodies for rejected slugs (daemon).
+func invalid_owner_json() (s) { s = "{\"ok\":false,\"error\":\"invalid owner — use letters, digits, or hyphens\"}" }
+func invalid_artifact_json() (s) { s = "{\"ok\":false,\"error\":\"invalid artifact — use letters, digits, or hyphens\"}" }
+
+// reject_bad_slug — 1 if raw was provided but slugify emptied it (caller should 400).
+func reject_bad_slug(raw) (bad) {
+    bad = 0
+    if raw != "" && slugify(raw) == "" { bad = 1 }
+}
+
 func say(s) { write(1, s + "\n") }
 func die(code, msg) { write(2, "{\"ok\":false,\"error\":\"" + msg + "\"}\n"); exit(code) }
 
@@ -557,8 +567,8 @@ func h_publish(req) (res) {
     raw_artifact := query(req, "artifact")
     owner := slugify(raw_owner)
     artifact := slugify(raw_artifact)
-    if raw_owner != "" && owner == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid owner — use letters, digits, or hyphens\"}") }
-    if raw_artifact != "" && artifact == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid artifact — use letters, digits, or hyphens\"}") }
+    if reject_bad_slug(raw_owner) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_owner_json()) }
+    if reject_bad_slug(raw_artifact) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_artifact_json()) }
     id := query(req, "id")
     if id == "" && owner != "" && artifact != "" { id = owner + "/" + artifact }
     if id != "" && valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid id — use owner/artifact (lowercase alnum and hyphens)\"}") }
@@ -641,8 +651,12 @@ func h_data(req) (res) {
         pok, pres := peage_overage(req, "data overage")
         if pok == 0 { sqlite_close(db); return pres }
     }
-    owner := slugify(query(req, "owner"))
-    artifact := slugify(query(req, "artifact"))
+    raw_owner := query(req, "owner")
+    raw_artifact := query(req, "artifact")
+    owner := slugify(raw_owner)
+    artifact := slugify(raw_artifact)
+    if reject_bad_slug(raw_owner) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_owner_json()) }
+    if reject_bad_slug(raw_artifact) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_artifact_json()) }
     id := query(req, "id")
     if id == "" && owner != "" && artifact != "" { id = owner + "/" + artifact }
     if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need --id or --owner+--artifact\"}") }
@@ -662,7 +676,9 @@ func h_data(req) (res) {
 
 func h_list(req) (res) {
     db := opendb()
-    owner := slugify(query(req, "owner"))
+    raw_owner := query(req, "owner")
+    owner := slugify(raw_owner)
+    if reject_bad_slug(raw_owner) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_owner_json()) }
     if owner != "" {
         // owner-scoped list: gated by the instance publish token, as before.
         if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
@@ -712,7 +728,9 @@ func h_admin_owners(req) (res) {
 func h_admin_list(req) (res) {
     if check_admin(req) == 0 { return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"admin token required — set HART_ADMIN_TOKEN on the daemon and send it (hart admin login <token>)\"}") }
     db := opendb()
-    owner := slugify(query(req, "owner"))
+    raw_owner := query(req, "owner")
+    owner := slugify(raw_owner)
+    if reject_bad_slug(raw_owner) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_owner_json()) }
     rows := ""
     if owner != "" {
         rows = sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views, a.fresh_ttl AS fresh_ttl FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id WHERE a.owner = ? ORDER BY a.updated DESC LIMIT 1000", []string{owner})
@@ -908,7 +926,9 @@ func h_fresh(req) (res) {
 // owner-scoped is open (unclaimed) or owner-key gated. hart emits the signal; the agent alerts.
 func h_stale(req) (res) {
     db := opendb()
-    owner := slugify(query(req, "owner"))
+    raw_owner := query(req, "owner")
+    owner := slugify(raw_owner)
+    if reject_bad_slug(raw_owner) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_owner_json()) }
     ot := parse_int(query(req, "older_than"))
     if ot < 0 { ot = 0 }
     if owner == "" {
@@ -1340,7 +1360,10 @@ func public_rows(db, owner, q) (rows) {
 
 func h_public(req) (res) {
     db := opendb()
-    rows := public_rows(db, slugify(query(req, "owner")), query(req, "q"))
+    raw_owner := query(req, "owner")
+    owner := slugify(raw_owner)
+    if reject_bad_slug(raw_owner) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_owner_json()) }
+    rows := public_rows(db, owner, query(req, "q"))
     sqlite_close(db)
     res = ok_json("{\"ok\":true,\"artifacts\":" + rows + "}")
 }
@@ -1395,6 +1418,7 @@ func serve_explore(req) (res) {
 }
 
 func serve_owner(req, owner) (res) {
+    if reject_bad_slug(owner) == 1 { return response("400 Bad Request", "text/plain", "invalid owner") }
     db := opendb()
     page := gallery_html(db, slugify(owner), query(req, "q"))
     sqlite_close(db)
@@ -1762,7 +1786,9 @@ func h_audit(req) (res) {
     if licensed_db(db, "audit-log") == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"the audit log is a hart Pro feature — hart license\",\"pro\":0}") }
     w := "1=1"
     params := []string{}
-    owner := query(req, "owner")
+    raw_owner := query(req, "owner")
+    owner := slugify(raw_owner)
+    if reject_bad_slug(raw_owner) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_owner_json()) }
     if owner != "" { w = w + " AND owner = ?"  params = append(params, owner) }
     action := query(req, "action")
     if action != "" { w = w + " AND action = ?"  params = append(params, action) }
@@ -2366,7 +2392,7 @@ func cmd_team(a) {
 func cmd_audit(a) {
     url := hart_url() + "/v1/audit?x=1"
     owner := flagv(a, "--owner", "")
-    if owner != "" { url = url + "&owner=" + url_encode(owner) }
+    if owner != "" { owner = require_owner_slug(owner, "owner"); url = url + "&owner=" + url_encode(owner) }
     action := flagv(a, "--action", "")
     if action != "" { url = url + "&action=" + url_encode(action) }
     limit := flagv(a, "--limit", "")
