@@ -78,7 +78,9 @@ hart publish report.html --owner alice --artifact q3   # re-publish → v2, late
 
 Gate publishing with `HART_TOKEN=<secret>`. Expose publicly behind any reverse proxy
 (e.g. Traefik + Cloudflare + Let's Encrypt via [hotify-cli](https://github.com/javimosch/hotify-cli))
-and set `HART_PUBLIC=https://your.domain` so returned URLs are canonical.
+and set `HART_PUBLIC=https://your.domain` so returned URLs are canonical. Production hardening
+(proxy-aware IP, body caps, read timeouts) turns on automatically when `HART_PUBLIC` is set; see
+[`docs/BYOK.md`](docs/BYOK.md) for the full key map and a systemd-ready env layout.
 
 Deploying an update to a systemd host? [`scripts/deploy.sh`](scripts/deploy.sh) stages the freshly
 built binary, verifies the transfer, backs up + swaps + restarts, health-checks, and **rotates old
@@ -205,6 +207,10 @@ over the CLI.
 `HART_ADMIN_TOKEN` (operator admin API — cross-owner list; separate from `HART_TOKEN`). Server:
 `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10),
 `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.
+
+**Production hardening** — auto-enabled when `HART_PUBLIC` is set (or force with `HART_HARDEN=1`):
+`HART_TRUST_PROXY`, `HART_MAX_BODY_BYTES`, `HART_READ_TIMEOUT_MS`, `HART_ACCESS_LOG`. Opt out
+locally with `HART_HARDEN=0`. Full BYOK setup: [`docs/BYOK.md`](docs/BYOK.md).
 
 ## Architecture
 

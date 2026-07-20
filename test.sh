@@ -163,6 +163,22 @@ eq "upgrade errors cleanly if hart-cloud down" "$(HART_CLOUD_URL=http://127.0.0.
 has "join gated to Pro" "$(./hart join acme 2>&1)" "hart Pro feature"
 has "team invite gated to Pro" "$(./hart team invite acme x@y.co 2>&1)" "hart Pro feature"
 
+echo "== hardening (input validation + production defaults) =="
+eq "invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?owner=!!!&artifact=x" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+eq "traversal id rejected at publish (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?id=acme/evil/../page" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+# boot a hardened daemon (HART_PUBLIC triggers machweb harden + body cap)
+HPORT=$((PORT + 1))
+export HART_DB="$TMP/harden.db"
+HART_PUBLIC="http://127.0.0.1:$HPORT" HART_HARDEN=1 HART_MAX_BODY_BYTES=100 HART_MAX_SUBMITS_PER_MIN=100000 \
+  ./hart serve "$HPORT" >"$TMP/harden.log" 2>&1 &
+HSRV=$!
+sleep 1
+kill -0 "$HSRV" 2>/dev/null || { echo "test: hardened daemon failed to boot"; cat "$TMP/harden.log"; exit 1; }
+BIG="$(python3 -c 'print("x"*200)')"
+eq "hardened daemon rejects oversized body (413)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$HPORT/v1/publish?owner=t&artifact=big" -H 'content-type: text/html' --data-binary "$BIG")" "413"
+kill "$HSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"   # restore primary daemon db
+
 echo "== served endpoints =="
 for ep in _health guide.md skill.md llms.txt install.sh _status; do
   eq "GET /$ep -> 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/$ep")" "200"
