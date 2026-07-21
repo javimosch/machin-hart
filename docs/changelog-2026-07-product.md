@@ -118,3 +118,15 @@
             </div>
           </div>
         </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-pink-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🎨</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">In-repo agent skill for polished artifacts</h3>
+              <p class="text-white/40 leading-relaxed">Self-hosters get <code>.agents/skills/hart-artifact-design/SKILL.md</code> out of the box. Agents working on hart itself can publish craft-aware HTML deliverables — deliberate palette, type pairing, CSP-safe design — without reaching out to a global skill.</p>
+            </div>
+          </div>
+        </div>
