@@ -8,8 +8,9 @@ built as one static **MFL / [machin](https://github.com/javimosch/machin)** bina
 the client (`hart publish …`) and the hosting daemon (`hart serve`). It's the *show* to grepapi's
 *find*, bland-cli's *call*, and crm-cli's *remember*.
 
-> **Live demo instance:** **[hart.intrane.fr](https://hart.intrane.fr)** (free/open, rate-limited).
-> **Prebuilt binary:** [Releases](https://github.com/javimosch/machin-hart/releases).
+> **Project site:** **[javimosch.github.io/machin-hart](https://javimosch.github.io/machin-hart)**
+> **Live demo instance:** **[hart.intrane.fr](https://hart.intrane.fr)** (free/open, rate-limited)
+> **Source + releases:** [github.com/javimosch/machin-hart](https://github.com/javimosch/machin-hart)
 > **Want it hosted** (managed, on your own domain, no ops)? Email **[javi@intrane.fr](mailto:javi@intrane.fr)** — I'm gauging interest in a hosted tier.
 
 > **🤖 For agents:** read **[`llms.txt`](llms.txt)** for a 30-second orientation, or run **`hart
@@ -37,7 +38,7 @@ lock-in.
 
 ## Use an existing instance (fastest)
 
-Install the CLI in one line — it drops `hart` on your PATH already pointed at that instance:
+The public demo instance is at **[hart.intrane.fr](https://hart.intrane.fr)**. Install the CLI in one line — it drops `hart` on your PATH already pointed at that instance:
 
 ```sh
 curl -fsSL https://hart.intrane.fr/install.sh | sh

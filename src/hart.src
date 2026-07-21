@@ -1585,7 +1585,9 @@ func install_sh(base) (s) {
 // llms_txt — the concise /llms.txt (the llms.txt convention): an at-a-glance orientation + links.
 func llms_txt(base, authline) (t) {
     t = "# hart\n\n> The agent-first artifact host: publish self-contained HTML or JSX from any terminal agent and get a live, versioned, sandboxed URL. One static binary = CLI + daemon. Open-source, self-hostable.\n\n"
-    t = t + "This instance: " + base + " (" + authline + ")\n\n"
+    t = t + "- **Project site:** https://javimosch.github.io/machin-hart\n"
+    t = t + "- **Source + releases:** https://github.com/javimosch/machin-hart\n"
+    t = t + "- **This instance:** " + base + " (" + authline + ")\n\n"
     t = t + "## Use it now\n\n"
     t = t + "- Publish (curl, no binary needed): `curl -X POST '" + base + "/v1/publish?owner=you&artifact=name' -H 'content-type: text/html' --data-binary @page.html`\n"
     t = t + "- Or with the CLI: `HART_URL=" + base + " hart publish page.html --owner you --artifact name`\n"
@@ -1598,7 +1600,8 @@ func llms_txt(base, authline) (t) {
     t = t + "- Update without re-uploading: `hart data you/name '<json>'` -> the page reads `window.HART_DATA` and/or `{{key}}`.\n"
     t = t + "- Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`).\n\n"
     t = t + "## Map (AI-first sitemap)\n\n"
-    t = t + "- **" + base + "/guide.md** — the complete, version-exact manual (every command, flags, admin, examples). Start here. Also `hart guide`.\n"
+    t = t + "- **https://javimosch.github.io/machin-hart** — project landing, docs, and changelog.\n"
+    t = t + "- **" + base + "/guide.md** — the complete, version-exact manual (every command, flags, admin, examples) on this instance. Also `hart guide`.\n"
     t = t + "- **" + base + "/byok.md** — BYOK key map (publish token, owner key, admin, Pro license, production hardening env). Also `docs/BYOK.md` in the repo.\n"
     t = t + "- " + base + "/skill.md — a drop-in agent SKILL.md (self-install: `hart skill > ~/.claude/skills/hart/SKILL.md`). Also `hart skill`.\n"
     t = t + "- " + base + "/install.sh — one-line CLI install: `curl -fsSL " + base + "/install.sh | sh` (drops `hart` on PATH, pre-pointed at this instance).\n"

@@ -16,12 +16,13 @@ func section(id, title, desc, body) (h) {
 }
 
 func app_view(unused) (h) {
-    h = ui_navbar("hart", []string{"What", "Model", "Self-host", "GitHub"}, []string{"#what", "#model", "#selfhost", "https://github.com/javimosch/machin-hart"}, "")
+    h = ui_navbar("hart", []string{"What", "Model", "Self-host", "Demo", "GitHub"}, []string{"#what", "#model", "#selfhost", "https://hart.intrane.fr", "https://github.com/javimosch/machin-hart"}, "")
 
     cta := "<a class=\"" + ui_button_classes("primary") + "\" href=\"https://github.com/javimosch/machin-hart\">Get hart</a>"
     cta = cta + "<a class=\"" + ui_button_classes("ghost") + "\" href=\"#what\">How it works</a>"
+    cta = cta + "<a class=\"" + ui_button_classes("ghost") + "\" href=\"https://hart.intrane.fr\">Try the demo</a>"
     h = h + ui_hero("Ship an HTML page from your terminal. Get a live URL back.",
-        "One binary that hosts self-contained HTML and JSX — versioned, sandboxed, and updatable with just data. Built for agents, run by you.", cta)
+        "One binary that hosts self-contained HTML and JSX — versioned, sandboxed, and updatable with just data. Built for agents, run by you. Try it on the live demo instance at hart.intrane.fr, or self-host your own.", cta)
 
     stats := "<div class=\"grid grid-cols-1 gap-3 sm:grid-cols-3\">"
     stats = stats + ui_stat("binary", "one", "CLI + hosting daemon")
