@@ -43,11 +43,15 @@ HART_PUBLIC=https://hart.example.com
 HART_TOKEN=<PUBLISH>
 HART_ADMIN_TOKEN=<ADMIN>
 HART_COOKIE_SECRET=<COOKIE>
+HART_TRUST_PROXY=1
+HART_MAX_BODY_BYTES=10485760
 HART_MAX_SUBMITS_PER_MIN=30
 HART_MAX_OWNER_MB=30
-# Production hardening (auto-enabled when HART_PUBLIC is set):
-# HART_TRUST_PROXY=1          # only if behind nginx/Traefik/Cloudflare
-# HART_MAX_BODY_BYTES=10485760
+# Optional — hart Pro + teams SSO (see key map above):
+# HART_LICENSE_KEY=<pro-key>
+# HART_OIDC_ISSUER=https://your-idp.example.com
+# HART_OIDC_CLIENT_ID=<client-id>
+# HART_OIDC_CLIENT_SECRET=<client-secret>
 ```
 
 ```sh
@@ -194,6 +198,20 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?id=acm
   -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 400
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?id=a/b/c" \
   -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 400
+
+# input validation (slug edge cases — no leading/trailing hyphens)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?owner=-acme&artifact=page" \
+  -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 400
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?owner=acme&artifact=page-" \
+  -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 400
+
+# refresh route id validation
+curl -s -o /dev/null -w '%{http_code}\n' "$HART_PUBLIC/v1/refresh?id=bad\$"   # expect 400
+curl -s -o /dev/null -w '%{http_code}\n' "$HART_PUBLIC/v1/refresh?id=acme//page"   # expect 400
+
+# optional Pro / team keys (when licensed)
+# export HART_MEMBER_KEY=<member-key>   # per-member write access (from `hart team add`)
+# export HART_LICENSE_KEY=<pro-key>     # or: hart license <key>
 
 # body cap (when HART_PUBLIC / HART_HARDEN is on)
 python3 -c 'print("x"*20000000)' | curl -s -o /dev/null -w '%{http_code}\n' \
