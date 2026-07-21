@@ -293,14 +293,25 @@ func read_cookie_name(id) (n) {
 }
 
 // read_authorized — may the requester VIEW this (private) artifact? A valid X-Hart-Read-Key
-// header OR a valid signed unlock cookie (value == current read_key_hash) grants access.
+// header, a ?read_key=<password> query param, OR a valid signed unlock cookie grants access.
 func read_authorized(db, id, kh, req) (ok) {
     ok = 0
     if kh == "" { return 1 }   // not gated
     hk := header(req, "x-hart-read-key")
     if hk != "" { if to_hex(sha256_bytes(bytes(hk))) == kh { return 1 } }
+    qk := query(req, "read_key")
+    if qk != "" { if to_hex(sha256_bytes(bytes(qk))) == kh { return 1 } }
     val, vok := get_session(req, cookie_secret(), read_cookie_name(id))
     if vok == 1 && val == kh { return 1 }
+}
+
+// wants_html — best-effort browser vs agent detection from the Accept header.
+// curl sends none (or */* with -L), browsers ask for text/html. No header => agent.
+func wants_html(req) (yes) {
+    yes = 0
+    acc := header(req, "accept")
+    if acc == "" { return }
+    if index(acc, "html") >= 0 { yes = 1; return }
 }
 
 // ---- abuse limits (customizable; the daemon is otherwise open/free) --------
@@ -1154,7 +1165,11 @@ func h_artifact_data(req, id) (res) {
     arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"not found\"}") }
-    if read_authorized(db, id, ars[0].read_key_hash, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"protected — unlock the artifact first\"}") }
+    if read_authorized(db, id, ars[0].read_key_hash, req) == 0 {
+        sqlite_close(db)
+        base := pubbase(req)
+        return response("401 Unauthorized", "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"private artifact data — provide the read key via the X-Hart-Read-Key header or the ?read_key=<password> query parameter\",\"hint\":\"curl -s -H 'X-Hart-Read-Key: <password>' " + base + "/a/" + id + "/data.json\"}")
+    }
     d := ars[0].data
     sqlite_close(db)
     if d == "" { d = "{}" }
@@ -1202,8 +1217,15 @@ func serve_artifact(db, req, id, ver) (res) {
     arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain; charset=utf-8", "artifact not found") }
-    // private (gated) read: valid header or unlock cookie, else the unlock page
-    if read_authorized(db, id, ars[0].read_key_hash, req) == 0 { r := unlock_page(id, ""); sqlite_close(db); return r }
+    // private (gated) read: valid header, ?read_key, or unlock cookie, else agent JSON or unlock page
+    if read_authorized(db, id, ars[0].read_key_hash, req) == 0 {
+        base := pubbase(req)
+        if wants_html(req) == 0 {
+            sqlite_close(db)
+            return response("401 Unauthorized", "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"private artifact — provide the read key via the X-Hart-Read-Key header or the ?read_key=<password> query parameter\",\"hint\":\"curl -s -H 'X-Hart-Read-Key: <password>' " + base + "/a/" + id + "\"}")
+        }
+        r := unlock_page(id, ""); sqlite_close(db); return r
+    }
     record_view(db, id, req)   // authorized render -> count it (server-side; CSP blocks client beacons)
     v := ver
     if v == 0 { v = ars[0].latest }
