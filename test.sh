@@ -196,6 +196,10 @@ eq "invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X P
 eq "invalid artifact rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?owner=acme&artifact=!!!" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
 has "publish invalid artifact body" "$(curl -s -X POST "$HART_URL/v1/publish?owner=acme&artifact=!!!" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "invalid artifact"
 eq "traversal id rejected at publish (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?id=acme/evil/../page" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+eq "double-slash id rejected at publish (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?id=acme//page" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+eq "multi-segment id rejected at publish (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?id=a/b/c" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+eq "empty owner segment rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?id=/page" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+eq "GET /a double-slash id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/acme//page")" "400"
 eq "GET /a traversal rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "$HART_URL/a/acme/../page")" "400"
 eq "GET /a/bad\$/data.json rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/bad\$/data.json")" "400"
 eq "CLI invalid owner rejected locally (80)" "$(printf '<h1>x</h1>' > "$TMP/x2.html"; ./hart publish "$TMP/x2.html" --owner '!!!' --artifact x >/dev/null 2>&1; echo $?)" "80"
@@ -235,6 +239,15 @@ eq "CLI versions invalid id rejected locally (80)" "$(./hart versions 'bad$/x' >
 eq "CLI rollback invalid id rejected locally (80)" "$(./hart rollback 'bad$/x' 1 >/dev/null 2>&1; echo $?)" "80"
 eq "CLI audit invalid owner rejected locally (80)" "$(./hart audit --owner '!!!' >/dev/null 2>&1; echo $?)" "80"
 eq "CLI team list invalid owner rejected locally (80)" "$(./hart team list '!!!' >/dev/null 2>&1; echo $?)" "80"
+eq "CLI join invalid owner rejected locally (80)" "$(./hart join '!!!' >/dev/null 2>&1; echo $?)" "80"
+eq "CLI get rejects double-slash id locally (80)" "$(./hart get 'acme//page' >/dev/null 2>&1; echo $?)" "80"
+MCP_DBL=$(printf '%s\n' \
+  '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"hart_data","arguments":{"id":"acme//page","data":"{}"}}}' \
+  | ./hart mcp 2>/dev/null)
+has "mcp hart_data rejects double-slash id" "$MCP_DBL" 'invalid id'
+ANON=$(./hart publish "$P" --title anon-test)
+has "anonymous publish (hex id) still ok" "$ANON" '"ok":true'
+case "$(echo "$ANON" | jget id)" in */*) bad "anonymous id must not contain /";; *) ok "anonymous id is hex (no slash)";; esac
 eq "API admin mv invalid to owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/page&to=!!!/x")" "400"
 eq "API admin mv invalid to artifact rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/page&to=acme/!!!")" "400"
 eq "API refresh/run invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/refresh/run?id=bad\$")" "400"

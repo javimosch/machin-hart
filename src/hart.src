@@ -473,23 +473,56 @@ func slugify(s) (out) {
     if len(out) > 0 { if substr(out, len(out) - 1, len(out)) == "-" { out = substr(out, 0, len(out) - 1) } }
 }
 
-// valid_id — URL-safe artifact id: lowercase alnum, hyphen, slash; no traversal; bounded length.
+// valid_slug_seg — one owner or artifact name (lowercase alnum + hyphens, non-empty).
+func valid_slug_seg(seg) (ok) {
+    ok = 0
+    if seg == "" { return }
+    i := 0
+    for i < len(seg) {
+        c := substr(seg, i, i + 1)
+        good := 0
+        if c >= "a" && c <= "z" { good = 1 }
+        if c >= "0" && c <= "9" { good = 1 }
+        if c == "-" { good = 1 }
+        if good == 0 { return }
+        i = i + 1
+    }
+    ok = 1
+}
+
+// valid_hex_id — anonymous artifact id from nid() (lowercase hex, no slash).
+func valid_hex_id(id) (ok) {
+    ok = 0
+    if id == "" { return }
+    i := 0
+    for i < len(id) {
+        c := substr(id, i, i + 1)
+        good := 0
+        if c >= "a" && c <= "f" { good = 1 }
+        if c >= "0" && c <= "9" { good = 1 }
+        if good == 0 { return }
+        i = i + 1
+    }
+    ok = 1
+}
+
+// valid_id — owner/artifact (exactly one slash, both segments slug-safe) or anonymous hex id.
+// Rejects traversal, double slashes, empty segments, and multi-segment paths.
 func valid_id(id) (ok) {
     ok = 0
     if id == "" { return }
     if len(id) > 128 { return }
     if index(id, "..") >= 0 { return }
     if index(id, "\\") >= 0 { return }
-    i := 0
-    for i < len(id) {
-        c := substr(id, i, i + 1)
-        good := 0
-        if c >= "a" && c <= "z" { good = 1 }
-        if c >= "0" && c <= "9" { good = 1 }
-        if c == "-" || c == "/" { good = 1 }
-        if good == 0 { return }
-        i = i + 1
-    }
+    if index(id, "//") >= 0 { return }
+    if substr(id, 0, 1) == "/" { return }
+    if substr(id, len(id) - 1, len(id)) == "/" { return }
+    si := index(id, "/")
+    if si < 0 { ok = valid_hex_id(id); return }
+    rest := substr(id, si + 1, len(id))
+    if index(rest, "/") >= 0 { return }
+    if valid_slug_seg(substr(id, 0, si)) == 0 { return }
+    if valid_slug_seg(rest) == 0 { return }
     ok = 1
 }
 

@@ -189,6 +189,12 @@ curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/data?id=bad\$"
 curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/data?owner=you&artifact=!!!" \
   -H 'content-type: application/json' --data-binary '{}'                         # expect 400
 
+# input validation (id shape: owner/artifact or anonymous hex — no //, no extra segments)
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?id=acme//page" \
+  -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 400
+curl -s -o /dev/null -w '%{http_code}\n' -X POST "$HART_PUBLIC/v1/publish?id=a/b/c" \
+  -H 'content-type: text/html' --data-binary '<h1>x</h1>'   # expect 400
+
 # body cap (when HART_PUBLIC / HART_HARDEN is on)
 python3 -c 'print("x"*20000000)' | curl -s -o /dev/null -w '%{http_code}\n' \
   -X POST "$HART_PUBLIC/v1/publish?owner=t&artifact=big" -H 'content-type: text/html' --data-binary @-  # expect 413
