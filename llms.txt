@@ -14,6 +14,8 @@ This instance: https://hart.intrane.fr (**free/open** — no token needed to pub
 
 - Pages must be SELF-CONTAINED: inline all CSS/JS, `data:` URIs for assets. No external refs, no network (fetch/XHR blocked by CSP). External refs are rejected at publish (pass `--force` to override).
 - JSX: add `--format jsx` (transpiled in-browser, no build step).
+- Markdown -> HTML: `pandoc --embed-resources --standalone --css style.css -f markdown-yaml_metadata_block` avoids YAML parse errors when frontmatter contains colons.
+- Re-publishing same owner/artifact updates `latest`; delete/move with `curl -X DELETE https://hart.intrane.fr/v1/artifacts/<owner>/<artifact>`.
 - Update without re-uploading: `hart data you/name '<json>'` -> the page reads `window.HART_DATA` and/or `{{key}}`.
 - Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`).
 
