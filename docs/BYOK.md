@@ -6,6 +6,28 @@ This guide maps each key/token to its role, where to set it, and a minimal produ
 
 ---
 
+## Which keys do I need?
+
+Pick the row that matches your setup — only configure what that row lists.
+
+| Scenario | Daemon (`hart serve`) | Agent / CLI client |
+|---|---|---|
+| **Open shared instance** (e.g. hart.intrane.fr — anyone may publish) | *(none)* | Optional `HART_OWNER_KEY` — pass on the **first** write to `--owner` to claim and lock that namespace |
+| **Self-hosted, open publish** (localhost / internal LAN) | *(none)* | Same as above — claim namespaces with `--owner-key` if you care about write protection |
+| **Self-hosted, locked down** (team box behind a proxy) | `HART_TOKEN` · `HART_PUBLIC` · `HART_COOKIE_SECRET` (if private pages) | `HART_TOKEN` (`hart login`) · per-namespace `HART_OWNER_KEY` |
+| **Operator audit / fleet dashboard** | add `HART_ADMIN_TOKEN` (**≠** `HART_TOKEN`) | operators only: `HART_ADMIN_TOKEN` (`hart admin login`) |
+| **Private deliverables** | `HART_COOKIE_SECRET` (so unlock cookies survive restarts) | `--read-key` at publish, or `HART_READ_KEY` when fetching |
+| **hart Pro** (higher limits, audit log, teams) | `HART_LICENSE_KEY` | `hart license <key>` on the client; teams may also need `HART_MEMBER_KEY` |
+
+**Agent integration paths** (all inherit the same env vars):
+
+1. **curl** — no install; POST to `/v1/publish` (see [`llms.txt`](../llms.txt)).
+2. **CLI** — `curl -fsSL <instance>/install.sh | sh`, then `export HART_URL=…` and `hart publish …`.
+3. **Drop-in skill** — `hart skill > ~/.claude/skills/hart/SKILL.md` (Cursor: `.cursor/skills/hart/SKILL.md`).
+4. **MCP** — `{"mcpServers":{"hart":{"command":"hart","args":["mcp"],"env":{"HART_URL":"…","HART_TOKEN":"…","HART_OWNER_KEY":"…"}}}}`.
+
+---
+
 ## Key map
 
 | Secret | Who sets it | Where (daemon) | Where (client / agent) | Purpose |

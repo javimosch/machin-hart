@@ -18,6 +18,18 @@ This instance: https://hart.intrane.fr (**free/open** — no token needed to pub
 - Re-publishing same owner/artifact updates `latest`; delete/move with `curl -X DELETE https://hart.intrane.fr/v1/artifacts/<owner>/<artifact>`.
 - Update without re-uploading: `hart data you/name '<json>'` -> the page reads `window.HART_DATA` and/or `{{key}}`.
 - Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`).
+- Owner slugs: lowercase letters, digits, hyphens — no leading/trailing hyphen (`acme`, `q3-report`).
+
+## Agent setup (pick one path)
+
+1. **curl only** (no install) — POST to `/v1/publish` (see "Use it now" above).
+2. **CLI** — `curl -fsSL https://hart.intrane.fr/install.sh | sh`, then `export HART_URL=https://hart.intrane.fr` and `hart publish …`.
+3. **Drop-in skill** — `hart skill > ~/.claude/skills/hart/SKILL.md` (Cursor: `.cursor/skills/hart/SKILL.md`).
+4. **MCP** — add to your client config: `{"mcpServers":{"hart":{"command":"hart","args":["mcp"],"env":{"HART_URL":"https://hart.intrane.fr"}}}}`.
+
+**Namespace protection:** the first write to `--owner` claims that namespace. Pass `--owner-key` (or `HART_OWNER_KEY`) to lock it — required if you want exclusive write access on an open instance.
+
+**Locked-down / self-hosted instances:** the operator sets `HART_TOKEN` on the daemon; agents run `hart login <token>`. See **/byok.md** (or `docs/BYOK.md` in the repo) for the full key map and systemd layout.
 
 ## Map (AI-first sitemap)
 

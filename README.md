@@ -58,6 +58,28 @@ curl -X POST 'https://hart.intrane.fr/v1/publish?owner=you&artifact=my-page' \
   -H 'content-type: text/html' --data-binary @page.html
 ```
 
+## Agent setup
+
+Agents can publish through **curl**, the **CLI**, a **drop-in skill**, or **MCP** — same HTTP contract, same JSON response. Pick one:
+
+| Path | When to use | Minimal setup |
+|---|---|---|
+| **curl** | One-off publish, no install | POST body to `/v1/publish?owner=…&artifact=…` |
+| **CLI** | Shell agents, cron, scripts | `curl -fsSL <instance>/install.sh \| sh` → `export HART_URL=…` → `hart publish …` |
+| **Skill** | Claude / Cursor sessions that publish often | `hart skill > ~/.claude/skills/hart/SKILL.md` (also at `/skill.md`) |
+| **MCP** | MCP-native clients (Cursor, Claude Desktop) | `hart mcp` with `HART_URL` (+ tokens if required) in env |
+
+**Claim your namespace** on any instance: the first write to a new `--owner` claims it. Pass
+`--owner-key` (or `HART_OWNER_KEY`) to lock that namespace against other writers — especially on
+open instances like hart.intrane.fr.
+
+**Self-hosted or locked-down instances** need a publish token on the daemon (`HART_TOKEN`) and
+`hart login <token>` on the client. Operators may also set `HART_ADMIN_TOKEN` (separate god-token
+for cross-owner audit). Full key map, MCP env example, and systemd layout:
+[`docs/BYOK.md`](docs/BYOK.md) (also served at `/byok.md` on any instance).
+
+Repo orientation for agent contributors: [`AGENTS.md`](AGENTS.md).
+
 ## Self-host
 
 ```sh
