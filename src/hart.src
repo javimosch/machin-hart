@@ -474,9 +474,12 @@ func slugify(s) (out) {
 }
 
 // valid_slug_seg — one owner or artifact name (lowercase alnum + hyphens, non-empty).
+// No leading/trailing hyphens (slugify strips trailing; reject at validation so raw/normalized agree).
 func valid_slug_seg(seg) (ok) {
     ok = 0
     if seg == "" { return }
+    if substr(seg, 0, 1) == "-" { return }
+    if substr(seg, len(seg) - 1, len(seg)) == "-" { return }
     i := 0
     for i < len(seg) {
         c := substr(seg, i, i + 1)
@@ -533,10 +536,15 @@ func invalid_id_json() (s) { s = "{\"ok\":false,\"error\":\"invalid id — use o
 func invalid_owner_json() (s) { s = "{\"ok\":false,\"error\":\"invalid owner — use letters, digits, or hyphens\"}" }
 func invalid_artifact_json() (s) { s = "{\"ok\":false,\"error\":\"invalid artifact — use letters, digits, or hyphens\"}" }
 
-// reject_bad_slug — 1 if raw was provided but slugify emptied it (caller should 400).
+// reject_bad_slug — 1 if raw was provided but slugify emptied it, or raw has edge hyphens
+// (slugify strips trailing dashes; reject early so callers can't sneak `-foo` / `foo-` past slugify).
 func reject_bad_slug(raw) (bad) {
     bad = 0
-    if raw != "" && slugify(raw) == "" { bad = 1 }
+    if raw == "" { return }
+    if slugify(raw) == "" { bad = 1; return }
+    lc := to_lower(raw)
+    if substr(lc, 0, 1) == "-" { bad = 1; return }
+    if substr(lc, len(lc) - 1, len(lc)) == "-" { bad = 1 }
 }
 
 func say(s) { write(1, s + "\n") }
@@ -551,7 +559,7 @@ func require_valid_id(id) {
 // require_owner_slug — CLI-side guard for --owner / --artifact flags.
 func require_owner_slug(raw, label) (out) {
     out = slugify(raw)
-    if raw != "" && out == "" { die(80, "invalid " + label + " — use letters, digits, or hyphens") }
+    if raw != "" && reject_bad_slug(raw) == 1 { die(80, "invalid " + label + " — use letters, digits, or hyphens (no leading/trailing hyphen)") }
 }
 
 // require_mv_to — CLI-side guard for admin mv destination (owner/name).
@@ -1293,7 +1301,7 @@ func unlock_success_page(id, key, req) (res) {
 // then show the success page with the blurred agent curl snippet (instead of a bare
 // redirect). The cookie lets the "View artifact" link work without re-entering the password.
 func h_unlock(req, id) (res) {
-    if valid_id(id) == 0 { return response("400 Bad Request", "text/plain", "bad id") }
+    if valid_id(id) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
     db := opendb()
     arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
@@ -1354,7 +1362,7 @@ func handle_artifact(req, p) (res) {
     i := 0
     for i < idcount { if id != "" { id = id + "/" } id = id + parts[i] i = i + 1 }
     if id == "" { return response("404 Not Found", "text/plain", "no id") }
-    if valid_id(id) == 0 { return response("400 Bad Request", "text/plain", "bad id") }
+    if valid_id(id) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
     db := opendb()
     res = serve_artifact(db, req, id, ver)
 }
@@ -2755,8 +2763,8 @@ func mcp_tools_call(line, id) {
         if html == "" { mcp_content(id, "hart_publish: 'html' is required", 1); return }
         ow := json_field(line, ap + "owner", "")
         ar := json_field(line, ap + "artifact", "")
-        if ow != "" && slugify(ow) == "" { mcp_content(id, "hart_publish: invalid owner — use letters, digits, or hyphens", 1); return }
-        if ar != "" && slugify(ar) == "" { mcp_content(id, "hart_publish: invalid artifact — use letters, digits, or hyphens", 1); return }
+        if ow != "" && reject_bad_slug(ow) == 1 { mcp_content(id, "hart_publish: invalid owner — use letters, digits, or hyphens (no leading/trailing hyphen)", 1); return }
+        if ar != "" && reject_bad_slug(ar) == 1 { mcp_content(id, "hart_publish: invalid artifact — use letters, digits, or hyphens (no leading/trailing hyphen)", 1); return }
         if ow != "" && ar != "" && valid_id(slugify(ow) + "/" + slugify(ar)) == 0 { mcp_content(id, "hart_publish: invalid id — use owner/artifact (lowercase alnum and hyphens, no ..)", 1); return }
         url := hart_url() + "/v1/publish?format=" + url_encode(json_field(line, ap + "format", "html"))
         if ow != "" { url = url + "&owner=" + url_encode(ow) }
@@ -2787,7 +2795,7 @@ func mcp_tools_call(line, id) {
         url := hart_url() + "/v1/artifacts"
         ow := json_field(line, ap + "owner", "")
         if ow != "" {
-            if slugify(ow) == "" { mcp_content(id, "hart_list: invalid owner — use letters, digits, or hyphens", 1); return }
+            if reject_bad_slug(ow) == 1 { mcp_content(id, "hart_list: invalid owner — use letters, digits, or hyphens (no leading/trailing hyphen)", 1); return }
             url = url + "?owner=" + url_encode(slugify(ow))
         }
         mcp_http(id, "GET", url, auth_headers(), "")
@@ -2814,7 +2822,7 @@ func mcp_tools_call(line, id) {
         url := hart_url() + "/v1/stale?x=1"
         ow := json_field(line, ap + "owner", "")
         if ow != "" {
-            if slugify(ow) == "" { mcp_content(id, "hart_stale: invalid owner — use letters, digits, or hyphens", 1); return }
+            if reject_bad_slug(ow) == 1 { mcp_content(id, "hart_stale: invalid owner — use letters, digits, or hyphens (no leading/trailing hyphen)", 1); return }
             url = url + "&owner=" + url_encode(slugify(ow))
         }
         ot := json_field(line, ap + "older_than", ""); if ot != "" { url = url + "&older_than=" + str(parse_duration(ot)) }

@@ -91,6 +91,8 @@ echo "== feedback =="
 has "feedback CLI dual-write (relay off -> stored locally)" "$(FEEDBACK_RELAY=off ./hart feedback 'a bug from the suite' --kind bug --context test.sh)" '"stored":true'
 has "feedback CLI reports relayed=false when relay off" "$(FEEDBACK_RELAY=off ./hart feedback 'idea' --kind idea)" '"relayed":false'
 eq  "feedback: empty message -> 400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/feedback" -d '{"message":""}')" "400"
+FBIG="$(python3 -c 'print("{\"message\":\"" + "x"*17000 + "\"}")')"
+eq  "feedback: oversized body -> 413" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/feedback" -H 'content-type: application/json' --data-binary "$FBIG")" "413"
 eq  "admin digest: no token -> 403" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/admin/digest")" "403"
 MV=$(curl -s -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/pub&to=moved/pub")
 eq "admin mv ok" "$(echo "$MV" | jget ok)" "True"
@@ -200,10 +202,14 @@ eq "double-slash id rejected at publish (400)" "$(curl -s -o /dev/null -w '%{htt
 eq "multi-segment id rejected at publish (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?id=a/b/c" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
 eq "empty owner segment rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?id=/page" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
 eq "GET /a double-slash id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/acme//page")" "400"
+has "GET /a bad id returns JSON error" "$(curl -s "$HART_URL/a/acme//page")" "invalid id"
 eq "GET /a traversal rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' --path-as-is "$HART_URL/a/acme/../page")" "400"
 eq "GET /a/bad\$/data.json rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/bad\$/data.json")" "400"
 eq "CLI invalid owner rejected locally (80)" "$(printf '<h1>x</h1>' > "$TMP/x2.html"; ./hart publish "$TMP/x2.html" --owner '!!!' --artifact x >/dev/null 2>&1; echo $?)" "80"
 eq "CLI invalid artifact rejected locally (80)" "$(printf '<h1>x</h1>' > "$TMP/x3.html"; ./hart publish "$TMP/x3.html" --owner acme --artifact '!!!' >/dev/null 2>&1; echo $?)" "80"
+eq "publish leading-hyphen owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?owner=-acme&artifact=page" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+eq "publish trailing-hyphen artifact rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?owner=acme&artifact=page-" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
+eq "CLI leading-hyphen owner rejected locally (80)" "$(printf '<h1>x</h1>' > "$TMP/x4.html"; ./hart publish "$TMP/x4.html" --owner '-acme' --artifact page >/dev/null 2>&1; echo $?)" "80"
 eq "CLI rm invalid id rejected locally (80)" "$(./hart rm 'acme/../page' >/dev/null 2>&1; echo $?)" "80"
 eq "CLI admin mv invalid from rejected locally (80)" "$(./hart admin mv '!!!/x' moved/y >/dev/null 2>&1; echo $?)" "80"
 eq "CLI admin mv invalid to rejected locally (80)" "$(./hart admin mv acme/page '!!!' >/dev/null 2>&1; echo $?)" "80"
@@ -213,6 +219,7 @@ eq "API rollback invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_c
 eq "API stats invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/artifacts/bad\$/stats")" "400"
 eq "API fresh invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/fresh?id=bad\$&ttl=60")" "400"
 eq "API refresh invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/refresh?id=bad\$")" "400"
+eq "GET /v1/refresh double-slash id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/refresh?id=acme//page")" "400"
 eq "GET /a/bad\$ rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/bad\$")" "400"
 eq "CLI stale invalid owner rejected locally (80)" "$(./hart stale --owner '!!!' >/dev/null 2>&1; echo $?)" "80"
 eq "CLI data invalid id rejected locally (80)" "$(./hart data 'bad$/x' '{}' >/dev/null 2>&1; echo $?)" "80"
@@ -235,6 +242,7 @@ eq "POST /v1/team invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{ht
 eq "POST /v1/team/rm invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/team/rm?owner=!!!&email=x@y.co")" "400"
 eq "GET /v1/audit invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" "$HART_URL/v1/audit?owner=!!!")" "400"
 eq "CLI get invalid id rejected locally (80)" "$(./hart get 'bad$/x' >/dev/null 2>&1; echo $?)" "80"
+eq "CLI refresh invalid id rejected locally (80)" "$(./hart refresh 'bad$/x' --off >/dev/null 2>&1; echo $?)" "80"
 eq "CLI versions invalid id rejected locally (80)" "$(./hart versions 'bad$/x' >/dev/null 2>&1; echo $?)" "80"
 eq "CLI rollback invalid id rejected locally (80)" "$(./hart rollback 'bad$/x' 1 >/dev/null 2>&1; echo $?)" "80"
 eq "CLI audit invalid owner rejected locally (80)" "$(./hart audit --owner '!!!' >/dev/null 2>&1; echo $?)" "80"
@@ -296,6 +304,7 @@ for ep in _health guide.md skill.md llms.txt install.sh _status byok.md; do
   eq "GET /$ep -> 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/$ep")" "200"
 done
 has "byok.md documents HART_ADMIN_TOKEN" "$(curl -s "$HART_URL/byok.md")" "HART_ADMIN_TOKEN"
+has "byok.md documents HART_MEMBER_KEY" "$(curl -s "$HART_URL/byok.md")" "HART_MEMBER_KEY"
 has "/_status shows production hardening row" "$(curl -s "$HART_URL/_status")" "production hardening"
 
 echo "== operator dashboard =="
