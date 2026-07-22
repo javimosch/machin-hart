@@ -112,6 +112,30 @@ Or in MCP / Cursor:
 }
 ```
 
+### 4. curl-only agents (HTTP headers)
+
+No `hart` binary? The CLI sends the same headers on every mutating call — mirror them in curl or
+any HTTP client:
+
+| Header | When |
+|---|---|
+| `Authorization: Bearer <token>` | Instance has `HART_TOKEN` set (401 without it). Publish token, or admin token for operator scripts. |
+| `X-Hart-Owner-Key: <secret>` | Writes to a **claimed** `--owner` namespace (403 without it). Pass on the first publish to claim. |
+| `X-Hart-Read-Key: <password>` | Read a **private** artifact (401 without it). Browsers may use `?read_key=` instead. |
+| `X-Hart-Member-Key: <secret>` | hart Pro teams — per-member write to a shared owner namespace. |
+
+```sh
+curl -X POST "$HART_URL/v1/publish?owner=acme&artifact=q3" \
+  -H "authorization: Bearer $HART_TOKEN" \
+  -H "x-hart-owner-key: $HART_OWNER_KEY" \
+  -H "content-type: text/html" \
+  --data-binary @report.html
+```
+
+**Token files vs env:** `HART_TOKEN` / `HART_ADMIN_TOKEN` env vars win over
+`~/.hart-token` / `~/.hart-admin-token` (written by `hart login` / `hart admin login`). Flags
+`--owner-key` / `--read-key` override `HART_OWNER_KEY` / `HART_READ_KEY` for a single call.
+
 ---
 
 ## Patterns
