@@ -4,10 +4,10 @@
 // artifact_chrome_css — the <style> block that makes the chrome look consistent and unobtrusive.
 func artifact_chrome_css() (s) {
     s = "<style>"
-    s = s + ".hartc-wrap{position:fixed;top:14px;right:14px;z-index:2147483647;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px;color:#e8edf2;line-height:1.4}"
-    s = s + ".hartc-wrap summary{list-style:none;cursor:pointer;user-select:none;background:rgba(15,19,25,.35);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.07);border-radius:999px;padding:5px 10px;display:inline-flex;align-items:center;gap:6px;box-shadow:0 4px 18px rgba(0,0,0,.18);color:rgba(240,244,248,.55);font-weight:500;transition:background .15s,color .15s,border-color .15s}"
+    s = s + ".hartc-wrap{position:fixed;top:34px;right:14px;z-index:2147483647;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px;color:#e8edf2;line-height:1.4}"
+    s = s + ".hartc-wrap summary{list-style:none;cursor:pointer;user-select:none;background:rgba(15,19,25,.35);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.07);border-radius:999px;padding:5px 10px;display:inline-flex;align-items:center;gap:6px;box-shadow:0 4px 18px rgba(0,0,0,.18);color:rgba(240,244,248,.55);font-weight:500;opacity:.5;transition:background .15s,color .15s,border-color .15s,opacity .15s}"
     s = s + ".hartc-wrap summary::-webkit-details-marker{display:none}"
-    s = s + ".hartc-wrap summary:hover,.hartc-wrap[open] summary{background:rgba(15,19,25,.85);color:#f0f4f8;border-color:rgba(255,255,255,.18)}"
+    s = s + ".hartc-wrap summary:hover,.hartc-wrap[open] summary{background:rgba(15,19,25,.85);color:#f0f4f8;border-color:rgba(255,255,255,.18);opacity:1}"
     s = s + ".hartc-menu{position:absolute;top:calc(100% + 8px);right:0;background:rgba(19,23,31,.96);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.08);border-radius:14px;width:250px;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,.45)}"
     s = s + ".hartc-menu h4{margin:0 0 10px;font-size:11px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;font-weight:600}"
     s = s + ".hartc-id{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px}"
