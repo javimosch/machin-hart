@@ -36,7 +36,7 @@ write protection uses `--owner-key` / `HART_OWNER_KEY`. See the **Which keys do 
 ## Build & verify
 
 ```sh
-./build.sh && ./test.sh   # full regression suite (~155 checks)
+./build.sh && ./test.sh   # full regression suite (~165 checks)
 ```
 
 Needs `machin` on PATH. `./runtime/fetch.sh` seeds the JSX runtime before first build.
@@ -47,3 +47,19 @@ Smoke doc PRs should touch markdown only: `README.md`, `docs/`, `llms.txt`, `AGE
 refactor MFL sources or binaries in doc-only tasks. Note: `/llms.txt` on a running instance is
 generated from `src/hart.src`; the repo copy is for GitHub browsing — keep them aligned when you
 can, but doc-only PRs must not change code.
+
+## Config loading (added 2026-07)
+
+CLI commands (everything except `hart serve`) auto-load `~/.hart/config` then `.hart.env` from the
+current working directory. Precedence: CLI flag > environment variable > `.hart.env` >
+`~/.hart/config`. Use these files to avoid repeating `HART_URL`, `HART_OWNER_KEY`, etc.
+
+`hart serve` ignores these files and reads env from systemd/operator config so the daemon cannot
+be hijacked by a `.hart.env` in the cwd.
+
+## Architecture note
+
+`src/hart.src` is a single MFL source that `build.sh` concatenates with other `.src` files into
+`build/hart.mfl`. This repo intentionally keeps the core logic in one MFL file; the global
+500-LOC modularity rule does not apply here because `machin build` and the project's single-binary
+design expect a single main source.
