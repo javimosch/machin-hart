@@ -288,6 +288,66 @@ has "mcp hart_data rejects double-slash id" "$MCP_DBL" 'invalid id'
 ANON=$(./hart publish "$P" --title anon-test)
 has "anonymous publish (hex id) still ok" "$ANON" '"ok":true'
 case "$(echo "$ANON" | jget id)" in */*) bad "anonymous id must not contain /";; *) ok "anonymous id is hex (no slash)";; esac
+
+echo "== memory layer =="
+# provenance at publish
+./hart publish "$P" --owner memo --artifact brief --title "Q3 brief" >/dev/null
+R=$(./hart publish "$P" --owner memo --artifact child --title "Q3 plan" --agent claude-code --run run-abc --parent memo/brief --tags "q3,sales" --meta '{"status":"draft"}')
+eq "memory: publish with provenance ok" "$(echo "$R" | jget ok)" "True"
+R=$(./hart get memo/child)
+has "memory: get carries agent" "$R" '"agent":"claude-code"'
+has "memory: get carries run_id" "$R" '"run_id":"run-abc"'
+has "memory: get carries parent_id" "$R" '"parent_id":"memo/brief"'
+has "memory: get carries tags" "$R" '"q3"'
+has "memory: get carries meta" "$R" '"status":"draft"'
+# meta read/write
+R=$(./hart meta memo/child '{"cost":12}')
+has "memory: meta write ok" "$R" '"cost":12'
+R=$(./hart meta memo/child)
+has "memory: meta read" "$R" '"cost":12'
+# search
+R=$(./hart search q3)
+has "memory: search finds by keyword" "$R" 'memo/child'
+R=$(./hart search --tag sales --agent claude-code)
+has "memory: search filters by tag+agent" "$R" 'memo/child'
+R=$(./hart search --run run-abc)
+has "memory: search filters by run" "$R" 'memo/child'
+has "memory: search excludes private from results" "$(curl -s "$HART_URL/v1/search?q=secret")" '"count":0'
+# data with provenance
+R=$(./hart data memo/child '{"t":"LIVE"}' --agent claude-code --run run-xyz)
+has "memory: data push returns ok" "$R" '"ok":true'
+R=$(./hart get memo/child)
+has "memory: data updates run_id" "$R" '"run_id":"run-xyz"'
+# diff
+R=$(./hart diff memo/child 1 2)
+has "memory: diff changed" "$R" '"changed"'
+has "memory: diff size_delta" "$R" '"size_delta"'
+# lineage
+R=$(./hart lineage memo/child)
+has "memory: lineage contains child" "$R" 'memo/child'
+has "memory: lineage contains parent" "$R" 'memo/brief'
+# checkpoint + labels
+R=$(./hart checkpoint memo/child --name baseline)
+has "memory: checkpoint ok" "$R" '"label":"baseline"'
+R=$(./hart labels memo/child)
+has "memory: labels list" "$R" 'baseline'
+# links + related
+R=$(./hart publish "$P" --owner memo --artifact dash --title "Q3 dashboard" >/dev/null)
+R=$(./hart link memo/child memo/dash --rel derived)
+has "memory: link ok" "$R" '"rel":"derived"'
+R=$(./hart related memo/child)
+has "memory: related finds dash" "$R" 'memo/dash'
+# invalid parent rejected
+R=$(./hart publish "$P" --owner memo --artifact orphan --parent memo/nope >/dev/null 2>&1)
+eq "memory: invalid parent rejected" "$?" "80"
+# MCP tools
+MCP_MEM=$(printf '%s\n' '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"hart_search","arguments":{"q":"q3"}}}' | ./hart mcp 2>/dev/null)
+has "mcp hart_search returns result" "$MCP_MEM" 'memo/child'
+MCP_MEM=$(printf '%s\n' '{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"hart_lineage","arguments":{"id":"memo/child"}}}' | ./hart mcp 2>/dev/null)
+has "mcp hart_lineage returns lineage" "$MCP_MEM" 'memo/brief'
+MCP_MEM=$(printf '%s\n' '{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"hart_meta","arguments":{"id":"memo/child"}}}' | ./hart mcp 2>/dev/null)
+has "mcp hart_meta returns meta" "$MCP_MEM" 'cost'
+
 eq "API admin mv invalid to owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/page&to=!!!/x")" "400"
 eq "API admin mv invalid to artifact rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/page&to=acme/!!!")" "400"
 eq "API refresh/run invalid id rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/refresh/run?id=bad\$")" "400"

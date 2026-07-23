@@ -7,8 +7,8 @@
 // Env: HART_URL (publish target, default http://127.0.0.1:8799), HART_DB (default ~/.hart.db),
 //      HART_PORT (serve port, default 8799), HART_PUBLIC (public base for returned URLs).
 
-type ArtRow struct { id string  owner string  name string  title string  latest int  data string  visibility string  read_key_hash string  created int  updated int }
-type VerRow struct { version int  format string  created int }
+type ArtRow struct { id string  owner string  name string  title string  latest int  data string  visibility string  read_key_hash string  created int  updated int  meta string  agent string  run_id string  parent_id string  tags string }
+type VerRow struct { version int  format string  created int  meta string  agent string  run_id string  parent_id string  tags string }
 type HtmlRow struct { html string  format string  title string }
 type SumRow struct { s int }
 type CntRow struct { n int }
@@ -24,6 +24,8 @@ type JoinRow struct { token string  owner string  status string  email string  m
 type TopRow struct { id string  owner string  views int }
 type RecRow struct { id string  owner string  created int }
 type FbRow struct { id string  kind string  message string  context string  reporter string  version string  created int }
+type LinkRow struct { from_id string  to_id string  rel string  created int }
+type LabelRow struct { artifact_id string  version int  label string  created int }
 type AdmOwn struct { owner string  cnt int  updated int  bytes int  has_key int }
 
 // g_cfg holds values loaded from ~/.hart/config and .hart.env (CLI only, not serve).
@@ -270,6 +272,20 @@ func opendb() (db) {
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS owners(owner TEXT PRIMARY KEY, key_hash TEXT DEFAULT '', created INTEGER)", []string{})   // namespace claim keys
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN data_updated INTEGER DEFAULT 0", []string{})   // last `hart data` push (living-deliverable freshness)
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN fresh_ttl INTEGER DEFAULT 0", []string{})   // freshness SLA in seconds (0 = not a monitored living deliverable) -> `hart stale`
+    // memory layer: provenance, search, lineage, diff, checkpoints, links
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN meta TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN agent TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN run_id TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN parent_id TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN tags TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE versions ADD COLUMN meta TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE versions ADD COLUMN agent TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE versions ADD COLUMN run_id TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE versions ADD COLUMN parent_id TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "ALTER TABLE versions ADD COLUMN tags TEXT DEFAULT ''", []string{})
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS artifact_links(from_id TEXT, to_id TEXT, rel TEXT, created INTEGER, PRIMARY KEY(from_id, to_id, rel))", []string{})
+    sqlite_exec(db, "CREATE INDEX IF NOT EXISTS idx_links_to ON artifact_links(to_id)", []string{})
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS version_labels(artifact_id TEXT, version INTEGER, label TEXT, created INTEGER, PRIMARY KEY(artifact_id, label))", []string{})
     // living-deliverable analytics: server-side view counting (CSP blocks any client-side beacon,
     // so the only privacy-respecting count is the HTTP GET the daemon serves). Aggregate counters,
     // no event log -> O(1) storage, nothing to prune, no cookies/JS/third-party trackers.
@@ -371,6 +387,77 @@ func read_authorized(db, id, kh, req) (ok) {
     if qk != "" { if to_hex(sha256_bytes(bytes(qk))) == kh { return 1 } }
     val, vok := get_session(req, cookie_secret(), read_cookie_name(id))
     if vok == 1 && val == kh { return 1 }
+}
+
+// read_owner_key_ok — true if the caller supplied the configured owner-key for this namespace.
+// Only matches when the owner has a non-empty key_hash; unclaimed namespaces do not grant read access.
+func read_owner_key_ok(db, owner, req) (ok) {
+    ok = 0
+    if owner == "" { return }
+    rows := sqlite_query(db, "SELECT key_hash FROM owners WHERE owner = ?", []string{owner})
+    os := parse(rows, []OwnerRow{})
+    if len(os) == 0 { return }
+    if os[0].key_hash == "" { return }
+    k := header(req, "x-hart-owner-key")
+    if k != "" { if to_hex(sha256_bytes(bytes(k))) == os[0].key_hash { return 1 } }
+}
+
+// can_read — true if the requester may view this artifact (public/unlisted, private with read key,
+// owner-key, or admin). Used for search, lineage, and parent validation.
+func can_read(db, id, req) (ok) {
+    ok = 0
+    rows := sqlite_query(db, "SELECT owner, visibility, read_key_hash FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(rows, []ArtRow{})
+    if len(ars) == 0 { return }
+    if ars[0].visibility != "private" { return 1 }
+    if check_admin(req) == 1 { return 1 }
+    if read_owner_key_ok(db, ars[0].owner, req) == 1 { return 1 }
+    ok = read_authorized(db, id, ars[0].read_key_hash, req)
+}
+
+// validate_parent — a parent reference must be a valid, readable artifact id.
+func validate_parent(db, parent, req) (err) {
+    err = ""
+    if parent == "" { return }
+    if valid_id(parent) == 0 { err = "invalid parent id — use owner/artifact"; return }
+    if can_read(db, parent, req) == 0 { err = "parent artifact not found or not readable"; return }
+}
+
+// normalize_tags — turn a comma-separated string or JSON array into a compact JSON array string.
+func normalize_tags(s) (out) {
+    out = "[]"
+    if s == "" { return }
+    s = trim(s)
+    if substr(s, 0, 1) == "[" {
+        // validate by trying to parse the first element; if no error, assume it's JSON.
+        _, e := json_get(s, "[0]")
+        if e == "" { out = s; return }
+    }
+    parts := split(s, ",")
+    out = "["
+    i := 0
+    first := 1
+    while i < len(parts) {
+        t := trim(parts[i])
+        if t != "" {
+            if first == 0 { out = out + "," }
+            out = out + "\"" + jesc(t) + "\""
+            first = 0
+        }
+        i = i + 1
+    }
+    out = out + "]"
+}
+
+// as_meta — ensure a string is a JSON object; return it if valid, else {}.
+func as_meta(s) (out) {
+    out = "{}"
+    if s == "" { return }
+    // If it parses as an object at all, json_get on a non-existent key returns empty value and no error.
+    _, err := json_get(s, ".__hart_meta_check")
+    if err == "" { out = s; return }
+    // Fallback: if it looks like JSON object, keep it raw; otherwise return {}.
+    if substr(s, 0, 1) == "{" && substr(s, len(s) - 1, len(s)) == "}" { out = s; return }
 }
 
 // wants_html — best-effort browser vs agent detection from the Accept header.
@@ -488,7 +575,7 @@ func owner_bytes(db, owner) (n) {
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
 // hart_version — single source of truth for the version reported to clients (MCP serverInfo).
-func hart_version() (s) { s = "0.4.3" }
+func hart_version() (s) { s = "0.5.0" }
 
 func unq(s) (o) {
     o = s
@@ -701,6 +788,16 @@ func h_publish(req) (res) {
     rkh := ""
     rk := query(req, "read_key")
     if rk != "" { rkh = to_hex(sha256_bytes(bytes(rk))) }
+    // memory-layer provenance
+    p_agent := query(req, "agent")
+    p_run := query(req, "run")
+    p_parent := query(req, "parent")
+    p_tags_raw := query(req, "tags")
+    p_meta_raw := query(req, "meta")
+    perr := validate_parent(db, p_parent, req)
+    if perr != "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"" + jesc(perr) + "\"}") }
+    p_tags := normalize_tags(p_tags_raw)
+    p_meta := as_meta(p_meta_raw)
     body := req.body
     if body == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty body\"}") }
     // abuse limits: per-IP submit rate + per-owner storage quota (both customizable);
@@ -731,14 +828,20 @@ func h_publish(req) (res) {
     if owner_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + owner + "' is claimed — pass the owner key (--owner-key / HART_OWNER_KEY)\"}") }
     n := now()
     ver := 1
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if id != "" && len(ars) > 0 {
         // next version = highest ever + 1 (NOT latest+1 — rollback can move latest backward)
         mrows := sqlite_query(db, "SELECT COALESCE(MAX(version),0) AS m FROM versions WHERE artifact_id = ?", []string{id})
         mraw, _ := json_get(mrows, "[0].m")
         ver = parse_int(mraw) + 1
-        sqlite_exec(db, "UPDATE artifacts SET latest = ?, title = COALESCE(NULLIF(?,''), title), updated = ? WHERE id = ?", []string{str(ver), title, str(n), id})
+        // carry over existing provenance unless new values are provided
+        if p_agent == "" { p_agent = ars[0].agent }
+        if p_run == "" { p_run = ars[0].run_id }
+        if p_parent == "" { p_parent = ars[0].parent_id }
+        if p_tags_raw == "" { p_tags = ars[0].tags }
+        if p_meta_raw == "" { p_meta = ars[0].meta }
+        sqlite_exec(db, "UPDATE artifacts SET latest = ?, title = COALESCE(NULLIF(?,''), title), updated = ?, meta = ?, agent = ?, run_id = ?, parent_id = ?, tags = ? WHERE id = ?", []string{str(ver), title, str(n), p_meta, p_agent, p_run, p_parent, p_tags, id})
         // visibility/read-key only change if explicitly provided (re-publish keeps them otherwise)
         if query(req, "visibility") != "" { sqlite_exec(db, "UPDATE artifacts SET visibility = ? WHERE id = ?", []string{vis, id}) }
         if rk != "" { sqlite_exec(db, "UPDATE artifacts SET read_key_hash = ? WHERE id = ?", []string{rkh, id}) }
@@ -750,10 +853,10 @@ func h_publish(req) (res) {
         if id == "" { id = nid() }
         livep := 0
         if query(req, "live") == "1" { livep = 1 }
-        sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, visibility, read_key_hash, created, updated, fresh_ttl, live) VALUES(?,?,?,?,?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), vis, rkh, str(n), str(n), str(parse_int(query(req, "fresh"))), str(livep)})
+        sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, visibility, read_key_hash, created, updated, fresh_ttl, live, meta, agent, run_id, parent_id, tags) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), vis, rkh, str(n), str(n), str(parse_int(query(req, "fresh"))), str(livep), p_meta, p_agent, p_run, p_parent, p_tags})
     }
     hash := to_hex(sha256_bytes(bytes(body)))
-    sqlite_exec(db, "INSERT INTO versions(artifact_id, version, title, format, html, hash, created) VALUES(?,?,?,?,?,?,?)", []string{id, str(ver), title, format, body, hash, str(n)})
+    sqlite_exec(db, "INSERT INTO versions(artifact_id, version, title, format, html, hash, created, meta, agent, run_id, parent_id, tags) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", []string{id, str(ver), title, format, body, hash, str(n), p_meta, p_agent, p_run, p_parent, p_tags})
     audit(db, "publish", owner, id, ver, format, req)
     sqlite_close(db)
     base := pubbase(req)
@@ -783,11 +886,18 @@ func h_data(req) (res) {
     if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid id\"}") }
     body := req.body
     if body == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty data body\"}") }
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact — publish the template first\"}") }
     if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
-    sqlite_exec(db, "UPDATE artifacts SET data = ?, updated = ?, data_updated = ? WHERE id = ?", []string{body, str(now()), str(now()), id})
+    d_agent := query(req, "agent")
+    d_run := query(req, "run")
+    d_meta_raw := query(req, "meta")
+    if d_agent == "" { d_agent = ars[0].agent }
+    if d_run == "" { d_run = ars[0].run_id }
+    d_meta := ars[0].meta
+    if d_meta_raw != "" { d_meta = as_meta(d_meta_raw) }
+    sqlite_exec(db, "UPDATE artifacts SET data = ?, updated = ?, data_updated = ?, agent = ?, run_id = ?, meta = ? WHERE id = ?", []string{body, str(now()), str(now()), d_agent, d_run, d_meta, id})
     audit(db, "data", ars[0].owner, id, 0, "", req)
     sqlite_close(db)
     base := pubbase(req)
@@ -899,11 +1009,11 @@ func h_admin_mv(req) (res) {
     nnid := nowner + "/" + nname
     if valid_id(nnid) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
     db := opendb()
-    src := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{from})
+    src := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{from})
     ss := parse(src, []ArtRow{})
     if len(ss) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact: " + from + "\"}") }
     if nnid == from { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"target is identical to source: " + from + "\"}") }
-    dst := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{nnid})
+    dst := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{nnid})
     ds := parse(dst, []ArtRow{})
     if len(ds) > 0 { sqlite_close(db); return response("409 Conflict", "application/json", "{\"ok\":false,\"error\":\"target already exists: " + nnid + " (pick another name or rm it first)\"}") }
     // atomic across both tables — id is the FK from versions.artifact_id. `updated` is left as-is
@@ -1054,7 +1164,7 @@ func h_fresh(req) (res) {
     id := query(req, "id")
     if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need --id\"}") }
     if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
@@ -1120,12 +1230,252 @@ func h_stale(req) (res) {
 
 func h_versions(db, req, id) (res) {
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
-    rows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? ORDER BY version DESC", []string{id})
+    rows := sqlite_query(db, "SELECT version, format, created, meta, agent, run_id, parent_id, tags FROM versions WHERE artifact_id = ? ORDER BY version DESC", []string{id})
     sqlite_close(db)
-    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + oa[0].owner + "\",\"name\":\"" + oa[0].name + "\",\"versions\":" + rows + "}")
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + oa[0].owner + "\",\"name\":\"" + oa[0].name + "\",\"meta\":" + oa[0].meta + ",\"agent\":\"" + jesc(oa[0].agent) + "\",\"run_id\":\"" + jesc(oa[0].run_id) + "\",\"parent_id\":\"" + jesc(oa[0].parent_id) + "\",\"tags\":" + oa[0].tags + ",\"versions\":" + rows + "}")
+}
+
+// ---- memory layer --------------------------------------------------------
+
+// version_html — fetch a specific version body for diff.
+func version_html(db, id, ver) (html) {
+    rows := sqlite_query(db, "SELECT html, format, title FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(ver)})
+    rs := parse(rows, []HtmlRow{})
+    if len(rs) > 0 { html = rs[0].html }
+}
+
+// GET|POST /v1/artifacts/<id>/meta — read or overwrite an artifact's meta JSON.
+func h_meta(req, id) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if req.method == "GET" {
+        if can_read(db, id, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"not authorized\"}") }
+        sqlite_close(db)
+        res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"meta\":" + ars[0].meta + "}")
+        return
+    }
+    if req.method == "POST" {
+        if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner key required\"}") }
+        newm := as_meta(req.body)
+        sqlite_exec(db, "UPDATE artifacts SET meta = ? WHERE id = ?", []string{newm, id})
+        sqlite_close(db)
+        res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"meta\":" + newm + "}")
+        return
+    }
+    sqlite_close(db)
+    res = response("405 Method Not Allowed", "application/json", "{\"ok\":false,\"error\":\"method not allowed\"}")
+}
+
+// GET /v1/search?q=&owner=&tag=&agent=&run=&limit= — search artifacts by provenance and content.
+func h_search(req) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    q := to_lower(query(req, "q"))
+    owner := slugify(query(req, "owner"))
+    tag := to_lower(query(req, "tag"))
+    agent := to_lower(query(req, "agent"))
+    run := query(req, "run")
+    limit := parse_int(query(req, "limit"))
+    if limit <= 0 { limit = 50 }
+    if limit > 1000 { limit = 1000 }
+    sql := "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE 1=1"
+    args := []string{}
+    if owner != "" { sql = sql + " AND owner = ?"; args = append(args, owner) }
+    if agent != "" { sql = sql + " AND LOWER(agent) = ?"; args = append(args, agent) }
+    if run != "" { sql = sql + " AND run_id = ?"; args = append(args, run) }
+    if tag != "" { sql = sql + " AND LOWER(tags) LIKE ?"; args = append(args, "%\"" + tag + "\"%") }
+    if q != "" {
+        tokens := split(q, " ")
+        ti := 0
+        while ti < len(tokens) {
+            tok := trim(tokens[ti])
+            if tok != "" {
+                sql = sql + " AND (LOWER(title) LIKE ? OR LOWER(name) LIKE ? OR LOWER(data) LIKE ? OR LOWER(tags) LIKE ? OR LOWER(meta) LIKE ? OR LOWER(agent) LIKE ? OR LOWER(run_id) LIKE ? OR LOWER(owner) LIKE ? OR LOWER(parent_id) LIKE ?)"
+                like := "%" + tok + "%"
+                ai := 0
+                while ai < 9 { args = append(args, like); ai = ai + 1 }
+            }
+            ti = ti + 1
+        }
+    }
+    sql = sql + " ORDER BY updated DESC LIMIT ?"
+    args = append(args, str(limit * 3))
+    rows := sqlite_query(db, sql, args)
+    ars := parse(rows, []ArtRow{})
+    out := "["
+    i := 0
+    count := 0
+    while i < len(ars) && count < limit {
+        a := ars[i]
+        if can_read(db, a.id, req) == 1 {
+            if count > 0 { out = out + "," }
+            out = out + "{\"id\":\"" + a.id + "\",\"owner\":\"" + a.owner + "\",\"name\":\"" + a.name + "\",\"title\":\"" + jesc(a.title) + "\",\"latest\":" + str(a.latest) + ",\"visibility\":\"" + a.visibility + "\",\"updated\":" + str(a.updated) + ",\"meta\":" + a.meta + ",\"agent\":\"" + jesc(a.agent) + "\",\"run_id\":\"" + jesc(a.run_id) + "\",\"parent_id\":\"" + jesc(a.parent_id) + "\",\"tags\":" + a.tags + "}"
+            count = count + 1
+        }
+        i = i + 1
+    }
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"count\":" + str(count) + ",\"limit\":" + str(limit) + ",\"artifacts\":" + out + "]}")
+}
+
+// GET /v1/artifacts/<id>/diff?v1=&v2= — line-delta diff between two versions.
+func h_diff(req, id) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
+    if can_read(db, id, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"not authorized\"}") }
+    v1 := parse_int(query(req, "v1"))
+    v2 := parse_int(query(req, "v2"))
+    if v1 <= 0 || v2 <= 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"v1 and v2 required\"}") }
+    h1 := version_html(db, id, v1)
+    h2 := version_html(db, id, v2)
+    l1 := split(h1, "\n")
+    l2 := split(h2, "\n")
+    added := 0
+    removed := 0
+    i := 0
+    while i < len(l2) {
+        found := 0
+        j := 0
+        while j < len(l1) {
+            if l2[i] == l1[j] { found = 1 }
+            j = j + 1
+        }
+        if found == 0 { added = added + 1 }
+        i = i + 1
+    }
+    i = 0
+    while i < len(l1) {
+        found := 0
+        j := 0
+        while j < len(l2) {
+            if l1[i] == l2[j] { found = 1 }
+            j = j + 1
+        }
+        if found == 0 { removed = removed + 1 }
+        i = i + 1
+    }
+    changed := 0
+    if added > 0 || removed > 0 || len(h1) != len(h2) { changed = 1 }
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"v1\":" + str(v1) + ",\"v2\":" + str(v2) + ",\"changed\":" + str(changed) + ",\"lines_added\":" + str(added) + ",\"lines_removed\":" + str(removed) + ",\"size_delta\":" + str(len(h2) - len(h1)) + "}")
+}
+
+// GET /v1/artifacts/<id>/lineage — walk the parent chain up to 20 hops.
+func h_lineage(req, id) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
+    if can_read(db, id, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"not authorized\"}") }
+    out := "["
+    first := 1
+    cur := id
+    depth := 0
+    seen := make(map[string]int)
+    while cur != "" {
+        if depth >= 20 { break }
+        if has(seen, cur) { break }
+        seen[cur] = 1
+        arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{cur})
+        ars := parse(arows, []ArtRow{})
+        if len(ars) == 0 { break }
+        if can_read(db, cur, req) == 0 { break }
+        if first == 0 { out = out + "," } else { first = 0 }
+        a := ars[0]
+        out = out + "{\"id\":\"" + a.id + "\",\"owner\":\"" + a.owner + "\",\"name\":\"" + a.name + "\",\"title\":\"" + jesc(a.title) + "\",\"version\":" + str(a.latest) + ",\"updated\":" + str(a.updated) + ",\"meta\":" + a.meta + ",\"agent\":\"" + jesc(a.agent) + "\",\"run_id\":\"" + jesc(a.run_id) + "\",\"parent_id\":\"" + jesc(a.parent_id) + "\",\"tags\":" + a.tags + "}"
+        cur = a.parent_id
+        depth = depth + 1
+    }
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"lineage\":" + out + "]}")
+}
+
+// GET /v1/artifacts/<id>/labels — list checkpoint labels for an artifact.
+func h_labels(req, id) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
+    if can_read(db, id, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"not authorized\"}") }
+    rows := sqlite_query(db, "SELECT version, label, created FROM version_labels WHERE artifact_id = ? ORDER BY created DESC", []string{id})
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"labels\":" + rows + "}")
+}
+
+// POST /v1/checkpoint?id=&version=&label= — label a specific version (default latest).
+func h_checkpoint(req) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    id := query(req, "id")
+    if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
+    if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner key required\"}") }
+    ver := parse_int(query(req, "version"))
+    if ver <= 0 { ver = ars[0].latest }
+    label := query(req, "label")
+    if label == "" { label = "checkpoint" }
+    if reject_bad_slug(label) == 1 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid label — use letters, digits, or hyphens\"}") }
+    slab := slugify(label)
+    sqlite_exec(db, "INSERT OR REPLACE INTO version_labels(artifact_id, version, label, created) VALUES(?,?,?,?)", []string{id, str(ver), slab, str(now())})
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"version\":" + str(ver) + ",\"label\":\"" + jesc(slab) + "\"}")
+}
+
+// POST /v1/link?from=&to=&rel= — explicitly relate two artifacts.
+func h_link(req) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    from := query(req, "from")
+    to := query(req, "to")
+    rel := query(req, "rel")
+    if valid_id(from) == 0 || valid_id(to) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid id — use owner/artifact\"}") }
+    if rel == "" { rel = "related" }
+    if rel != "derived" && rel != "depends" && rel != "related" && rel != "supersedes" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"rel must be derived|depends|related|supersedes\"}") }
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{from})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"from artifact not found\"}") }
+    if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner key required for from artifact\"}") }
+    if can_read(db, to, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"to artifact not found or not readable\"}") }
+    sqlite_exec(db, "INSERT OR REPLACE INTO artifact_links(from_id, to_id, rel, created) VALUES(?,?,?,?)", []string{from, to, rel, str(now())})
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"from\":\"" + from + "\",\"to\":\"" + to + "\",\"rel\":\"" + rel + "\"}")
+}
+
+// GET /v1/artifacts/<id>/related — artifacts linked to/from this id.
+func h_related(req, id) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
+    if can_read(db, id, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"not authorized\"}") }
+    rows := sqlite_query(db, "SELECT from_id, to_id, rel, created FROM artifact_links WHERE from_id = ? OR to_id = ? ORDER BY created DESC", []string{id, id})
+    ls := parse(rows, []LinkRow{})
+    out := "["
+    i := 0
+    first := 1
+    while i < len(ls) {
+        other := ls[i].from_id
+        if other == id { other = ls[i].to_id }
+        if can_read(db, other, req) == 1 {
+            arows := sqlite_query(db, "SELECT id, owner, name, title, latest, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{other})
+            ars := parse(arows, []ArtRow{})
+            if len(ars) > 0 {
+                if first == 0 { out = out + "," } else { first = 0 }
+                a := ars[0]
+                out = out + "{\"id\":\"" + a.id + "\",\"owner\":\"" + a.owner + "\",\"name\":\"" + a.name + "\",\"title\":\"" + jesc(a.title) + "\",\"rel\":\"" + ls[i].rel + "\",\"updated\":" + str(a.updated) + "}"
+            }
+        }
+        i = i + 1
+    }
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"id\":\"" + id + "\",\"related\":" + out + "]}")
 }
 
 // h_delete — remove an artifact + all versions.
@@ -1133,7 +1483,7 @@ func h_delete(req, id) (res) {
     if valid_id(id) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     if owner_authorized(db, oa[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + oa[0].owner + "' is claimed — pass the owner key\"}") }
@@ -1151,11 +1501,11 @@ func h_rollback(req, id, target) (res) {
     if valid_id(id) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    orows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     if owner_authorized(db, oa[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + oa[0].owner + "' is claimed — pass the owner key\"}") }
-    vrows := sqlite_query(db, "SELECT version, format, created FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(target)})
+    vrows := sqlite_query(db, "SELECT version, format, created, meta, agent, run_id, parent_id, tags FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(target)})
     vs := parse(vrows, []VerRow{})
     if len(vs) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such version — see hart versions <id>\"}") }
     sqlite_exec(db, "UPDATE artifacts SET latest = ?, updated = ? WHERE id = ?", []string{str(target), str(now()), id})
@@ -1252,7 +1602,7 @@ func inject_live(page, id, ms) (out) {
 func h_artifact_data(req, id) (res) {
     if valid_id(id) == 0 { return response("400 Bad Request", "application/json; charset=utf-8", invalid_id_json()) }
     db := opendb()
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"not found\"}") }
     if read_authorized(db, id, ars[0].read_key_hash, req) == 0 {
@@ -1308,7 +1658,7 @@ func serve_runtime(fname) (res) {
 }
 
 func serve_artifact(db, req, id, ver) (res) {
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain; charset=utf-8", "artifact not found") }
     // private (gated) read: valid header, ?read_key, or unlock cookie, else agent JSON or unlock page
@@ -1425,7 +1775,7 @@ func unlock_success_page(id, key, req) (res) {
 func h_unlock(req, id) (res) {
     if valid_id(id) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
     db := opendb()
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain", "not found") }
     kh := ars[0].read_key_hash
@@ -1497,7 +1847,7 @@ func h_visibility(req) (res) {
     id := query(req, "id")
     if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need --id\"}") }
     if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
@@ -1609,9 +1959,9 @@ func guide_md(base, authline) (g) {
     g = g + "## Versioning\n\nRe-publishing the same `--owner/--artifact` appends a version; `latest` tracks newest, old versions are immutably pinned.\n- `" + base + "/a/<owner>/<artifact>` or `/latest` -> newest\n- `.../v<n>` -> a pinned version\n- `hart rollback <id> <v>` re-points latest (non-destructive)\n\n"
     g = g + "## Template + data (update without re-uploading)\n\nPublish a template once, then push just the data — it re-renders. Two mechanisms:\n- `{{key}}` placeholders in the markup\n- `window.HART_DATA` — a JS global your script/JSX reads\n\n```sh\nhart publish chart.html --owner you --artifact sales\nhart data you/sales '{\"points\":[3,1,4,1,5]}'   # re-renders, same URL\n```\n\n"
     g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
-    g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). To retrofit a key on an existing open namespace (or rotate a keyed one), use `hart owner-key <owner> <new-key>` (admin or current owner key required). Anonymous (no-owner) artifacts get a random id.\n\n"
+    g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). To retrofit a key on an existing open namespace (or rotate a keyed one), use `hart owner-key <owner> <new-key>` (admin or current owner key required). Anonymous (no-owner) artifacts get a random id.\n\n## Memory layer (provenance, search, lineage)\n\nArtifacts can carry provenance so agents can trace, find, and relate their work. At publish: `--agent <name> --run <id> --parent <id> --tags a,b --meta \'{...}\'`. `hart get` and `hart versions` return this metadata.\n\n- `hart search [query] [--owner --tag --agent --run --limit]` searches title, name, data, tags, meta, agent, run_id, owner, and parent_id. Visibility is respected.\n- `hart meta <id> [json]` reads or overwrites an artifact\'s structured meta JSON.\n- `hart lineage <id>` walks the `parent_id` chain up to 20 hops.\n- `hart diff <id> <v1> <v2>` reports changed/lines_added/lines_removed/size_delta.\n- `hart checkpoint <id>[@v] --name <label>` labels a version; `hart labels <id>` lists them.\n- `hart link <from> <to> --rel derived|depends|related|supersedes` relates two artifacts; `hart related <id>` follows those links.\n\n"
     g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
-    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `owner-key <owner> <new-key>` | set/rotate the owner key for a namespace (admin or current key required) |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `feedback <msg> [--kind bug\\|idea\\|praise] [--context <c>]` | send feedback (dual-writes to this instance + a central relay) |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `refresh <id> [--url <URL>\\|--cmd '<sh>'] --every <dur> [--header 'H: v']\\|--off\\|--now` | daemon self-refreshes the artifact's data on a schedule (living loop) |\n| `live <id> <on\\|off>` | allow the page to poll its own data.json and repaint live (opt-in CSP relax) |\n| `upgrade [--plan pro]` | mint a checkout link to buy hart Pro (give the URL to the human to pay) |\n| `license <key>` / `license status` | set / inspect the hart Pro license (unlocks pro features) |\n| `audit [--owner --action --since --limit]` | who changed what — the audit log (**hart Pro**) |\n| `team add\\|invite\\|list\\|rm <owner> [<email>]` | manage team members / per-member keys (**hart Pro**) |\n| `join <owner>` | SSO self-onboarding — sign in once, receive your member key (**hart Pro**) |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `mcp` | run as a stdio MCP server (native tools for MCP agents) |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## MCP (native tools for MCP-capable agents)\n\nBesides the CLI, hart can run as a **stdio MCP server** so MCP-native agents (Claude Desktop, Cursor, …) get hart as first-class tools. One binary, no extra runtime — it wraps hart's own HTTP API and inherits auth from env. Configure your MCP client:\n\n```json\n{\"mcpServers\":{\"hart\":{\"command\":\"hart\",\"args\":[\"mcp\"],\"env\":{\"HART_URL\":\"" + base + "\"}}}}\n```\nTools exposed: `hart_publish`, `hart_data`, `hart_list`, `hart_get`, `hart_stats`, `hart_stale`, `hart_explore`. (The CLI remains the primary interface; MCP is an additional surface.)\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Living loop (self-refreshing deliverables)\n\n`hart data` and `hart fresh`/`hart stale` assume **something external** keeps pushing data. `hart refresh` closes the loop: the daemon runs a **source** on a schedule and pushes the result as the artifact's live data itself — no external cron. Pair it with `hart fresh` and the SLA stays green because hart is the one keeping it green.\n\n```sh\n# GET a JSON URL every 15 min and make it the artifact's data (url sources need the owner key)\nhart refresh you/board --url https://api.example.com/metrics --every 15m --header 'Authorization: Bearer XYZ'\n\n# or run a shell command (pipes/curl|jq ok) — arbitrary shell on the server, so ADMIN ONLY\nhart refresh you/board --cmd 'curl -s https://api.example.com/m | jq .summary' --every 15m\n\nhart refresh you/board            # show config + last run status\nhart refresh you/board --now      # run once, right now, inline\nhart refresh you/board --off      # stop refreshing\n```\nThe source's output must be a JSON object or array (it becomes `window.HART_DATA` + `{{key}}`); non-JSON or a failed fetch is recorded in `last_status` and the existing data is left untouched. Minimum interval 30s. `--url` sources need the owner key; `--cmd` sources require `HART_ADMIN_TOKEN` (they execute shell on your box). The daemon runs due sources every few seconds in-process — one binary, no scheduler to deploy.\n\n**Live repaint (no reload).** By default a refreshed page shows new data on the *next load*. Mark an artifact **live** and it repaints while someone's watching it: hart injects a small poller that fetches the artifact's own `" + base + "/a/<id>/data.json` and updates `window.HART_DATA`, then fires a `hart:data` event. Your template paints from `window.HART_DATA` on load and repaints on the event:\n\n```html\n<script>\n  function paint(d){ /* render d */ }\n  paint(window.HART_DATA);                               // initial\n  addEventListener('hart:data', e => paint(e.detail));   // live updates\n</script>\n```\n```sh\nhart publish board.html --owner you --artifact board --live   # publish as live\nhart live you/board on|off                                    # toggle anytime (setting a refresh source turns it on)\n```\nLive is **opt-in per artifact**: only a live page's CSP is relaxed to `connect-src 'self'` (so it can fetch *its own* data.json and nothing else) — every other artifact keeps the full `default-src 'none'` lockdown. The poll interval tracks the refresh cadence (override with `window.HART_LIVE_MS`). `data.json` uses the same read-gating as the page (a private artifact's poll rides its unlock cookie).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin digest [--days N]       # adoption: new owners/artifacts (default 7d), totals, top by views\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**Visual operator dashboard:** point a browser at `" + base + "/_fleet` and sign in with the admin token — every owner + artifact (incl. unlisted/private), view counts, and stale living-deliverables flagged, server-rendered. The JSON API above is for agents; `/_fleet` is for you.\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
+    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `owner-key <owner> <new-key>` | set/rotate the owner key for a namespace (admin or current key required) |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `feedback <msg> [--kind bug\\|idea\\|praise] [--context <c>]` | send feedback (dual-writes to this instance + a central relay) |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `refresh <id> [--url <URL>\\|--cmd '<sh>'] --every <dur> [--header 'H: v']\\|--off\\|--now` | daemon self-refreshes the artifact's data on a schedule (living loop) |\n| `live <id> <on\\|off>` | allow the page to poll its own data.json and repaint live (opt-in CSP relax) |\n| `upgrade [--plan pro]` | mint a checkout link to buy hart Pro (give the URL to the human to pay) |\n| `license <key>` / `license status` | set / inspect the hart Pro license (unlocks pro features) |\n| `audit [--owner --action --since --limit]` | who changed what — the audit log (**hart Pro**) |\n| `team add\\|invite\\|list\\|rm <owner> [<email>]` | manage team members / per-member keys (**hart Pro**) |\n| `join <owner>` | SSO self-onboarding — sign in once, receive your member key (**hart Pro**) |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `meta <id> [json]` | read or overwrite artifact meta JSON |\n| `search [query] [--owner --tag --agent --run --limit]` | memory-layer artifact search |\n| `diff <id> <v1> <v2>` | line/byte delta between two versions |\n| `lineage <id>` | walk the parent chain (provenance) |\n| `checkpoint <id>[@v] --name <label>` | label a version |\n| `labels <id>` | list checkpoint labels |\n| `link <from> <to> --rel <derived|depends|related|supersedes>` | relate two artifacts |\n| `related <id>` | artifacts linked to/from this id |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `mcp` | run as a stdio MCP server (native tools for MCP agents) |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## MCP (native tools for MCP-capable agents)\n\nBesides the CLI, hart can run as a **stdio MCP server** so MCP-native agents (Claude Desktop, Cursor, …) get hart as first-class tools. One binary, no extra runtime — it wraps hart's own HTTP API and inherits auth from env. Configure your MCP client:\n\n```json\n{\"mcpServers\":{\"hart\":{\"command\":\"hart\",\"args\":[\"mcp\"],\"env\":{\"HART_URL\":\"" + base + "\"}}}}\n```\nTools exposed: `hart_publish`, `hart_data`, `hart_list`, `hart_get`, `hart_stats`, `hart_stale`, `hart_explore`. (The CLI remains the primary interface; MCP is an additional surface.)\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Living loop (self-refreshing deliverables)\n\n`hart data` and `hart fresh`/`hart stale` assume **something external** keeps pushing data. `hart refresh` closes the loop: the daemon runs a **source** on a schedule and pushes the result as the artifact's live data itself — no external cron. Pair it with `hart fresh` and the SLA stays green because hart is the one keeping it green.\n\n```sh\n# GET a JSON URL every 15 min and make it the artifact's data (url sources need the owner key)\nhart refresh you/board --url https://api.example.com/metrics --every 15m --header 'Authorization: Bearer XYZ'\n\n# or run a shell command (pipes/curl|jq ok) — arbitrary shell on the server, so ADMIN ONLY\nhart refresh you/board --cmd 'curl -s https://api.example.com/m | jq .summary' --every 15m\n\nhart refresh you/board            # show config + last run status\nhart refresh you/board --now      # run once, right now, inline\nhart refresh you/board --off      # stop refreshing\n```\nThe source's output must be a JSON object or array (it becomes `window.HART_DATA` + `{{key}}`); non-JSON or a failed fetch is recorded in `last_status` and the existing data is left untouched. Minimum interval 30s. `--url` sources need the owner key; `--cmd` sources require `HART_ADMIN_TOKEN` (they execute shell on your box). The daemon runs due sources every few seconds in-process — one binary, no scheduler to deploy.\n\n**Live repaint (no reload).** By default a refreshed page shows new data on the *next load*. Mark an artifact **live** and it repaints while someone's watching it: hart injects a small poller that fetches the artifact's own `" + base + "/a/<id>/data.json` and updates `window.HART_DATA`, then fires a `hart:data` event. Your template paints from `window.HART_DATA` on load and repaints on the event:\n\n```html\n<script>\n  function paint(d){ /* render d */ }\n  paint(window.HART_DATA);                               // initial\n  addEventListener('hart:data', e => paint(e.detail));   // live updates\n</script>\n```\n```sh\nhart publish board.html --owner you --artifact board --live   # publish as live\nhart live you/board on|off                                    # toggle anytime (setting a refresh source turns it on)\n```\nLive is **opt-in per artifact**: only a live page's CSP is relaxed to `connect-src 'self'` (so it can fetch *its own* data.json and nothing else) — every other artifact keeps the full `default-src 'none'` lockdown. The poll interval tracks the refresh cadence (override with `window.HART_LIVE_MS`). `data.json` uses the same read-gating as the page (a private artifact's poll rides its unlock cookie).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin digest [--days N]       # adoption: new owners/artifacts (default 7d), totals, top by views\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**Visual operator dashboard:** point a browser at `" + base + "/_fleet` and sign in with the admin token — every owner + artifact (incl. unlisted/private), view counts, and stale living-deliverables flagged, server-rendered. The JSON API above is for agents; `/_fleet` is for you.\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
     g = g + "## Env\n\nAll client env vars can also be set in `~/.hart/config` or a per-project `.hart.env` (loaded for all CLI commands except `serve`; precedence: flag > env > `.hart.env` > `~/.hart/config`). `HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key; also `HART_OWNER_KEY_<owner>` per namespace) · `HART_READ_KEY` (read key for a private artifact; also `HART_READ_KEY_<owner>_<artifact>` per artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30 — the per-owner storage cap; raising it above `HART_FREE_MAX_OWNER_MB` requires a **hart Pro** license), `HART_FREE_MAX_OWNER_MB` (30 — the free-tier ceiling), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`, `HART_LICENSE_KEY` (Pro key), `HART_LICENSE_PUBKEY` (run your own issuer). **Production hardening** (auto on when `HART_PUBLIC` is set): `HART_HARDEN=1` · `HART_TRUST_PROXY=1` (only behind a proxy you control) · `HART_MAX_BODY_BYTES` (default 10 MiB) · `HART_READ_TIMEOUT_MS` (default 30s) · `HART_ACCESS_LOG=1`; opt out locally with `HART_HARDEN=0`. **BYOK key map:** `" + base + "/byok.md` (also `docs/BYOK.md` in the repo).\n\n## hart Pro (self-host)\n\nhart is open-core: the CLI is fully functional and free, and a few features unlock with a **license key** (`hart license <key>`, or `HART_LICENSE_KEY` on the daemon; `hart license status` shows your tier). Keys are Ed25519-signed and verified offline (no phone-home). Pro today: **limits** (raise the per-owner storage quota), **audit-log** (`hart audit` — who changed what), **teams** (`hart team` — per-member keys). Enforcement is honest, not DRM — pay for support, updates, and to stay compliant.\n\n**Teams SSO (optional, your IdP).** `hart join <owner>` lets a member self-onboard via **any OpenID Connect provider you configure** — you bring the IdP, hart is a standard OIDC client. Set `HART_OIDC_ISSUER` (e.g. your Auth0/Okta/Keycloak/Google/machin-idp), `HART_OIDC_CLIENT_ID`, `HART_OIDC_CLIENT_SECRET` (register `<your-hart>/team/callback` as the redirect URI at your IdP); optional `HART_OIDC_SCOPES` (default `openid email`). hart discovers the endpoints, runs the code flow, and reads the member's email from `userinfo`. Unset = SSO off (teams still work via `hart team add` member keys).\n\n**Buying is agent-first.** Run `hart upgrade` — it returns a checkout URL; give it to the human to pay. They're emailed a license key; then run `hart license <key>` (or set `HART_LICENSE_KEY`). Lost the key? `" + base + "/manage` re-emails it. Contact: javi@intrane.fr.\n\n"
     g = g + "## Workflow caveats from usage\n\n"
     g = g + "- No `hart` binary? Publish with curl: `curl -s -X POST '" + base + "/v1/publish?owner=<owner>&artifact=<slug>&visibility=unlisted' -H 'content-type: text/html' --data-binary @file.html`\n"
@@ -1698,6 +2048,7 @@ func llms_txt(base, authline) (t) {
     t = t + "- Markdown -> HTML: `pandoc --embed-resources --standalone --css style.css -f markdown-yaml_metadata_block` avoids YAML parse errors when frontmatter contains colons.\n"
     t = t + "- Re-publishing same owner/artifact updates `latest`; delete/move with `curl -X DELETE " + base + "/v1/artifacts/<owner>/<artifact>`.\n"
     t = t + "- Update without re-uploading: `hart data you/name '<json>'` -> the page reads `window.HART_DATA` and/or `{{key}}`.\n"
+    t = t + "- Memory layer: publish with `--agent --run --parent --tags --meta`; then `hart search|meta|lineage|diff|checkpoint|link|related` to trace and find artifacts.\n"
     t = t + "- Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`).\n\n"
     t = t + "## Map (AI-first sitemap)\n\n"
     t = t + "- **https://javimosch.github.io/machin-hart** — project landing, docs, and changelog.\n"
@@ -1781,13 +2132,16 @@ func hart_route(req) (res) {
     if req.method == "POST" && p == "/v1/publish" { return h_publish(req) }
     if req.method == "POST" && p == "/v1/data" { return h_data(req) }
     if req.method == "GET" && p == "/v1/artifacts" { return h_list(req) }
+    if req.method == "GET" && p == "/v1/search" { return h_search(req) }
+    if req.method == "POST" && p == "/v1/link" { return h_link(req) }
+    if req.method == "POST" && p == "/v1/checkpoint" { return h_checkpoint(req) }
     if req.method == "GET" && p == "/v1/admin/owners" { return h_admin_owners(req) }
     if req.method == "GET" && p == "/v1/admin/list" { return h_admin_list(req) }
     if req.method == "POST" && p == "/v1/admin/mv" { return h_admin_mv(req) }
     if req.method == "GET" && p == "/v1/admin/digest" { return h_admin_digest(req) }
     if req.method == "POST" && p == "/v1/owner-key" { return h_owner_key(req) }
     if has_prefix(p, "/v1/artifacts/") {
-        tail := substr(p, 14, len(p))   // the id (may contain "/") + optional /versions|/rollback
+        tail := substr(p, 14, len(p))   // the id (may contain "/") + optional suffix
         id := tail
         if req.method == "GET" && has_suffix(tail, "/versions") {
             id = substr(tail, 0, len(tail) - 9)
@@ -1798,6 +2152,21 @@ func hart_route(req) (res) {
         if req.method == "POST" && has_suffix(tail, "/rollback") {
             id = substr(tail, 0, len(tail) - 9)
         }
+        if (req.method == "GET" || req.method == "POST") && has_suffix(tail, "/meta") {
+            id = substr(tail, 0, len(tail) - 5)
+        }
+        if req.method == "GET" && has_suffix(tail, "/lineage") {
+            id = substr(tail, 0, len(tail) - 8)
+        }
+        if req.method == "GET" && has_suffix(tail, "/related") {
+            id = substr(tail, 0, len(tail) - 8)
+        }
+        if req.method == "GET" && has_suffix(tail, "/diff") {
+            id = substr(tail, 0, len(tail) - 5)
+        }
+        if req.method == "GET" && has_suffix(tail, "/labels") {
+            id = substr(tail, 0, len(tail) - 7)
+        }
         if valid_id(id) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
         if req.method == "GET" && has_suffix(tail, "/versions") {
             db := opendb(); return h_versions(db, req, id)
@@ -1807,6 +2176,21 @@ func hart_route(req) (res) {
         }
         if req.method == "POST" && has_suffix(tail, "/rollback") {
             return h_rollback(req, id, parse_int(query(req, "to")))
+        }
+        if (req.method == "GET" || req.method == "POST") && has_suffix(tail, "/meta") {
+            db := opendb(); return h_meta(req, id)
+        }
+        if req.method == "GET" && has_suffix(tail, "/lineage") {
+            db := opendb(); return h_lineage(req, id)
+        }
+        if req.method == "GET" && has_suffix(tail, "/related") {
+            db := opendb(); return h_related(req, id)
+        }
+        if req.method == "GET" && has_suffix(tail, "/diff") {
+            db := opendb(); return h_diff(req, id)
+        }
+        if req.method == "GET" && has_suffix(tail, "/labels") {
+            db := opendb(); return h_labels(req, id)
         }
         if req.method == "DELETE" { return h_delete(req, tail) }
         if req.method == "GET" { db := opendb(); return h_versions(db, req, tail) }
@@ -1849,7 +2233,7 @@ func h_refresh_set(req) (res) {
     id := query(req, "id")
     if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?id=\"}") }
     if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact — publish the template first\"}") }
     if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
@@ -1883,7 +2267,7 @@ func h_refresh_get(req) (res) {
     id := query(req, "id")
     if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?id=\"}") }
     if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact\"}") }
     if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
@@ -1907,7 +2291,7 @@ func h_refresh_run(req) (res) {
     rows := sqlite_query(db, "SELECT artifact_id, kind, source, header, every, next, last, last_status, enabled FROM refresh WHERE artifact_id = ?", []string{id})
     rl := parse(rows, []RefreshRow{})
     if len(rl) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no refresh source configured for this artifact\"}") }
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact\"}") }
     if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
@@ -2176,7 +2560,7 @@ func h_live(req) (res) {
     id := query(req, "id")
     if id == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need ?id=\"}") }
     if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", invalid_id_json()) }
-    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated FROM artifacts WHERE id = ?", []string{id})
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no such artifact\"}") }
     if owner_authorized(db, ars[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + ars[0].owner + "' is claimed — pass the owner key\"}") }
@@ -2334,7 +2718,7 @@ func has_flag(a, name) (yes) {
 }
 
 func cmd_publish(a) {
-    if len(a) < 3 { die(80, "usage: hart publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--visibility unlisted|public|private] [--read-key <pw>] [--fresh <30s|15m|2h|1d>] [--unguessable] [--dry-run] [--force]") }
+    if len(a) < 3 { die(80, "usage: hart publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--visibility unlisted|public|private] [--read-key <pw>] [--fresh <30s|15m|2h|1d>] [--agent <name>] [--run <id>] [--parent <id>] [--tags <a,b>] [--meta '<json>'] [--unguessable] [--dry-run] [--force]") }
     file := a[2]
     html := read_file(file)
     if html == "" { die(90, "file empty or unreadable: " + file) }
@@ -2353,6 +2737,11 @@ func cmd_publish(a) {
     vis := flagv(a, "--visibility", "")
     rk := flagv(a, "--read-key", "")
     fresh := flagv(a, "--fresh", "")
+    pagent := flagv(a, "--agent", "")
+    prun := flagv(a, "--run", "")
+    pparent := flagv(a, "--parent", "")
+    ptags := flagv(a, "--tags", "")
+    pmeta := flagv(a, "--meta", "")
     url := hart_url() + "/v1/publish?format=" + url_encode(format)
     if id != "" { url = url + "&id=" + url_encode(id) }
     if owner != "" { url = url + "&owner=" + url_encode(owner) }
@@ -2361,6 +2750,11 @@ func cmd_publish(a) {
     if vis != "" { url = url + "&visibility=" + url_encode(vis) }
     if rk != "" { url = url + "&read_key=" + url_encode(rk) }
     if fresh != "" { url = url + "&fresh=" + str(parse_duration(fresh)) }
+    if pagent != "" { url = url + "&agent=" + url_encode(pagent) }
+    if prun != "" { url = url + "&run=" + url_encode(prun) }
+    if pparent != "" { url = url + "&parent=" + url_encode(pparent) }
+    if ptags != "" { url = url + "&tags=" + url_encode(ptags) }
+    if pmeta != "" { url = url + "&meta=" + url_encode(pmeta) }
     if has_flag(a, "--unguessable") == 1 { url = url + "&unguessable=1" }
     if has_flag(a, "--live") == 1 { url = url + "&live=1" }
     if has_flag(a, "--dry-run") == 1 { url = url + "&dry=1" }
@@ -2722,12 +3116,18 @@ func cmd_rm(a) {
 // hart data <id> '<json>'   |   hart data --owner X --artifact Y '<json>'
 // updates the artifact's live data (the template re-renders with it).
 func cmd_data(a) {
-    if len(a) < 3 { die(80, "usage: hart data <id> '<json>'  |  hart data --owner <who> --artifact <name> '<json>'") }
+    if len(a) < 3 { die(80, "usage: hart data <id> '<json>' [--agent <name>] [--run <id>] [--meta '<json>']  |  hart data --owner <who> --artifact <name> '<json>'") }
     id := cli_resolve_id(a, 2)
     json := a[len(a) - 1]
     owner := ""
     if valid_id(id) == 1 { owner = substr(id, 0, index(id, "/")) }
     url := hart_url() + "/v1/data?x=1&id=" + url_encode(id)
+    dagent := flagv(a, "--agent", "")
+    drun := flagv(a, "--run", "")
+    dmeta := flagv(a, "--meta", "")
+    if dagent != "" { url = url + "&agent=" + url_encode(dagent) }
+    if drun != "" { url = url + "&run=" + url_encode(drun) }
+    if dmeta != "" { url = url + "&meta=" + url_encode(dmeta) }
     headers := []string{"content-type: application/json"}
     tok := client_token()
     if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
@@ -2738,6 +3138,140 @@ func cmd_data(a) {
     status, resp, err := http_request("POST", url, headers, json)
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
+    say(resp)
+}
+
+// hart meta <id> [json]  — read or overwrite artifact meta.
+func cmd_meta(a) {
+    if len(a) < 3 { die(80, "usage: hart meta <id> [json]") }
+    id := cli_resolve_id(a, 2)
+    require_valid_id(id)
+    if len(a) == 3 {
+        status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/meta", auth_headers(id), "")
+        if err != "" { die(100, "cannot reach hart daemon: " + err) }
+        if status != 200 { die(90, "meta failed (" + str(status) + "): " + resp) }
+        say(resp)
+        return
+    }
+    json := a[len(a) - 1]
+    status, resp, err := http_request("POST", hart_url() + "/v1/artifacts/" + id + "/meta", auth_headers(id), json)
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }
+    say(resp)
+}
+
+// hart search [query] [--owner <who>] [--tag <t>] [--agent <name>] [--run <id>] [--limit <n>]
+func cmd_search(a) {
+    q := ""
+    start := 2
+    if len(a) >= 3 && substr(a[2], 0, 2) != "--" { q = a[2]; start = 3 }
+    owner := flagv(a, "--owner", "")
+    tag := flagv(a, "--tag", "")
+    agent := flagv(a, "--agent", "")
+    run := flagv(a, "--run", "")
+    limit := flagv(a, "--limit", "")
+    url := hart_url() + "/v1/search?"
+    if q != "" { url = url + "q=" + url_encode(q) + "&" }
+    if owner != "" { url = url + "owner=" + url_encode(owner) + "&" }
+    if tag != "" { url = url + "tag=" + url_encode(tag) + "&" }
+    if agent != "" { url = url + "agent=" + url_encode(agent) + "&" }
+    if run != "" { url = url + "run=" + url_encode(run) + "&" }
+    if limit != "" { url = url + "limit=" + url_encode(limit) + "&" }
+    headers := []string{}
+    tok := client_token()
+    if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
+    ok := ""
+    if owner != "" { ok = owner_key_of(a, owner) }
+    if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
+    status, resp, err := http_request("GET", url, headers, "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(90, "search failed (" + str(status) + "): " + resp) }
+    say(resp)
+}
+
+// hart diff <id> <v1> <v2>
+func cmd_diff(a) {
+    if len(a) < 5 { die(80, "usage: hart diff <id> <v1> <v2>") }
+    id := cli_resolve_id(a, 2)
+    require_valid_id(id)
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/diff?v1=" + url_encode(a[len(a)-2]) + "&v2=" + url_encode(a[len(a)-1]), auth_headers(id), "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(90, "diff failed (" + str(status) + "): " + resp) }
+    say(resp)
+}
+
+// hart lineage <id>
+func cmd_lineage(a) {
+    if len(a) < 3 { die(80, "usage: hart lineage <id>") }
+    id := cli_resolve_id(a, 2)
+    require_valid_id(id)
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/lineage", auth_headers(id), "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(90, "lineage failed (" + str(status) + "): " + resp) }
+    say(resp)
+}
+
+// hart checkpoint <id>[@<version>] --name <label> [--version <n>]
+func cmd_checkpoint(a) {
+    if len(a) < 4 { die(80, "usage: hart checkpoint <id>[@<version>] --name <label>") }
+    id := cli_resolve_id(a, 2)
+    require_valid_id(id)
+    ver := ""
+    at := index(id, "@")
+    if at >= 0 { ver = substr(id, at + 1, len(id)); id = substr(id, 0, at) }
+    if ver == "" { ver = flagv(a, "--version", "") }
+    label := flagv(a, "--name", "checkpoint")
+    url := hart_url() + "/v1/checkpoint?id=" + url_encode(id) + "&label=" + url_encode(label)
+    if ver != "" { url = url + "&version=" + url_encode(ver) }
+    status, resp, err := http_request("POST", url, auth_headers(id), "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }
+    say(resp)
+}
+
+// hart labels <id>
+func cmd_labels(a) {
+    if len(a) < 3 { die(80, "usage: hart labels <id>") }
+    id := cli_resolve_id(a, 2)
+    require_valid_id(id)
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/labels", auth_headers(id), "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(90, "labels failed (" + str(status) + "): " + resp) }
+    say(resp)
+}
+
+// hart link <from> <to> --rel derived|depends|related|supereses
+func cmd_link(a) {
+    if len(a) < 4 { die(80, "usage: hart link <from> <to> --rel derived|depends|related|supersedes") }
+    from := ""
+    to := ""
+    rel := "related"
+    i := 2
+    while i < len(a) {
+        if a[i] == "--rel" { if i + 1 < len(a) { rel = a[i + 1] } i = i + 2; continue }
+        if a[i] == "--owner-key" { i = i + 2; continue }
+        if a[i] == "--member-key" { i = i + 2; continue }
+        if from == "" { from = a[i] } else { if to == "" { to = a[i] } }
+        i = i + 1
+    }
+    if from == "" || to == "" { die(80, "usage: hart link <from> <to> --rel derived|depends|related|supersedes") }
+    require_valid_id(from)
+    require_valid_id(to)
+    url := hart_url() + "/v1/link?from=" + url_encode(from) + "&to=" + url_encode(to) + "&rel=" + url_encode(rel)
+    status, resp, err := http_request("POST", url, auth_headers(from), "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }
+    say(resp)
+}
+
+// hart related <id>
+func cmd_related(a) {
+    if len(a) < 3 { die(80, "usage: hart related <id>") }
+    id := cli_resolve_id(a, 2)
+    require_valid_id(id)
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/related", auth_headers(id), "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(90, "related failed (" + str(status) + "): " + resp) }
     say(resp)
 }
 
@@ -2925,6 +3459,9 @@ func mcp_tools_json() (t) {
     t = t + "{\"name\":\"hart_stats\",\"description\":\"Living-deliverable analytics for an artifact: views, last view, freshness, top referrers.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"]}},"
     t = t + "{\"name\":\"hart_stale\",\"description\":\"Living deliverables that went quiet — past their freshness SLA, or (with older_than) any not touched within a window. JSON signal; you decide how to alert.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"owner\":{\"type\":\"string\"},\"older_than\":{\"type\":\"string\",\"description\":\"e.g. 2h, 1d\"}}}},"
     t = t + "{\"name\":\"hart_explore\",\"description\":\"Public discovery feed across the instance (recency-ranked), optional text query.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}}"
+    t = t + "{\"name\":\"hart_search\",\"description\":\"Search the memory layer: find artifacts by keyword, tag, agent, run id, or owner. Respects visibility.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"},\"owner\":{\"type\":\"string\"},\"tag\":{\"type\":\"string\"},\"agent\":{\"type\":\"string\"},\"run\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\"}}}},"
+    t = t + "{\"name\":\"hart_meta\",\"description\":\"Read or overwrite an artifact's meta JSON (structured annotations).\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"},\"meta\":{\"type\":\"string\",\"description\":\"JSON object; omit to read, provide to overwrite.\"}},\"required\":[\"id\"]}}"
+    t = t + "{\"name\":\"hart_lineage\",\"description\":\"Trace an artifact's parent chain (provenance) up to 20 hops.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"]}}"
     t = t + "]}"
 }
 
@@ -3021,6 +3558,51 @@ func mcp_tools_call(line, id) {
         mcp_http(id, "GET", hart_url() + "/v1/public?q=" + url_encode(json_field(line, ap + "query", "")), []string{}, "")
         return
     }
+    if name == "hart_search" {
+        url := hart_url() + "/v1/search?"
+        q := json_field(line, ap + "q", "")
+        ow := json_field(line, ap + "owner", "")
+        tag := json_field(line, ap + "tag", "")
+        agent := json_field(line, ap + "agent", "")
+        run := json_field(line, ap + "run", "")
+        limit := json_field(line, ap + "limit", "")
+        if q != "" { url = url + "q=" + url_encode(q) + "&" }
+        if ow != "" { url = url + "owner=" + url_encode(slugify(ow)) + "&" }
+        if tag != "" { url = url + "tag=" + url_encode(tag) + "&" }
+        if agent != "" { url = url + "agent=" + url_encode(agent) + "&" }
+        if run != "" { url = url + "run=" + url_encode(run) + "&" }
+        if limit != "" { url = url + "limit=" + url_encode(limit) }
+        h := []string{}
+        if tok != "" { h = append(h, "authorization: Bearer " + tok) }
+        if ow != "" {
+            mcp_ok := owner_key_for(slugify(ow))
+            if mcp_ok != "" { h = append(h, "x-hart-owner-key: " + mcp_ok) }
+        }
+        mcp_http(id, "GET", url, h, "")
+        return
+    }
+    if name == "hart_meta" {
+        mid := json_field(line, ap + "id", "")
+        if mid == "" { mcp_content(id, "hart_meta: 'id' is required", 1); return }
+        if valid_id(mid) == 0 { mcp_content(id, "hart_meta: invalid id — use owner/artifact", 1); return }
+        mbody := json_field(line, ap + "meta", "")
+        h := []string{}
+        if tok != "" { h = append(h, "authorization: Bearer " + tok) }
+        mcp_owner := ""
+        if valid_id(mid) == 1 { mcp_owner = substr(mid, 0, index(mid, "/")) }
+        mcp_ok := owner_key_for(mcp_owner)
+        if mcp_ok != "" { h = append(h, "x-hart-owner-key: " + mcp_ok) }
+        if mbody == "" { mcp_http(id, "GET", hart_url() + "/v1/artifacts/" + mid + "/meta", h, ""); return }
+        mcp_http(id, "POST", hart_url() + "/v1/artifacts/" + mid + "/meta", h, mbody)
+        return
+    }
+    if name == "hart_lineage" {
+        lid := json_field(line, ap + "id", "")
+        if lid == "" { mcp_content(id, "hart_lineage: 'id' is required", 1); return }
+        if valid_id(lid) == 0 { mcp_content(id, "hart_lineage: invalid id — use owner/artifact", 1); return }
+        mcp_http(id, "GET", hart_url() + "/v1/artifacts/" + lid + "/lineage", auth_headers(lid), "")
+        return
+    }
     mcp_content(id, "unknown tool: " + name, 1)
 }
 
@@ -3064,6 +3646,14 @@ func main() {
     if cmd == "login" { cmd_login(a); return }
     if cmd == "publish" { cmd_publish(a); return }
     if cmd == "data" { cmd_data(a); return }
+    if cmd == "meta" { cmd_meta(a); return }
+    if cmd == "search" { cmd_search(a); return }
+    if cmd == "diff" { cmd_diff(a); return }
+    if cmd == "lineage" { cmd_lineage(a); return }
+    if cmd == "checkpoint" { cmd_checkpoint(a); return }
+    if cmd == "labels" { cmd_labels(a); return }
+    if cmd == "link" { cmd_link(a); return }
+    if cmd == "related" { cmd_related(a); return }
     if cmd == "get" { cmd_get(a); return }
     if cmd == "list" { cmd_list(a); return }
     if cmd == "versions" { cmd_versions(a); return }
