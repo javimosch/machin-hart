@@ -130,3 +130,39 @@
             </div>
           </div>
         </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-violet-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🧠</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Memory layer — provenance, search, lineage</h3>
+              <p class="text-white/40 leading-relaxed">Artifacts now carry provenance: <code>--agent</code>, <code>--run</code>, <code>--parent</code>, <code>--tags</code>, and structured <code>--meta</code> JSON at publish time. <code>hart search</code> finds work across title, data, tags, meta, agent, and run. <code>hart lineage</code> walks the parent chain; <code>hart diff</code> compares versions; <code>hart checkpoint</code> labels a version; <code>hart link</code> and <code>hart related</code> connect artifacts. MCP tools <code>hart_search</code>, <code>hart_meta</code>, and <code>hart_lineage</code> expose the same surface to agent runtimes.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-sky-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🖱️</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Draggable artifact chrome</h3>
+              <p class="text-white/40 leading-relaxed">The hart pill on every rendered artifact is now draggable — grab it, move it anywhere on the page, and the position persists across visits via <code>localStorage</code>. Rests at 50% opacity, fades to full on hover or when the menu is open.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-teal-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🔑</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Per-owner &amp; per-read keys in flat config</h3>
+              <p class="text-white/40 leading-relaxed"><code>HART_OWNER_KEY_&lt;owner&gt;</code> and <code>HART_READ_KEY_&lt;owner&gt;_&lt;artifact&gt;</code> in <code>.hart.env</code> or <code>~/.hart/config</code> — one flat file, every namespace and private artifact keyed without env-var soup. Plus <code>hart owner-key</code> to set or rotate a namespace key from the CLI.</p>
+            </div>
+          </div>
+        </div>
