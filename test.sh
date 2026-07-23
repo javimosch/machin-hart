@@ -67,6 +67,15 @@ echo "== owner-claim keys =="
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"
 eq "claimed owner: right key -> ok" "$(./hart publish "$TMP/x.html" --owner locked --artifact b --owner-key sekret | jget ok)" "True"
 
+echo "== owner-key command =="
+./hart publish "$P" --owner openns --artifact a >/dev/null
+eq "owner-key: admin keys open namespace" "$(./hart owner-key openns key2 | jget ok)" "True"
+eq "owner-key: no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner openns --artifact b >/dev/null 2>&1; echo $?)" "80"
+eq "owner-key: right key -> ok" "$(./hart publish "$TMP/x.html" --owner openns --artifact b --owner-key key2 | jget ok)" "True"
+eq "owner-key: rotate with old key" "$(env -u HART_ADMIN_TOKEN HART_OWNER_KEY=key2 ./hart owner-key openns key3 | jget ok)" "True"
+eq "owner-key: old key fails after rotate" "$(./hart publish "$TMP/x.html" --owner openns --artifact c --owner-key key2 >/dev/null 2>&1; echo $?)" "80"
+eq "owner-key: new key works after rotate" "$(./hart publish "$TMP/x.html" --owner openns --artifact c --owner-key key3 | jget ok)" "True"
+
 echo "== stats (server-side views) =="
 curl -s -o /dev/null "$HART_URL/a/acme/pub"
 curl -s -o /dev/null -H 'Referer: https://news.ycombinator.com/x' "$HART_URL/a/acme/pub"
