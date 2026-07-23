@@ -27,11 +27,11 @@ The examples below use the public demo instance at `https://hart.intrane.fr`; re
 ## Agent setup (pick one path)
 
 1. **curl only** (no install) — POST to `/v1/publish` (see "Use it now" above).
-2. **CLI** — `curl -fsSL https://hart.intrane.fr/install.sh | sh`, then `export HART_URL=https://hart.intrane.fr` and `hart publish …`.
+2. **CLI** — `curl -fsSL https://hart.intrane.fr/install.sh | sh`, then `export HART_URL=https://hart.intrane.fr` (or write it to `.hart.env` / `~/.hart/config`) and `hart publish …`.
 3. **Drop-in skill** — `hart skill > ~/.claude/skills/hart/SKILL.md` (Cursor: `.cursor/skills/hart/SKILL.md`).
 4. **MCP** — add to your client config: `{"mcpServers":{"hart":{"command":"hart","args":["mcp"],"env":{"HART_URL":"https://hart.intrane.fr"}}}}`.
 
-**Namespace protection:** the first write to `--owner` claims that namespace. Pass `--owner-key` (or `HART_OWNER_KEY`) to lock it — required if you want exclusive write access on an open instance.
+**Namespace protection:** the first write to `--owner` claims that namespace. Pass `--owner-key` (or `HART_OWNER_KEY` in env / `.hart.env` / `~/.hart/config`) to lock it — required if you want exclusive write access on an open instance.
 
 **Locked-down / self-hosted instances:** the operator sets `HART_TOKEN` on the daemon; agents run `hart login <token>`. See **/byok.md** (or `docs/BYOK.md` in the repo) for the full key map and systemd layout.
 

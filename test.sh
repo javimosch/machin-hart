@@ -7,6 +7,7 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 [ -x ./hart ] || { echo "test: ./hart not found — run ./build.sh first" >&2; exit 1; }
+HART_BIN="$(pwd)/hart"
 
 PORT="${HART_TEST_PORT:-8760}"
 TMP="$(mktemp -d)"
@@ -75,6 +76,17 @@ eq "owner-key: right key -> ok" "$(./hart publish "$TMP/x.html" --owner openns -
 eq "owner-key: rotate with old key" "$(env -u HART_ADMIN_TOKEN HART_OWNER_KEY=key2 ./hart owner-key openns key3 | jget ok)" "True"
 eq "owner-key: old key fails after rotate" "$(./hart publish "$TMP/x.html" --owner openns --artifact c --owner-key key2 >/dev/null 2>&1; echo $?)" "80"
 eq "owner-key: new key works after rotate" "$(./hart publish "$TMP/x.html" --owner openns --artifact c --owner-key key3 | jget ok)" "True"
+
+echo "== config files (.hart.env + ~/.hart/config) =="
+mkdir -p "$TMP/cfg"
+printf 'HART_URL=%s\nHART_OWNER_KEY=sekret\n' "$HART_URL" > "$TMP/cfg/.hart.env"
+eq ".hart.env HART_URL fallback" "$(cd "$TMP/cfg" && env -u HART_URL "$HART_BIN" list --owner acme >/dev/null 2>&1; echo $?)" "0"
+eq ".hart.env HART_OWNER_KEY fallback" "$(cd "$TMP/cfg" && env -u HART_URL -u HART_OWNER_KEY "$HART_BIN" publish "$TMP/x.html" --owner locked --artifact fromenv >/dev/null 2>&1; echo $?)" "0"
+printf 'HART_URL=http://127.0.0.1:1\n' > "$TMP/cfg/.hart.env"
+eq "env overrides .hart.env" "$(cd "$TMP/cfg" && HART_URL="$HART_URL" "$HART_BIN" list --owner acme >/dev/null 2>&1; echo $?)" "0"
+mkdir -p "$TMP/home/.hart"
+printf 'HART_URL=%s\n' "$HART_URL" > "$TMP/home/.hart/config"
+eq "~/.hart/config fallback" "$(cd "$TMP" && env -u HART_URL HOME="$TMP/home" "$HART_BIN" list --owner acme >/dev/null 2>&1; echo $?)" "0"
 
 echo "== stats (server-side views) =="
 curl -s -o /dev/null "$HART_URL/a/acme/pub"

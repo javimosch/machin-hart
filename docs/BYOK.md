@@ -32,16 +32,18 @@ Pick the row that matches your setup — only configure what that row lists.
 
 | Secret | Who sets it | Where (daemon) | Where (client / agent) | Purpose |
 |---|---|---|---|---|
-| **Publish token** | Operator | `HART_TOKEN` | `hart login <token>` or `HART_TOKEN` | Gates *all* mutating API calls when set. Unset = open publish (fine for localhost). |
-| **Owner key** | Publisher (first claim) | — | `--owner-key` or `HART_OWNER_KEY` | Claims an `--owner` namespace; further writes to that owner need the key. Stored **hashed** server-side. |
-| **Read key** | Publisher | — | `--read-key` at publish, or `HART_READ_KEY` when fetching | Unlocks **private** artifacts (`--visibility private`). Browsers use the unlock page + cookie; agents send `X-Hart-Read-Key`. Stored **hashed**. |
-| **Admin token** | Operator | `HART_ADMIN_TOKEN` | `hart admin login <token>` or `HART_ADMIN_TOKEN` | Cross-owner `hart admin list`, `/_fleet` dashboard, `refresh --cmd`, etc. **Separate** from `HART_TOKEN`. Unset = admin API off (403). |
-| **Member key** | Team admin (Pro) | — | `HART_MEMBER_KEY` or `--member-key` | Per-member write access to a shared owner namespace. Stored **hashed**. |
+| **Publish token** | Operator | `HART_TOKEN` | `hart login <token>`, `HART_TOKEN` env, or `.hart.env` / `~/.hart/config` | Gates *all* mutating API calls when set. Unset = open publish (fine for localhost). |
+| **Owner key** | Publisher (first claim) | — | `--owner-key`, `HART_OWNER_KEY` env, or `.hart.env` / `~/.hart/config` | Claims an `--owner` namespace; further writes to that owner need the key. Stored **hashed** server-side. |
+| **Read key** | Publisher | — | `--read-key` at publish, `HART_READ_KEY` env, or `.hart.env` / `~/.hart/config` | Unlocks **private** artifacts (`--visibility private`). Browsers use the unlock page + cookie; agents send `X-Hart-Read-Key`. Stored **hashed**. |
+| **Admin token** | Operator | `HART_ADMIN_TOKEN` | `hart admin login <token>`, `HART_ADMIN_TOKEN` env, or `.hart.env` / `~/.hart/config` | Cross-owner `hart admin list`, `/_fleet` dashboard, `refresh --cmd`, etc. **Separate** from `HART_TOKEN`. Unset = admin API off (403). |
+| **Member key** | Team admin (Pro) | — | `--member-key`, `HART_MEMBER_KEY` env, or `.hart.env` / `~/.hart/config` | Per-member write access to a shared owner namespace. Stored **hashed**. |
 | **License key** | Buyer (Pro) | `HART_LICENSE_KEY` | `hart license <key>` | Unlocks Pro features (limits, audit log, teams). Verified offline (Ed25519). |
 | **Cookie secret** | Operator | `HART_COOKIE_SECRET` | — | Signs private-artifact unlock cookies. Pin across restarts or users re-enter passwords after deploy. |
 | **OIDC client** | Operator (Pro SSO) | `HART_OIDC_ISSUER`, `HART_OIDC_CLIENT_ID`, `HART_OIDC_CLIENT_SECRET` | — | Generic OpenID Connect for `hart join` team self-onboarding. |
 
 **Rule of thumb:** daemon env = operator knobs; client env / flags = what your agents carry.
+
+**Client config files:** `.hart.env` in the current directory and `~/.hart/config` are loaded for every CLI command except `hart serve`. Precedence: flag > env > `.hart.env` > `~/.hart/config`. Keep them out of git if they hold secrets.
 
 ---
 

@@ -47,7 +47,7 @@ curl -fsSL https://hart.intrane.fr/install.sh | sh
 Then publish:
 
 ```sh
-export HART_URL=https://hart.intrane.fr
+export HART_URL=https://hart.intrane.fr    # or write it to .hart.env / ~/.hart/config
 hart publish page.html --owner you --artifact my-page
 # → {"url":"https://hart.intrane.fr/a/you/my-page", ...}
 ```
@@ -66,12 +66,12 @@ Agents can publish through **curl**, the **CLI**, a **drop-in skill**, or **MCP*
 | Path | When to use | Minimal setup |
 |---|---|---|
 | **curl** | One-off publish, no install | POST body to `/v1/publish?owner=…&artifact=…` |
-| **CLI** | Shell agents, cron, scripts | `curl -fsSL <instance>/install.sh \| sh` → `export HART_URL=…` → `hart publish …` |
+| **CLI** | Shell agents, cron, scripts | `curl -fsSL <instance>/install.sh \| sh` → `HART_URL in env / .hart.env / ~/.hart/config` → `hart publish …` |
 | **Skill** | Claude / Cursor sessions that publish often | `hart skill > ~/.claude/skills/hart/SKILL.md` (also at `/skill.md`) |
 | **MCP** | MCP-native clients (Cursor, Claude Desktop) | `hart mcp` with `HART_URL` (+ tokens if required) in env |
 
 **Claim your namespace** on any instance: the first write to a new `--owner` claims it. Pass
-`--owner-key` (or `HART_OWNER_KEY`) to lock that namespace against other writers — especially on
+`--owner-key` (or `HART_OWNER_KEY` in env / `.hart.env` / `~/.hart/config`) to lock that namespace against other writers — especially on
 open instances like hart.intrane.fr.
 
 **Self-hosted or locked-down instances** need a publish token on the daemon (`HART_TOKEN`) and
@@ -163,7 +163,7 @@ Set with `--visibility` / `--read-key` at publish, or change later with `hart vi
 
 ## Ownership (write protection, even on a free instance)
 
-The first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to
+The first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY` in env / `.hart.env` / `~/.hart/config`) to
 claim a namespace; then all writes to that owner require the key (else `403`). Anonymous (no-owner)
 artifacts get a random id. Free to create new stuff; your namespace stays yours.
 
@@ -225,9 +225,9 @@ such multi-tenant instances a cross-owner `hart list` (no `--owner`) is admin-on
 `list --owner X` is unaffected. It's your box and your SQLite file; this just exposes that reach
 over the CLI.
 
-**Env** — client: `HART_URL`, `HART_TOKEN` (publish token, if the instance requires one),
-`HART_OWNER_KEY` (namespace write key), `HART_READ_KEY` (read a private artifact),
-`HART_ADMIN_TOKEN` (operator admin API — cross-owner list; separate from `HART_TOKEN`). Server:
+**Env / config** — client vars can live in `export`, a per-project `.hart.env`, or `~/.hart/config` (loaded for every CLI command except `serve`; precedence: flag > env > `.hart.env` > `~/.hart/config`):
+`HART_URL`, `HART_TOKEN` (publish token, if the instance requires one), `HART_OWNER_KEY` (namespace write key),
+`HART_READ_KEY` (read a private artifact), `HART_ADMIN_TOKEN` (operator admin API — cross-owner list; separate from `HART_TOKEN`). Server:
 `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10),
 `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.
 
