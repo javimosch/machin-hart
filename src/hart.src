@@ -64,6 +64,36 @@ func load_hart_config() {
     load_hart_env_file(".hart.env")
 }
 
+// cfg_key_norm turns an owner, id, or artifact into a safe env-var suffix: lowercase, non-alnum -> _.
+func cfg_key_norm(s) (o) {
+    o = ""
+    i := 0
+    while i < len(s) {
+        c := substr(s, i, i + 1)
+        lc := to_lower(c)
+        good := 0
+        if lc >= "a" && lc <= "z" { good = 1 }
+        if c >= "0" && c <= "9" { good = 1 }
+        if good == 1 { o = o + lc } else { o = o + "_" }
+        i = i + 1
+    }
+    if o == "" { o = "X" }
+}
+
+// owner_key_for returns the owner key for a namespace, checking HART_OWNER_KEY_<owner> first,
+// then the generic HART_OWNER_KEY. The flat env file ~/.hart/config or .hart.env can hold many.
+func owner_key_for(owner) (k) {
+    if owner != "" { k = cfg("HART_OWNER_KEY_" + cfg_key_norm(owner)); if k != "" { return } }
+    k = cfg("HART_OWNER_KEY")
+}
+
+// read_key_for returns the read key for an artifact id, checking HART_READ_KEY_<id> first,
+// then the generic HART_READ_KEY.
+func read_key_for(id) (k) {
+    if id != "" { k = cfg("HART_READ_KEY_" + cfg_key_norm(id)); if k != "" { return } }
+    k = cfg("HART_READ_KEY")
+}
+
 // the strict render sandbox — same envelope idea as Claude artifacts: renders the page while
 // neutering it as an exfiltration/attack vector. No external anything; no network.
 func csp() (c) {
@@ -1582,7 +1612,7 @@ func guide_md(base, authline) (g) {
     g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). To retrofit a key on an existing open namespace (or rotate a keyed one), use `hart owner-key <owner> <new-key>` (admin or current owner key required). Anonymous (no-owner) artifacts get a random id.\n\n"
     g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
     g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage |\n| `owner-key <owner> <new-key>` | set/rotate the owner key for a namespace (admin or current key required) |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `feedback <msg> [--kind bug\\|idea\\|praise] [--context <c>]` | send feedback (dual-writes to this instance + a central relay) |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `refresh <id> [--url <URL>\\|--cmd '<sh>'] --every <dur> [--header 'H: v']\\|--off\\|--now` | daemon self-refreshes the artifact's data on a schedule (living loop) |\n| `live <id> <on\\|off>` | allow the page to poll its own data.json and repaint live (opt-in CSP relax) |\n| `upgrade [--plan pro]` | mint a checkout link to buy hart Pro (give the URL to the human to pay) |\n| `license <key>` / `license status` | set / inspect the hart Pro license (unlocks pro features) |\n| `audit [--owner --action --since --limit]` | who changed what — the audit log (**hart Pro**) |\n| `team add\\|invite\\|list\\|rm <owner> [<email>]` | manage team members / per-member keys (**hart Pro**) |\n| `join <owner>` | SSO self-onboarding — sign in once, receive your member key (**hart Pro**) |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `mcp` | run as a stdio MCP server (native tools for MCP agents) |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## MCP (native tools for MCP-capable agents)\n\nBesides the CLI, hart can run as a **stdio MCP server** so MCP-native agents (Claude Desktop, Cursor, …) get hart as first-class tools. One binary, no extra runtime — it wraps hart's own HTTP API and inherits auth from env. Configure your MCP client:\n\n```json\n{\"mcpServers\":{\"hart\":{\"command\":\"hart\",\"args\":[\"mcp\"],\"env\":{\"HART_URL\":\"" + base + "\"}}}}\n```\nTools exposed: `hart_publish`, `hart_data`, `hart_list`, `hart_get`, `hart_stats`, `hart_stale`, `hart_explore`. (The CLI remains the primary interface; MCP is an additional surface.)\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Living loop (self-refreshing deliverables)\n\n`hart data` and `hart fresh`/`hart stale` assume **something external** keeps pushing data. `hart refresh` closes the loop: the daemon runs a **source** on a schedule and pushes the result as the artifact's live data itself — no external cron. Pair it with `hart fresh` and the SLA stays green because hart is the one keeping it green.\n\n```sh\n# GET a JSON URL every 15 min and make it the artifact's data (url sources need the owner key)\nhart refresh you/board --url https://api.example.com/metrics --every 15m --header 'Authorization: Bearer XYZ'\n\n# or run a shell command (pipes/curl|jq ok) — arbitrary shell on the server, so ADMIN ONLY\nhart refresh you/board --cmd 'curl -s https://api.example.com/m | jq .summary' --every 15m\n\nhart refresh you/board            # show config + last run status\nhart refresh you/board --now      # run once, right now, inline\nhart refresh you/board --off      # stop refreshing\n```\nThe source's output must be a JSON object or array (it becomes `window.HART_DATA` + `{{key}}`); non-JSON or a failed fetch is recorded in `last_status` and the existing data is left untouched. Minimum interval 30s. `--url` sources need the owner key; `--cmd` sources require `HART_ADMIN_TOKEN` (they execute shell on your box). The daemon runs due sources every few seconds in-process — one binary, no scheduler to deploy.\n\n**Live repaint (no reload).** By default a refreshed page shows new data on the *next load*. Mark an artifact **live** and it repaints while someone's watching it: hart injects a small poller that fetches the artifact's own `" + base + "/a/<id>/data.json` and updates `window.HART_DATA`, then fires a `hart:data` event. Your template paints from `window.HART_DATA` on load and repaints on the event:\n\n```html\n<script>\n  function paint(d){ /* render d */ }\n  paint(window.HART_DATA);                               // initial\n  addEventListener('hart:data', e => paint(e.detail));   // live updates\n</script>\n```\n```sh\nhart publish board.html --owner you --artifact board --live   # publish as live\nhart live you/board on|off                                    # toggle anytime (setting a refresh source turns it on)\n```\nLive is **opt-in per artifact**: only a live page's CSP is relaxed to `connect-src 'self'` (so it can fetch *its own* data.json and nothing else) — every other artifact keeps the full `default-src 'none'` lockdown. The poll interval tracks the refresh cadence (override with `window.HART_LIVE_MS`). `data.json` uses the same read-gating as the page (a private artifact's poll rides its unlock cookie).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin digest [--days N]       # adoption: new owners/artifacts (default 7d), totals, top by views\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**Visual operator dashboard:** point a browser at `" + base + "/_fleet` and sign in with the admin token — every owner + artifact (incl. unlisted/private), view counts, and stale living-deliverables flagged, server-rendered. The JSON API above is for agents; `/_fleet` is for you.\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
-    g = g + "## Env\n\nAll client env vars can also be set in `~/.hart/config` or a per-project `.hart.env` (loaded for all CLI commands except `serve`; precedence: flag > env > `.hart.env` > `~/.hart/config`). `HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key) · `HART_READ_KEY` (read key for a private artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30 — the per-owner storage cap; raising it above `HART_FREE_MAX_OWNER_MB` requires a **hart Pro** license), `HART_FREE_MAX_OWNER_MB` (30 — the free-tier ceiling), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`, `HART_LICENSE_KEY` (Pro key), `HART_LICENSE_PUBKEY` (run your own issuer). **Production hardening** (auto on when `HART_PUBLIC` is set): `HART_HARDEN=1` · `HART_TRUST_PROXY=1` (only behind a proxy you control) · `HART_MAX_BODY_BYTES` (default 10 MiB) · `HART_READ_TIMEOUT_MS` (default 30s) · `HART_ACCESS_LOG=1`; opt out locally with `HART_HARDEN=0`. **BYOK key map:** `" + base + "/byok.md` (also `docs/BYOK.md` in the repo).\n\n## hart Pro (self-host)\n\nhart is open-core: the CLI is fully functional and free, and a few features unlock with a **license key** (`hart license <key>`, or `HART_LICENSE_KEY` on the daemon; `hart license status` shows your tier). Keys are Ed25519-signed and verified offline (no phone-home). Pro today: **limits** (raise the per-owner storage quota), **audit-log** (`hart audit` — who changed what), **teams** (`hart team` — per-member keys). Enforcement is honest, not DRM — pay for support, updates, and to stay compliant.\n\n**Teams SSO (optional, your IdP).** `hart join <owner>` lets a member self-onboard via **any OpenID Connect provider you configure** — you bring the IdP, hart is a standard OIDC client. Set `HART_OIDC_ISSUER` (e.g. your Auth0/Okta/Keycloak/Google/machin-idp), `HART_OIDC_CLIENT_ID`, `HART_OIDC_CLIENT_SECRET` (register `<your-hart>/team/callback` as the redirect URI at your IdP); optional `HART_OIDC_SCOPES` (default `openid email`). hart discovers the endpoints, runs the code flow, and reads the member's email from `userinfo`. Unset = SSO off (teams still work via `hart team add` member keys).\n\n**Buying is agent-first.** Run `hart upgrade` — it returns a checkout URL; give it to the human to pay. They're emailed a license key; then run `hart license <key>` (or set `HART_LICENSE_KEY`). Lost the key? `" + base + "/manage` re-emails it. Contact: javi@intrane.fr.\n\n"
+    g = g + "## Env\n\nAll client env vars can also be set in `~/.hart/config` or a per-project `.hart.env` (loaded for all CLI commands except `serve`; precedence: flag > env > `.hart.env` > `~/.hart/config`). `HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key; also `HART_OWNER_KEY_<owner>` per namespace) · `HART_READ_KEY` (read key for a private artifact; also `HART_READ_KEY_<owner>_<artifact>` per artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30 — the per-owner storage cap; raising it above `HART_FREE_MAX_OWNER_MB` requires a **hart Pro** license), `HART_FREE_MAX_OWNER_MB` (30 — the free-tier ceiling), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`, `HART_LICENSE_KEY` (Pro key), `HART_LICENSE_PUBKEY` (run your own issuer). **Production hardening** (auto on when `HART_PUBLIC` is set): `HART_HARDEN=1` · `HART_TRUST_PROXY=1` (only behind a proxy you control) · `HART_MAX_BODY_BYTES` (default 10 MiB) · `HART_READ_TIMEOUT_MS` (default 30s) · `HART_ACCESS_LOG=1`; opt out locally with `HART_HARDEN=0`. **BYOK key map:** `" + base + "/byok.md` (also `docs/BYOK.md` in the repo).\n\n## hart Pro (self-host)\n\nhart is open-core: the CLI is fully functional and free, and a few features unlock with a **license key** (`hart license <key>`, or `HART_LICENSE_KEY` on the daemon; `hart license status` shows your tier). Keys are Ed25519-signed and verified offline (no phone-home). Pro today: **limits** (raise the per-owner storage quota), **audit-log** (`hart audit` — who changed what), **teams** (`hart team` — per-member keys). Enforcement is honest, not DRM — pay for support, updates, and to stay compliant.\n\n**Teams SSO (optional, your IdP).** `hart join <owner>` lets a member self-onboard via **any OpenID Connect provider you configure** — you bring the IdP, hart is a standard OIDC client. Set `HART_OIDC_ISSUER` (e.g. your Auth0/Okta/Keycloak/Google/machin-idp), `HART_OIDC_CLIENT_ID`, `HART_OIDC_CLIENT_SECRET` (register `<your-hart>/team/callback` as the redirect URI at your IdP); optional `HART_OIDC_SCOPES` (default `openid email`). hart discovers the endpoints, runs the code flow, and reads the member's email from `userinfo`. Unset = SSO off (teams still work via `hart team add` member keys).\n\n**Buying is agent-first.** Run `hart upgrade` — it returns a checkout URL; give it to the human to pay. They're emailed a license key; then run `hart license <key>` (or set `HART_LICENSE_KEY`). Lost the key? `" + base + "/manage` re-emails it. Contact: javi@intrane.fr.\n\n"
     g = g + "## Workflow caveats from usage\n\n"
     g = g + "- No `hart` binary? Publish with curl: `curl -s -X POST '" + base + "/v1/publish?owner=<owner>&artifact=<slug>&visibility=unlisted' -H 'content-type: text/html' --data-binary @file.html`\n"
     g = g + "- Convert Markdown to self-contained HTML with pandoc: `pandoc --embed-resources --standalone --css style.css -f markdown-yaml_metadata_block --metadata title='...' -o out.html in.md`. Use `-f markdown-yaml_metadata_block` when the Markdown frontmatter contains unquoted colons (e.g. `Asunto: foo: bar`).\n"
@@ -1603,7 +1633,7 @@ func skill_md(base, authline) (s) {
     s = s + "# hart — publish your HTML deliverables to a live URL\n\n"
     s = s + "You (an agent) generate rich HTML but have nowhere to put it: `open` dies at share-time, a gist mangles it. **hart** turns a self-contained file into a live, versioned, sandboxed URL in one call. This instance: `" + base + "` — " + authline + "\n\n"
     s = s + "## When to use\n\n- You produced an HTML/JSX deliverable and the human needs a **shareable link**.\n- The data behind a page you published **changed** — refresh it in place (same URL).\n- You need to **find or list** artifacts you (or your fleet) published before.\n\n"
-    s = s + "## Setup (once)\n\n```sh\nexport HART_URL=" + base + "\n# or put this in a project .hart.env (or ~/.hart/config):\n#   HART_URL=" + base + "\n#   HART_OWNER_KEY=<your-owner-key>\n# if this instance requires a publish token: `hart login <token>` (or set HART_TOKEN)\n```\nNo `hart` binary on PATH? Every write is a plain HTTP POST — curl works (see the manual).\n\n"
+    s = s + "## Setup (once)\n\n```sh\nexport HART_URL=" + base + "\n# or put this in a project .hart.env (or ~/.hart/config):\n#   HART_URL=" + base + "\n#   HART_OWNER_KEY=<your-owner-key>\n#   HART_OWNER_KEY_<owner>=<key>    # per-namespace keys in the same flat file\n#   HART_READ_KEY_<owner>_<artifact>=<key>\n# if this instance requires a publish token: `hart login <token>` (or set HART_TOKEN)\n```\nNo `hart` binary on PATH? Every write is a plain HTTP POST — curl works (see the manual).\n\n"
     s = s + "## Publish — the core loop\n\n```sh\nhart publish deliverable.html --owner <you> --artifact <name>\n# -> {\"ok\":true,\"url\":\"" + base + "/a/<you>/<name>\",\"version\":1, ...}\n```\nParse `.url` from the JSON and hand it to the human. Re-publish the same `--owner/--artifact` to append a version (`latest` moves; old versions stay pinned; `hart rollback <id> <v>` reverts).\n\n"
     s = s + "## The contract (do this or publish is rejected)\n\nPages must be **self-contained**: inline ALL CSS/JS, embed images/fonts as `data:` URIs. Served under a strict CSP — **no external scripts/styles/fonts, no network** (`fetch`/XHR/WebSocket blocked). A linter rejects external refs (HTTP 422); `--dry-run` lints without storing, `--force` overrides. JSX: add `--format jsx` (in-browser React+Babel, no build step; render into `#root`).\n\n"
     s = s + "## Living deliverables — update data without re-uploading\n\nPublish a template once, then push just the data; the same URL re-renders. The page reads `{{key}}` placeholders and/or the `window.HART_DATA` global.\n\n```sh\nhart publish chart.html --owner <you> --artifact sales\nhart data <you>/sales '{\"points\":[3,1,4,1,5]}'   # same URL, fresh render\n```\nGreat for status boards / dashboards an agent keeps current on a cron. Check how a page is doing with `hart stats <you>/sales` — views, last view, freshness, top referrers (server-side, privacy-respecting). Give a monitored dashboard a freshness SLA (`hart fresh <you>/sales 15m`) and `hart stale` flags it if the updates ever stop — hart emits the signal, your cron alerts.\n\n"
@@ -2338,7 +2368,7 @@ func cmd_publish(a) {
     headers := []string{"content-type: text/html; charset=utf-8"}
     tok := client_token()
     if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
-    ok := owner_key_of(a)
+    ok := owner_key_of(a, so)
     if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
     mk := flagv(a, "--member-key", cfg("HART_MEMBER_KEY"))
     if mk != "" { headers = append(headers, "x-hart-member-key: " + mk) }
@@ -2356,7 +2386,7 @@ func cmd_visibility(a) {
     rk := flagv(a, "--read-key", "")
     if rk != "" { url = url + "&read_key=" + url_encode(rk) }
     if has_flag(a, "--clear-read-key") == 1 { url = url + "&clear_read_key=1" }
-    status, resp, err := http_request("POST", url, auth_headers(), "")
+    status, resp, err := http_request("POST", url, auth_headers(a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
     say(resp)
@@ -2393,7 +2423,8 @@ func cmd_stats(a) {
     h := []string{}
     at := admin_token()
     if at != "" { h = append(h, "authorization: Bearer " + at) }
-    ok := owner_key_of(a)
+    owner := substr(a[2], 0, index(a[2], "/"))
+    ok := owner_key_of(a, owner)
     if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
     status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/stats", h, "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
@@ -2443,7 +2474,9 @@ func refresh_headers(a, want_admin) (h) {
     if want_admin == 1 { bt = admin_token() }
     if bt == "" { bt = client_token() }
     if bt != "" { h = append(h, "authorization: Bearer " + bt) }
-    ok := owner_key_of(a)
+    owner := ""
+    if len(a) >= 3 && valid_id(a[2]) == 1 { owner = substr(a[2], 0, index(a[2], "/")) }
+    ok := owner_key_of(a, owner)
     if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
 }
 
@@ -2466,7 +2499,7 @@ func cmd_upgrade(a) {
 // hart license <key> | hart license status — set/inspect the hart Pro license (M3 Plan A).
 func cmd_license(a) {
     if len(a) >= 3 && a[2] == "status" {
-        status, resp, err := http_request("GET", hart_url() + "/v1/license/status", auth_headers(), "")
+        status, resp, err := http_request("GET", hart_url() + "/v1/license/status", auth_headers(""), "")
         if err != "" { die(100, "cannot reach hart daemon: " + err) }
         if status != 200 { write(2, resp + "\n"); exit(80) }
         say(resp); return
@@ -2641,7 +2674,7 @@ func cmd_fresh(a) {
     require_valid_id(a[2])
     ttl := parse_duration(a[3])
     url := hart_url() + "/v1/fresh?id=" + url_encode(a[2]) + "&ttl=" + str(ttl)
-    status, resp, err := http_request("POST", url, auth_headers(), "")
+    status, resp, err := http_request("POST", url, auth_headers(a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
     say(resp)
@@ -2659,7 +2692,7 @@ func cmd_stale(a) {
     h := []string{}
     at := admin_token()
     if at != "" { h = append(h, "authorization: Bearer " + at) }
-    ok := owner_key_of(a)
+    ok := owner_key_of(a, owner)
     if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
     status, resp, err := http_request("GET", url, h, "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
@@ -2671,7 +2704,7 @@ func cmd_stale(a) {
 func cmd_get(a) {
     if len(a) < 3 { die(80, "usage: hart get <id>  (metadata + versions)") }
     require_valid_id(a[2])
-    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers(), "")
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers(a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "not found (" + str(status) + ")") }
     say(resp)
@@ -2680,7 +2713,7 @@ func cmd_get(a) {
 func cmd_rm(a) {
     if len(a) < 3 { die(80, "usage: hart rm <id>") }
     require_valid_id(a[2])
-    status, resp, err := http_request("DELETE", hart_url() + "/v1/artifacts/" + a[2], auth_headers(), "")
+    status, resp, err := http_request("DELETE", hart_url() + "/v1/artifacts/" + a[2], auth_headers(a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "delete failed (" + str(status) + "): " + resp) }
     say(resp)
@@ -2692,11 +2725,13 @@ func cmd_data(a) {
     if len(a) < 3 { die(80, "usage: hart data <id> '<json>'  |  hart data --owner <who> --artifact <name> '<json>'") }
     id := cli_resolve_id(a, 2)
     json := a[len(a) - 1]
+    owner := ""
+    if valid_id(id) == 1 { owner = substr(id, 0, index(id, "/")) }
     url := hart_url() + "/v1/data?x=1&id=" + url_encode(id)
     headers := []string{"content-type: application/json"}
     tok := client_token()
     if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
-    ok := owner_key_of(a)
+    ok := owner_key_of(a, owner)
     if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
     mk := flagv(a, "--member-key", cfg("HART_MEMBER_KEY"))
     if mk != "" { headers = append(headers, "x-hart-member-key: " + mk) }
@@ -2709,7 +2744,7 @@ func cmd_data(a) {
 func cmd_rollback(a) {
     if len(a) < 4 { die(80, "usage: hart rollback <id> <version>  (re-point latest at an older version)") }
     require_valid_id(a[2])
-    status, resp, err := http_request("POST", hart_url() + "/v1/artifacts/" + a[2] + "/rollback?to=" + a[3], auth_headers(), "")
+    status, resp, err := http_request("POST", hart_url() + "/v1/artifacts/" + a[2] + "/rollback?to=" + a[3], auth_headers(a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "rollback failed (" + str(status) + "): " + resp) }
     say(resp)
@@ -2727,7 +2762,7 @@ func cmd_owner_key(a) {
     tok := admin_token()
     if tok == "" { tok = client_token() }
     if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
-    ok := owner_key_of(a)
+    ok := owner_key_of(a, owner)
     if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
     headers = append(headers, "x-hart-new-key: " + new_key)
     status, resp, err := http_request("POST", url, headers, "")
@@ -2738,22 +2773,30 @@ func cmd_owner_key(a) {
     say(resp)
 }
 
-func auth_headers() (h) {
+func auth_headers(ctx) (h) {
     h = []string{}
     tok := client_token()
     if tok != "" { h = append(h, "authorization: Bearer " + tok) }
-    ok := cfg("HART_OWNER_KEY")
+    owner := ""
+    if valid_id(ctx) == 1 {
+        owner = substr(ctx, 0, index(ctx, "/"))
+    } else {
+        if valid_slug_seg(ctx) == 1 { owner = ctx }
+    }
+    ok := owner_key_for(owner)
     if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
-    rk := cfg("HART_READ_KEY")
+    rk := read_key_for(ctx)
     if rk != "" { h = append(h, "x-hart-read-key: " + rk) }
     mk := cfg("HART_MEMBER_KEY")
     if mk != "" { h = append(h, "x-hart-member-key: " + mk) }
 }
 
-// owner_key_flag — --owner-key on the command overrides HART_OWNER_KEY for this call.
-func owner_key_of(a) (k) {
+// owner_key_of — --owner-key on the command overrides the per-owner key (HART_OWNER_KEY_<owner>)
+// and the generic HART_OWNER_KEY. The per-owner form lives in the same flat .hart.env / ~/.hart/config.
+func owner_key_of(a, owner) (k) {
     k = flagv(a, "--owner-key", "")
-    if k == "" { k = cfg("HART_OWNER_KEY") }
+    if k != "" { return }
+    k = owner_key_for(owner)
 }
 
 func cmd_login(a) {
@@ -2823,7 +2866,7 @@ func cmd_list(a) {
     url := hart_url() + "/v1/artifacts"
     owner := flagv(a, "--owner", "")
     if owner != "" { owner = require_owner_slug(owner, "owner"); url = url + "?owner=" + url_encode(owner) }
-    status, resp, err := http_request("GET", url, auth_headers(), "")
+    status, resp, err := http_request("GET", url, auth_headers(owner), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status == 401 { die(80, "not authenticated — hart login <token>") }
     if status == 403 { write(2, resp + "\n"); exit(80) }   // e.g. cross-owner list is admin-only
@@ -2834,7 +2877,7 @@ func cmd_list(a) {
 func cmd_versions(a) {
     if len(a) < 3 { die(80, "usage: hart versions <id>") }
     require_valid_id(a[2])
-    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers(), "")
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers(a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "versions failed (" + str(status) + ")") }
     say(resp)
@@ -2889,7 +2932,6 @@ func mcp_tools_json() (t) {
 func mcp_tools_call(line, id) {
     name := json_field(line, ".params.name", "")
     tok := client_token()
-    okey := cfg("HART_OWNER_KEY")
     atok := admin_token()
     ap := ".params.arguments."
     if name == "hart_publish" {
@@ -2909,7 +2951,9 @@ func mcp_tools_call(line, id) {
         fr := json_field(line, ap + "fresh", "");      if fr != "" { url = url + "&fresh=" + str(parse_duration(fr)) }
         h := []string{"content-type: text/html; charset=utf-8"}
         if tok != "" { h = append(h, "authorization: Bearer " + tok) }
-        if okey != "" { h = append(h, "x-hart-owner-key: " + okey) }
+        sow := slugify(ow)
+        mcp_ok := owner_key_for(sow)
+        if mcp_ok != "" { h = append(h, "x-hart-owner-key: " + mcp_ok) }
         mcp_http(id, "POST", url, h, html)
         return
     }
@@ -2921,7 +2965,10 @@ func mcp_tools_call(line, id) {
         url := hart_url() + "/v1/data?id=" + url_encode(did)
         h := []string{"content-type: application/json"}
         if tok != "" { h = append(h, "authorization: Bearer " + tok) }
-        if okey != "" { h = append(h, "x-hart-owner-key: " + okey) }
+        mcp_owner := ""
+        if valid_id(did) == 1 { mcp_owner = substr(did, 0, index(did, "/")) }
+        mcp_ok := owner_key_for(mcp_owner)
+        if mcp_ok != "" { h = append(h, "x-hart-owner-key: " + mcp_ok) }
         mcp_http(id, "POST", url, h, dat)
         return
     }
@@ -2932,14 +2979,14 @@ func mcp_tools_call(line, id) {
             if reject_bad_slug(ow) == 1 { mcp_content(id, "hart_list: invalid owner — use letters, digits, or hyphens (no leading/trailing hyphen)", 1); return }
             url = url + "?owner=" + url_encode(slugify(ow))
         }
-        mcp_http(id, "GET", url, auth_headers(), "")
+        mcp_http(id, "GET", url, auth_headers(slugify(ow)), "")
         return
     }
     if name == "hart_get" {
         gid := json_field(line, ap + "id", "")
         if gid == "" { mcp_content(id, "hart_get: 'id' is required", 1); return }
         if valid_id(gid) == 0 { mcp_content(id, "hart_get: invalid id — use owner/artifact (lowercase alnum and hyphens, no ..)", 1); return }
-        mcp_http(id, "GET", hart_url() + "/v1/artifacts/" + gid + "/versions", auth_headers(), "")
+        mcp_http(id, "GET", hart_url() + "/v1/artifacts/" + gid + "/versions", auth_headers(gid), "")
         return
     }
     if name == "hart_stats" {
@@ -2948,7 +2995,10 @@ func mcp_tools_call(line, id) {
         if valid_id(sid) == 0 { mcp_content(id, "hart_stats: invalid id — use owner/artifact (lowercase alnum and hyphens, no ..)", 1); return }
         h := []string{}
         if atok != "" { h = append(h, "authorization: Bearer " + atok) }
-        if okey != "" { h = append(h, "x-hart-owner-key: " + okey) }
+        mcp_owner := ""
+        if valid_id(sid) == 1 { mcp_owner = substr(sid, 0, index(sid, "/")) }
+        mcp_ok := owner_key_for(mcp_owner)
+        if mcp_ok != "" { h = append(h, "x-hart-owner-key: " + mcp_ok) }
         mcp_http(id, "GET", hart_url() + "/v1/artifacts/" + sid + "/stats", h, "")
         return
     }
@@ -2962,7 +3012,8 @@ func mcp_tools_call(line, id) {
         ot := json_field(line, ap + "older_than", ""); if ot != "" { url = url + "&older_than=" + str(parse_duration(ot)) }
         h := []string{}
         if atok != "" { h = append(h, "authorization: Bearer " + atok) }
-        if okey != "" { h = append(h, "x-hart-owner-key: " + okey) }
+        mcp_ok := owner_key_for(slugify(ow))
+        if mcp_ok != "" { h = append(h, "x-hart-owner-key: " + mcp_ok) }
         mcp_http(id, "GET", url, h, "")
         return
     }

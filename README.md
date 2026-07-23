@@ -226,8 +226,8 @@ such multi-tenant instances a cross-owner `hart list` (no `--owner`) is admin-on
 over the CLI.
 
 **Env / config** — client vars can live in `export`, a per-project `.hart.env`, or `~/.hart/config` (loaded for every CLI command except `serve`; precedence: flag > env > `.hart.env` > `~/.hart/config`):
-`HART_URL`, `HART_TOKEN` (publish token, if the instance requires one), `HART_OWNER_KEY` (namespace write key),
-`HART_READ_KEY` (read a private artifact), `HART_ADMIN_TOKEN` (operator admin API — cross-owner list; separate from `HART_TOKEN`). Server:
+`HART_URL`, `HART_TOKEN` (publish token, if the instance requires one), `HART_OWNER_KEY` (namespace write key; also `HART_OWNER_KEY_<owner>` per namespace),
+`HART_READ_KEY` (read a private artifact; also `HART_READ_KEY_<owner>_<artifact>` per artifact), `HART_ADMIN_TOKEN` (operator admin API — cross-owner list; separate from `HART_TOKEN`). Server:
 `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10),
 `HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.
 

@@ -88,6 +88,17 @@ mkdir -p "$TMP/home/.hart"
 printf 'HART_URL=%s\n' "$HART_URL" > "$TMP/home/.hart/config"
 eq "~/.hart/config fallback" "$(cd "$TMP" && env -u HART_URL HOME="$TMP/home" "$HART_BIN" list --owner acme >/dev/null 2>&1; echo $?)" "0"
 
+echo "== per-owner / per-read keys in flat config =="
+mkdir -p "$TMP/cfg2"
+printf 'HART_URL=%s\nHART_OWNER_KEY_openns=%s\nHART_OWNER_KEY_locked=%s\n' "$HART_URL" "key3" "sekret" > "$TMP/cfg2/.hart.env"
+eq "per-owner key from .hart.env" "$(cd "$TMP/cfg2" && env -u HART_URL -u HART_OWNER_KEY "$HART_BIN" publish "$TMP/x.html" --owner locked --artifact perowner1 >/dev/null 2>&1; echo $?)" "0"
+eq "per-owner key beats generic HART_OWNER_KEY" "$(cd "$TMP/cfg2" && env -u HART_URL -u HART_OWNER_KEY_openns HART_OWNER_KEY=wrong "$HART_BIN" publish "$TMP/x.html" --owner openns --artifact perowner2 >/dev/null 2>&1; echo $?)" "0"
+# per-read key: HART_READ_KEY_<owner>_<artifact> is loaded into auth headers; the gating itself
+# is exercised by the visibility + private curl tests above, here we just verify no crash.
+printf 'HART_URL=%s\nHART_READ_KEY_private_withkey=%s\n' "$HART_URL" "rkey" > "$TMP/cfg2/.hart.env"
+./hart publish "$TMP/x.html" --owner private --artifact withkey --visibility private --read-key rkey >/dev/null 2>&1
+eq "per-read key loaded from .hart.env" "$(cd "$TMP/cfg2" && env -u HART_URL -u HART_READ_KEY "$HART_BIN" get private/withkey >/dev/null 2>&1; echo $?)" "0"
+
 echo "== stats (server-side views) =="
 curl -s -o /dev/null "$HART_URL/a/acme/pub"
 curl -s -o /dev/null -H 'Referer: https://news.ycombinator.com/x' "$HART_URL/a/acme/pub"

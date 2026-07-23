@@ -45,6 +45,8 @@ Pick the row that matches your setup — only configure what that row lists.
 
 **Client config files:** `.hart.env` in the current directory and `~/.hart/config` are loaded for every CLI command except `hart serve`. Precedence: flag > env > `.hart.env` > `~/.hart/config`. Keep them out of git if they hold secrets.
 
+For multiple namespaces/artifacts you can use the flat-key form: `HART_OWNER_KEY_<owner>` and `HART_READ_KEY_<owner>_<artifact>` (non-alnum/slashes become `_`). Example: `HART_OWNER_KEY_vigie` or `HART_READ_KEY_vigie_secret_report`.
+
 ---
 
 ## Quick start — single operator, one agent fleet

@@ -54,6 +54,9 @@ CLI commands (everything except `hart serve`) auto-load `~/.hart/config` then `.
 current working directory. Precedence: CLI flag > environment variable > `.hart.env` >
 `~/.hart/config`. Use these files to avoid repeating `HART_URL`, `HART_OWNER_KEY`, etc.
 
+Multiple namespaces/artifacts can share one flat file with the flat-key form:
+`HART_OWNER_KEY_<owner>` and `HART_READ_KEY_<owner>_<artifact>` (non-alnum/slashes become `_`).
+
 `hart serve` ignores these files and reads env from systemd/operator config so the daemon cannot
 be hijacked by a `.hart.env` in the cwd.
 
