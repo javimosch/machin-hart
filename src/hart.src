@@ -1182,24 +1182,28 @@ func h_artifact_data(req, id) (res) {
 // wrap stored content in a minimal doctype skeleton (the content itself carries inline
 // <title>/<style>/<script>, artifact-style) and serve under the strict CSP. Data is applied
 // two ways: {{key}} substitution in the markup + a window.HART_DATA global for scripts.
-func render_page(html, title, data) (page) {
+func render_page(html, title, data, id, base, read_key, visibility) (page) {
     t := title
     if t == "" { t = "hart artifact" }
     b := apply_template(html, data)
-    page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>" + data_script(data) + "</head><body>" + b + "</body></html>"
+    chrome_css := artifact_chrome_css()
+    chrome_html := artifact_chrome_html(id, base, read_key, visibility)
+    page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>" + chrome_css + data_script(data) + "</head><body>" + b + chrome_html + "</body></html>"
 }
 
 // JSX: load the same-origin React + Babel runtime, then transform the agent's JSX with the
 // CLASSIC runtime (emits React.createElement — no `import` of jsx-runtime, which would fail
 // outside a module) and eval it. React/ReactDOM are globals; the agent renders into #root.
-func render_page_jsx(jsx, title, data) (page) {
+func render_page_jsx(jsx, title, data, id, base, read_key, visibility) (page) {
     t := title
     if t == "" { t = "hart artifact" }
     src := replace(jsx, "</script>", "<\\/script>")   // don't let the source close its host tag
-    head := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>" + data_script(data)
+    chrome_css := artifact_chrome_css()
+    chrome_html := artifact_chrome_html(id, base, read_key, visibility)
+    head := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>" + chrome_css + data_script(data)
     rt := "<script src=\"/_hart/runtime/react.js\"></script><script src=\"/_hart/runtime/react-dom.js\"></script><script src=\"/_hart/runtime/babel.js\"></script></head>"
     boot := "<script>(function(){try{var s=document.getElementById('__hart_jsx').textContent;var o=Babel.transform(s,{presets:[['react',{runtime:'classic'}]]}).code;(0,eval)(o);}catch(e){document.getElementById('root').innerHTML='<pre style=\"color:#b00020;padding:24px;font:14px ui-monospace,monospace;white-space:pre-wrap\">hart: JSX error\\n\\n'+((e&&e.message)?e.message:e)+'</pre>';}})();</script>"
-    body := "<body><div id=\"root\"></div><script type=\"text/plain\" id=\"__hart_jsx\">\n" + src + "\n</script>" + boot + "</body></html>"
+    body := "<body><div id=\"root\"></div>" + chrome_html + "<script type=\"text/plain\" id=\"__hart_jsx\">\n" + src + "\n</script>" + boot + "</body></html>"
     page = head + rt + body
 }
 
@@ -1246,9 +1250,15 @@ func serve_artifact(db, req, id, ver) (res) {
     sqlite_close(db)
     hs := parse(hrows, []HtmlRow{})
     if len(hs) == 0 { return response("404 Not Found", "text/plain; charset=utf-8", "version not found") }
-    page := render_page(hs[0].html, hs[0].title, data)
+    base := pubbase(req)
+    read_key := ""
+    if ars[0].read_key_hash != "" {
+        qk := query(req, "read_key")
+        if qk != "" { read_key = qk } else { read_key = header(req, "x-hart-read-key") }
+    }
+    page := render_page(hs[0].html, hs[0].title, data, id, base, read_key, ars[0].visibility)
     ct := csp()
-    if hs[0].format == "jsx" { page = render_page_jsx(hs[0].html, hs[0].title, data); ct = csp_jsx() }
+    if hs[0].format == "jsx" { page = render_page_jsx(hs[0].html, hs[0].title, data, id, base, read_key, ars[0].visibility); ct = csp_jsx() }
     // live (D2 slice 2): relax CSP to connect-src 'self' and inject the self-polling repainter.
     if live == 1 {
         ct = csp_live()
@@ -1311,7 +1321,7 @@ func unlock_success_page(id, key, req) (res) {
     body = body + "</div>"
     body = body + "<div class=\"copied\" id=\"copied\">Copied to clipboard</div>"
     body = body + "</div>"
-    body = body + "<div class=\"btns\"><a class=\"view\" href=\"/a/" + id + "\">View artifact →</a></div>"
+    body = body + "<div class=\"btns\"><a class=\"view\" href=\"/a/" + id + "?read_key=" + url_encode(key) + "\">View artifact →</a></div>"
     body = body + "</div></body></html>"
     r := response("200 OK", "text/html; charset=utf-8", body)
     r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'")

@@ -1,0 +1,49 @@
+// artifact chrome — small top-right semitransparent pill injected into rendered artifacts.
+// Pulled out of hart.src to keep the main file from growing. Compiled into the same binary via build.sh.
+
+// artifact_chrome_css — the <style> block that makes the chrome look consistent and unobtrusive.
+func artifact_chrome_css() (s) {
+    s = "<style>"
+    s = s + ".hartc-wrap{position:fixed;top:14px;right:14px;z-index:2147483647;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:12px;color:#e8edf2;line-height:1.4}"
+    s = s + ".hartc-wrap summary{list-style:none;cursor:pointer;user-select:none;background:rgba(15,19,25,.35);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.07);border-radius:999px;padding:5px 10px;display:inline-flex;align-items:center;gap:6px;box-shadow:0 4px 18px rgba(0,0,0,.18);color:rgba(240,244,248,.55);font-weight:500;transition:background .15s,color .15s,border-color .15s}"
+    s = s + ".hartc-wrap summary::-webkit-details-marker{display:none}"
+    s = s + ".hartc-wrap summary:hover,.hartc-wrap[open] summary{background:rgba(15,19,25,.85);color:#f0f4f8;border-color:rgba(255,255,255,.18)}"
+    s = s + ".hartc-menu{position:absolute;top:calc(100% + 8px);right:0;background:rgba(19,23,31,.96);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,.08);border-radius:14px;width:250px;padding:14px;box-shadow:0 12px 40px rgba(0,0,0,.45)}"
+    s = s + ".hartc-menu h4{margin:0 0 10px;font-size:11px;color:#94a3b8;letter-spacing:.06em;text-transform:uppercase;font-weight:600}"
+    s = s + ".hartc-id{display:flex;align-items:center;gap:8px;margin-bottom:12px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px}"
+    s = s + ".hartc-id code{background:rgba(255,255,255,.06);padding:4px 8px;border-radius:6px}"
+    s = s + ".hartc-badge{font-size:10px;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,.08);color:#94a3b8;text-transform:uppercase;letter-spacing:.05em}"
+    s = s + ".hartc-badge.private{background:rgba(224,163,85,.15);color:#e0a355}"
+    s = s + ".hartc-badge.public{background:rgba(34,197,94,.12);color:#4ade80}"
+    s = s + ".hartc-menu a,.hartc-menu button{display:flex;align-items:center;gap:10px;width:100%;text-align:left;background:transparent;border:0;color:#e8edf2;padding:9px 0;cursor:pointer;text-decoration:none;font:inherit;font-size:13px;border-radius:6px}"
+    s = s + ".hartc-menu a:hover,.hartc-menu button:hover{color:#3ad0c4}"
+    s = s + ".hartc-sep{height:1px;background:rgba(255,255,255,.08);margin:10px -4px}"
+    s = s + ".hartc-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#3ad0c4;color:#062023;padding:10px 18px;border-radius:10px;font-weight:600;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:2147483647}"
+    s = s + ".hartc-toast.show{opacity:1}"
+    s = s + "</style>"
+}
+
+// artifact_chrome_html — the <details> pill + menu. visibility is unlisted|public|private;
+// read_key is the actual password if known (from ?read_key or X-Hart-Read-Key header).
+func artifact_chrome_html(id, base, read_key, visibility) (h) {
+    vis_class := "hartc-badge " + visibility
+    curl := "curl -s " + base + "/a/" + id
+    curl_label := "Curl copied"
+    if read_key != "" { curl = "curl -s -H 'X-Hart-Read-Key: " + read_key + "' " + base + "/a/" + id  curl_label = "Authenticated curl copied" }
+    url := base + "/a/" + id
+    url_label := "URL copied"
+    if read_key != "" { url = url + "?read_key=" + url_encode(read_key); url_label = "Authenticated URL copied" }
+    h = "<details class=\"hartc-wrap\">"
+    h = h + "<summary>≡ hart</summary>"
+    h = h + "<div class=\"hartc-menu\">"
+    h = h + "<h4>Hosted on hart</h4>"
+    h = h + "<div class=\"hartc-id\"><code>" + html_escape(id) + "</code><span class=\"" + vis_class + "\">" + visibility + "</span></div>"
+    h = h + "<a href=\"" + html_escape(base) + "\">🏠 hart home</a>"
+    h = h + "<a href=\"" + html_escape(base) + "/explore\">🔎 Explore public</a>"
+    h = h + "<div class=\"hartc-sep\"></div>"
+    h = h + "<button data-val=\"" + html_escape(curl) + "\" data-label=\"" + html_escape(curl_label) + "\" onclick=\"hartc_copy(this)\">📋 Copy curl</button>"
+    h = h + "<button data-val=\"" + html_escape(url) + "\" data-label=\"" + html_escape(url_label) + "\" onclick=\"hartc_copy(this)\">🔗 Copy URL</button>"
+    h = h + "</div></details>"
+    h = h + "<div class=\"hartc-toast\" id=\"hartc-toast\"></div>"
+    h = h + "<script>function hartc_copy(el){var t=document.getElementById('hartc-toast');t.textContent=el.dataset.label;t.classList.add('show');setTimeout(function(){t.classList.remove('show')},1200);if(navigator.clipboard){navigator.clipboard.writeText(el.dataset.val)}}</script>"
+}
