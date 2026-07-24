@@ -175,7 +175,9 @@ the custom host — pair with `--csp-mode landing` for funnels. A **private** ma
 requires its read key. Provisioning is Traefik's job: `--emit-traefik --service-url <hart-url>`
 prints a host-only router block for the proxy's watched dir, and an optional `HART_DOMAIN_HOOK` on
 the daemon runs `<hook> add|remove <domain> <owner> <artifact>` on changes so an external
-provisioner can reconcile the proxy automatically (off by default). A platform backend can also pull
+provisioner can reconcile the proxy automatically (off by default) —
+[**hart-domain-sync**](https://github.com/javimosch/hart-domain-sync) is a reference reconciler that
+consumes this hook to manage Traefik dynamic config + Cloudflare DNS. A platform backend can also pull
 a raw stored body server-side with `hart get <id> --html [--read-key <pw>]` (private needs the read
 key, no owner/admin token) to re-serve it or deliver a gated download.
 
