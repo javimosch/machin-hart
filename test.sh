@@ -75,6 +75,14 @@ eq "private: correct key -> 200" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x
 ./hart publish "$P" --owner acme --artifact pub --visibility public >/dev/null
 has "public artifact listed in explore" "$(./hart explore)" "acme/pub"
 
+echo "== server-side read-key fetch (#16 slice 3) =="
+eq "html fetch: no key -> 401" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/artifacts/acme/secret/html")" "401"
+has "html fetch: read-key header -> ok" "$(curl -s -H 'x-hart-read-key: pw' "$HART_URL/v1/artifacts/acme/secret/html")" '"ok":true'
+has "html fetch: ?read_key returns html field" "$(curl -s "$HART_URL/v1/artifacts/acme/secret/html?read_key=pw")" '"html":'
+eq "html fetch: wrong key -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-read-key: nope' "$HART_URL/v1/artifacts/acme/secret/html")" "401"
+has "html fetch: public needs no key" "$(curl -s "$HART_URL/v1/artifacts/acme/pub/html")" '"ok":true'
+has "CLI get --html --read-key" "$(./hart get acme/secret --html --read-key pw)" '"format":"html"'
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"

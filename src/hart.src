@@ -605,7 +605,7 @@ func owner_bytes(db, owner) (n) {
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
 // hart_version — single source of truth for the version reported to clients (MCP serverInfo).
-func hart_version() (s) { s = "0.5.1" }
+func hart_version() (s) { s = "0.5.2" }
 
 func unq(s) (o) {
     o = s
@@ -1664,6 +1664,33 @@ func h_artifact_data(req, id) (res) {
     res = r
 }
 
+// GET /v1/artifacts/<id>/html?version=N — the RAW stored HTML/JSX body of a version, so a platform
+// backend can re-serve it (e.g. on a custom domain) or deliver it as a download (#16 slice 3).
+// Auth mirrors the page read: public/unlisted need no key; a private artifact requires the read key
+// (X-Hart-Read-Key / ?read_key) or a valid unlock cookie — an owner/admin token is NOT required, so
+// the platform can fetch a buyer's product with just the artifact's read key. Returns unwrapped
+// content (no chrome, no CSP skeleton) as JSON {ok,id,version,title,format,html}. Not view-counted.
+func h_artifact_html(db, req, id) (res) {
+    arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"not found\"}") }
+    if read_authorized(db, id, ars[0].read_key_hash, req) == 0 {
+        sqlite_close(db)
+        return response("401 Unauthorized", "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"private artifact — provide the read key via the X-Hart-Read-Key header or the ?read_key=<password> query parameter\"}")
+    }
+    v := parse_int(query(req, "version"))
+    if v == 0 { v = ars[0].latest }
+    hrows := sqlite_query(db, "SELECT html, format, title FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(v)})
+    sqlite_close(db)
+    hs := parse(hrows, []HtmlRow{})
+    if len(hs) == 0 { return response("404 Not Found", "application/json; charset=utf-8", "{\"ok\":false,\"error\":\"version not found\"}") }
+    out := "{\"ok\":true,\"id\":\"" + jesc(id) + "\",\"version\":" + str(v) + ",\"title\":" + json(hs[0].title) + ",\"format\":\"" + jesc(hs[0].format) + "\",\"html\":" + json(hs[0].html) + "}"
+    r := ok_json(out)
+    r = with_header(r, "Cache-Control", "no-store")
+    r = with_header(r, "X-Content-Type-Options", "nosniff")
+    res = r
+}
+
 // wrap stored content in a minimal doctype skeleton (the content itself carries inline
 // <title>/<style>/<script>, artifact-style) and serve under the strict CSP. Data is applied
 // two ways: {{key}} substitution in the markup + a window.HART_DATA global for scripts.
@@ -2217,6 +2244,9 @@ func hart_route(req) (res) {
         if req.method == "GET" && has_suffix(tail, "/labels") {
             id = substr(tail, 0, len(tail) - 7)
         }
+        if req.method == "GET" && has_suffix(tail, "/html") {
+            id = substr(tail, 0, len(tail) - 5)
+        }
         if valid_id(id) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
         if req.method == "GET" && has_suffix(tail, "/versions") {
             db := opendb(); return h_versions(db, req, id)
@@ -2241,6 +2271,9 @@ func hart_route(req) (res) {
         }
         if req.method == "GET" && has_suffix(tail, "/labels") {
             db := opendb(); return h_labels(req, id)
+        }
+        if req.method == "GET" && has_suffix(tail, "/html") {
+            db := opendb(); return h_artifact_html(db, req, id)
         }
         if req.method == "DELETE" { return h_delete(req, tail) }
         if req.method == "GET" { db := opendb(); return h_versions(db, req, tail) }
@@ -3150,12 +3183,26 @@ func cmd_stale(a) {
 }
 
 func cmd_get(a) {
-    if len(a) < 3 { die(80, "usage: hart get <id>  (metadata + versions)") }
+    if len(a) < 3 { die(80, "usage: hart get <id> [--html [--read-key <pw>] [--version <n>]]  (default: metadata + versions)") }
     require_valid_id(a[2])
-    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers(a[2]), "")
-    if err != "" { die(100, "cannot reach hart daemon: " + err) }
-    if status != 200 { die(90, "not found (" + str(status) + ")") }
-    say(resp)
+    if has_flag(a, "--html") == 1 {
+        // fetch the raw stored body (#16 slice 3) — for a private artifact pass --read-key.
+        url := hart_url() + "/v1/artifacts/" + a[2] + "/html"
+        ver := flagv(a, "--version", "")
+        if ver != "" { url = url + "?version=" + url_encode(ver) }
+        headers := auth_headers(a[2])
+        rk := flagv(a, "--read-key", "")
+        if rk != "" { headers = append(headers, "x-hart-read-key: " + rk) }
+        status, resp, err := http_request("GET", url, headers, "")
+        if err != "" { die(100, "cannot reach hart daemon: " + err) }
+        if status != 200 { write(2, resp + "\n"); exit(90) }
+        say(resp)
+    } else {
+        status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers(a[2]), "")
+        if err != "" { die(100, "cannot reach hart daemon: " + err) }
+        if status != 200 { die(90, "not found (" + str(status) + ")") }
+        say(resp)
+    }
 }
 
 func cmd_rm(a) {
