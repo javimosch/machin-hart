@@ -119,6 +119,34 @@ func csp_jsx_live() (c) {
     c = "default-src 'none'; connect-src 'self'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'; font-src data:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'"
 }
 
+// Multi-tenant CSP presets (#16 slice 2). `landing` relaxes the lockdown for real sales funnels:
+// external images/fonts/styles, Stripe JS + GA/GTM analytics, YouTube/Loom embeds, and outbound
+// network. It intentionally allows external hosts — the opposite of the strict default — so it is
+// opt-in per artifact and the publish linter is skipped for it. Covers jsx (script-src 'self') and
+// live (connect-src *) without further composition.
+func csp_landing() (c) {
+    c = "default-src 'self'; img-src * data: blob:; media-src * data: blob:; font-src * data:; style-src 'self' 'unsafe-inline' *; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://js.stripe.com https://www.googletagmanager.com https://*.google-analytics.com; connect-src *; frame-src https://www.youtube.com https://www.loom.com https://js.stripe.com; base-uri 'self'; form-action 'self'"
+}
+
+// csp_for — resolve the Content-Security-Policy header for an artifact by its mode:
+//   strict (default) -> the locked-down csp()/csp_jsx()/csp_live() family, composed with format+live
+//   landing          -> csp_landing() (already covers jsx + live)
+//   custom           -> the owner-supplied policy verbatim (empty -> falls back to strict)
+// custom is fully the owner's responsibility: a custom+jsx page must include script-src 'self' for
+// the same-origin React/Babel runtime; a custom+live page must include connect-src 'self'.
+func csp_for(mode, policy, format, live) (c) {
+    if mode == "landing" { return csp_landing() }
+    if mode == "custom" {
+        if policy != "" { return policy }
+    }
+    c = csp()
+    if format == "jsx" { c = csp_jsx() }
+    if live == 1 {
+        c = csp_live()
+        if format == "jsx" { c = csp_jsx_live() }
+    }
+}
+
 // ---- hart Pro license (M3 Plan A, slice 0) --------------------------------
 // Open-core: pro features gate behind `licensed(feature)`. A key is an Ed25519-signed token
 // (`hart_pro.<b64url(payload)>.<b64url(sig)>`) minted by hart-cloud and verified OFFLINE here —
@@ -298,6 +326,8 @@ func opendb() (db) {
     // itself (kind 'url' = GET the URL; 'cmd' = run a shell command, operator/admin only). D2.
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS refresh(artifact_id TEXT PRIMARY KEY, kind TEXT DEFAULT 'url', source TEXT DEFAULT '', header TEXT DEFAULT '', every INTEGER DEFAULT 0, next INTEGER DEFAULT 0, last INTEGER DEFAULT 0, last_status TEXT DEFAULT '', enabled INTEGER DEFAULT 1)", []string{})
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN live INTEGER DEFAULT 0", []string{})   // D2 slice 2: page may fetch its own /data.json and repaint (relaxes CSP to connect-src 'self')
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN csp_mode TEXT DEFAULT 'strict'", []string{})   // multi-tenant (#16 slice 2): strict|landing|custom CSP preset for sales funnels
+    sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN csp_policy TEXT DEFAULT ''", []string{})        // full custom CSP string, used verbatim when csp_mode='custom'
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS license(id INTEGER PRIMARY KEY, token TEXT DEFAULT '', updated INTEGER DEFAULT 0)", []string{})   // M3 Plan A: hart Pro license key (single row id=1)
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, action TEXT, owner TEXT DEFAULT '', artifact_id TEXT DEFAULT '', version INTEGER DEFAULT 0, actor TEXT DEFAULT '', detail TEXT DEFAULT '')", []string{})   // M3 slice 1: pro audit log
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS members(owner TEXT, email TEXT, key_hash TEXT, role TEXT DEFAULT 'writer', created INTEGER, PRIMARY KEY(owner, email))", []string{})   // M3 slice 1: pro teams (per-member keys)
@@ -575,7 +605,7 @@ func owner_bytes(db, owner) (n) {
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
 // hart_version — single source of truth for the version reported to clients (MCP serverInfo).
-func hart_version() (s) { s = "0.5.0" }
+func hart_version() (s) { s = "0.5.1" }
 
 func unq(s) (o) {
     o = s
@@ -813,8 +843,18 @@ func h_publish(req) (res) {
         sqlite_close(db)
         return response("413 Payload Too Large", "application/json", "{\"ok\":false,\"error\":\"storage quota exceeded for owner '" + owner + "': max " + str(cap / 1048576) + " MB total" + hint + "\",\"limit_mb\":" + str(cap / 1048576) + ",\"pro\":" + str(licensed("limits")) + "}")
     }
+    // csp mode (#16 slice 2): landing/custom relax the lockdown -> the self-contained linter is
+    // skipped. Default from the existing artifact on re-publish (mode persists), else strict.
+    csp_mode := query(req, "csp_mode")
+    if csp_mode == "" && id != "" {
+        emrows := sqlite_query(db, "SELECT csp_mode FROM artifacts WHERE id = ?", []string{id})
+        emraw, _ := json_get(emrows, "[0].csp_mode")
+        csp_mode = unq(emraw)
+    }
+    if csp_mode != "landing" && csp_mode != "custom" { csp_mode = "strict" }
+    csp_policy := query(req, "csp_policy")
     // publish-time safety lint (see lint()); hard violations block unless ?force=1
-    report := lint(body)
+    report := lint(body, csp_mode)
     if query(req, "dry") == "1" {
         sqlite_close(db)
         blk := "false"
@@ -847,20 +887,22 @@ func h_publish(req) (res) {
         if rk != "" { sqlite_exec(db, "UPDATE artifacts SET read_key_hash = ? WHERE id = ?", []string{rkh, id}) }
         if query(req, "fresh") != "" { sqlite_exec(db, "UPDATE artifacts SET fresh_ttl = ? WHERE id = ?", []string{str(parse_int(query(req, "fresh"))), id}) }
         if query(req, "live") != "" { lv := 0  if query(req, "live") == "1" { lv = 1 }  sqlite_exec(db, "UPDATE artifacts SET live = ? WHERE id = ?", []string{str(lv), id}) }
+        if query(req, "csp_mode") != "" { sqlite_exec(db, "UPDATE artifacts SET csp_mode = ? WHERE id = ?", []string{csp_mode, id}) }
+        if query(req, "csp_policy") != "" { sqlite_exec(db, "UPDATE artifacts SET csp_policy = ? WHERE id = ?", []string{csp_policy, id}) }
         vis = ars[0].visibility
         if query(req, "visibility") != "" { vis = query(req, "visibility") }
     } else {
         if id == "" { id = nid() }
         livep := 0
         if query(req, "live") == "1" { livep = 1 }
-        sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, visibility, read_key_hash, created, updated, fresh_ttl, live, meta, agent, run_id, parent_id, tags) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), vis, rkh, str(n), str(n), str(parse_int(query(req, "fresh"))), str(livep), p_meta, p_agent, p_run, p_parent, p_tags})
+        sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, visibility, read_key_hash, created, updated, fresh_ttl, live, csp_mode, csp_policy, meta, agent, run_id, parent_id, tags) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), vis, rkh, str(n), str(n), str(parse_int(query(req, "fresh"))), str(livep), csp_mode, csp_policy, p_meta, p_agent, p_run, p_parent, p_tags})
     }
     hash := to_hex(sha256_bytes(bytes(body)))
     sqlite_exec(db, "INSERT INTO versions(artifact_id, version, title, format, html, hash, created, meta, agent, run_id, parent_id, tags) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", []string{id, str(ver), title, format, body, hash, str(n), p_meta, p_agent, p_run, p_parent, p_tags})
     audit(db, "publish", owner, id, ver, format, req)
     sqlite_close(db)
     base := pubbase(req)
-    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + owner + "\",\"artifact\":\"" + artifact + "\",\"version\":" + str(ver) + ",\"format\":\"" + format + "\",\"visibility\":\"" + vis + "\",\"url\":\"" + base + "/a/" + id + "\",\"latest_url\":\"" + base + "/a/" + id + "/latest\",\"pinned_url\":\"" + base + "/a/" + id + "/v" + str(ver) + "\",\"lint\":" + report + "}"
+    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + owner + "\",\"artifact\":\"" + artifact + "\",\"version\":" + str(ver) + ",\"format\":\"" + format + "\",\"visibility\":\"" + vis + "\",\"csp_mode\":\"" + csp_mode + "\",\"url\":\"" + base + "/a/" + id + "\",\"latest_url\":\"" + base + "/a/" + id + "/latest\",\"pinned_url\":\"" + base + "/a/" + id + "/v" + str(ver) + "\",\"lint\":" + report + "}"
     res = ok_json(out)
 }
 
@@ -1530,7 +1572,10 @@ func lint_find(lc, needle, level, rule, note, acc) (out, blocked) {
     }
 }
 
-func lint(html) (report) {
+func lint(html, mode) (report) {
+    // landing/custom artifacts (#16 slice 2) intentionally reach off-page (Stripe, analytics,
+    // fonts, embeds) — the self-contained contract doesn't apply, so skip the external-ref rules.
+    if mode == "landing" || mode == "custom" { return "[]" }
     lc := to_lower(html)
     r := "["
     b := 0
@@ -1686,6 +1731,13 @@ func serve_artifact(db, req, id, ver) (res) {
         eraw, eerr := json_get(erows, "[0].every")
         if eerr == "" { ev := parse_int(eraw)  if ev > 0 { poll_ms = ev * 1000 } }
     }
+    // csp preset (#16 slice 2), read while the db is still open (avoids touching shared ArtRow)
+    crows := sqlite_query(db, "SELECT csp_mode, csp_policy FROM artifacts WHERE id = ?", []string{id})
+    cmraw, _ := json_get(crows, "[0].csp_mode")
+    cpraw, _ := json_get(crows, "[0].csp_policy")
+    cmode := unq(cmraw)
+    cpol := unq(cpraw)
+    if cmode != "landing" && cmode != "custom" { cmode = "strict" }
     hrows := sqlite_query(db, "SELECT html, format, title FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(v)})
     sqlite_close(db)
     hs := parse(hrows, []HtmlRow{})
@@ -1697,14 +1749,11 @@ func serve_artifact(db, req, id, ver) (res) {
         if qk != "" { read_key = qk } else { read_key = header(req, "x-hart-read-key") }
     }
     page := render_page(hs[0].html, hs[0].title, data, id, base, read_key, ars[0].visibility)
-    ct := csp()
-    if hs[0].format == "jsx" { page = render_page_jsx(hs[0].html, hs[0].title, data, id, base, read_key, ars[0].visibility); ct = csp_jsx() }
-    // live (D2 slice 2): relax CSP to connect-src 'self' and inject the self-polling repainter.
-    if live == 1 {
-        ct = csp_live()
-        if hs[0].format == "jsx" { ct = csp_jsx_live() }
-        page = inject_live(page, id, poll_ms)
-    }
+    if hs[0].format == "jsx" { page = render_page_jsx(hs[0].html, hs[0].title, data, id, base, read_key, ars[0].visibility) }
+    // live (D2 slice 2): inject the self-polling repainter (CSP relaxation handled by csp_for).
+    if live == 1 { page = inject_live(page, id, poll_ms) }
+    // resolve the CSP header by the artifact's mode (#16 slice 2): strict|landing|custom.
+    ct := csp_for(cmode, cpol, hs[0].format, live)
     r := ok_html(page)
     r = with_header(r, "Content-Security-Policy", ct)
     r = with_header(r, "X-Content-Type-Options", "nosniff")
@@ -2719,7 +2768,7 @@ func has_flag(a, name) (yes) {
 }
 
 func cmd_publish(a) {
-    if len(a) < 3 { die(80, "usage: hart publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--visibility unlisted|public|private] [--read-key <pw>] [--fresh <30s|15m|2h|1d>] [--agent <name>] [--run <id>] [--parent <id>] [--tags <a,b>] [--meta '<json>'] [--unguessable] [--dry-run] [--force]") }
+    if len(a) < 3 { die(80, "usage: hart publish <file> [--owner <who>] [--artifact <name>] [--title <t>] [--format html|jsx] [--visibility unlisted|public|private] [--read-key <pw>] [--csp-mode strict|landing|custom] [--csp-policy '<CSP>'] [--fresh <30s|15m|2h|1d>] [--agent <name>] [--run <id>] [--parent <id>] [--tags <a,b>] [--meta '<json>'] [--unguessable] [--dry-run] [--force]") }
     file := a[2]
     html := read_file(file)
     if html == "" { die(90, "file empty or unreadable: " + file) }
@@ -2743,6 +2792,8 @@ func cmd_publish(a) {
     pparent := flagv(a, "--parent", "")
     ptags := flagv(a, "--tags", "")
     pmeta := flagv(a, "--meta", "")
+    cspmode := flagv(a, "--csp-mode", "")
+    csppolicy := flagv(a, "--csp-policy", "")
     url := hart_url() + "/v1/publish?format=" + url_encode(format)
     if id != "" { url = url + "&id=" + url_encode(id) }
     if owner != "" { url = url + "&owner=" + url_encode(owner) }
@@ -2756,6 +2807,8 @@ func cmd_publish(a) {
     if pparent != "" { url = url + "&parent=" + url_encode(pparent) }
     if ptags != "" { url = url + "&tags=" + url_encode(ptags) }
     if pmeta != "" { url = url + "&meta=" + url_encode(pmeta) }
+    if cspmode != "" { url = url + "&csp_mode=" + url_encode(cspmode) }
+    if csppolicy != "" { url = url + "&csp_policy=" + url_encode(csppolicy) }
     if has_flag(a, "--unguessable") == 1 { url = url + "&unguessable=1" }
     if has_flag(a, "--live") == 1 { url = url + "&live=1" }
     if has_flag(a, "--dry-run") == 1 { url = url + "&dry=1" }

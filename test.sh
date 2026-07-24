@@ -56,6 +56,18 @@ BAD="$TMP/bad.html"; printf '<script src="https://evil.example/x.js"></script>' 
 eq "external ref rejected (422)" "$(./hart publish "$BAD" --owner acme --artifact bad >/dev/null 2>&1; echo $?)" "80"
 eq "--force overrides linter" "$(./hart publish "$BAD" --owner acme --artifact bad --force | jget version)" "1"
 
+echo "== CSP presets (#16 slice 2) =="
+FUN="$TMP/funnel.html"; printf '<script src="https://js.stripe.com/v3/"></script><link rel="stylesheet" href="https://fonts.googleapis.com/css2">' > "$FUN"
+eq "landing: external refs NOT rejected" "$(./hart publish "$FUN" --owner acme --artifact funnel --csp-mode landing --visibility public | jget csp_mode)" "landing"
+has "landing: served CSP allows Stripe JS" "$(curl -sD - -o /dev/null "$HART_URL/a/acme/funnel")" "js.stripe.com"
+has "landing: served CSP is default-src 'self'" "$(curl -sD - -o /dev/null "$HART_URL/a/acme/funnel")" "default-src 'self'"
+eq "landing: mode persists on re-publish (no flag)" "$(./hart publish "$FUN" --owner acme --artifact funnel | jget csp_mode)" "landing"
+eq "strict switch-back re-blocks external refs" "$(./hart publish "$FUN" --owner acme --artifact funnel --csp-mode strict >/dev/null 2>&1; echo $?)" "80"
+CUS="$TMP/custo.html"; printf '<h1>hi</h1>' > "$CUS"
+./hart publish "$CUS" --owner acme --artifact custo --csp-mode custom --csp-policy "default-src 'self'; img-src https://cdn.example.com" --visibility public >/dev/null
+has "custom: served CSP is the verbatim policy" "$(curl -sD - -o /dev/null "$HART_URL/a/acme/custo")" "img-src https://cdn.example.com"
+has "strict artifact keeps default-src 'none'" "$(curl -sD - -o /dev/null "$HART_URL/a/acme/page")" "default-src 'none'"
+
 echo "== visibility + gated read =="
 ./hart publish "$P" --owner acme --artifact secret --visibility private --read-key pw >/dev/null
 eq "private: no key -> 401 unlock" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/acme/secret")" "401"
