@@ -83,6 +83,20 @@ eq "html fetch: wrong key -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -H '
 has "html fetch: public needs no key" "$(curl -s "$HART_URL/v1/artifacts/acme/pub/html")" '"ok":true'
 has "CLI get --html --read-key" "$(./hart get acme/secret --html --read-key pw)" '"format":"html"'
 
+echo "== custom domains (#16 slice 1) =="
+FUN2="$TMP/funnel2.html"; printf '<h1>Funnel page</h1>' > "$FUN2"
+./hart publish "$FUN2" --owner creator --artifact shop --csp-mode landing --visibility public >/dev/null
+has "domain map ok" "$(./hart domain creator/shop shop.test)" '"domain":"shop.test"'
+has "Host serves mapped artifact at /" "$(curl -s -H 'Host: shop.test' "$HART_URL/")" "Funnel page"
+eq "custom domain: chromeless (no /_fleet chrome link)" "$(curl -s -H 'Host: shop.test' "$HART_URL/" | grep -c '/_fleet')" "0"
+has "custom domain: landing CSP header" "$(curl -sD - -o /dev/null -H 'Host: shop.test' "$HART_URL/")" "default-src 'self'"
+eq "unmapped Host at / -> landing 200" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: nope.test' "$HART_URL/")" "200"
+eq "mapped Host: data.json not hijacked (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: shop.test' "$HART_URL/a/creator/shop/data.json")" "200"
+has "GET /v1/domain?domain=" "$(curl -s "$HART_URL/v1/domain?domain=shop.test")" '"id":"creator/shop"'
+has "domain --emit-traefik prints Traefik block" "$(./hart domain creator/shop shop.test --emit-traefik --service-url http://hart:8799 2>/dev/null)" "Host(\`shop.test\`)"
+has "domain-rm ok" "$(./hart domain-rm shop.test)" '"removed":"shop.test"'
+eq "after rm: Host at / -> landing (not mapped)" "$(curl -s -H 'Host: shop.test' "$HART_URL/" | grep -c 'Funnel page')" "0"
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"

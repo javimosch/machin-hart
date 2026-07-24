@@ -27,6 +27,7 @@ type FbRow struct { id string  kind string  message string  context string  repo
 type LinkRow struct { from_id string  to_id string  rel string  created int }
 type LabelRow struct { artifact_id string  version int  label string  created int }
 type AdmOwn struct { owner string  cnt int  updated int  bytes int  has_key int }
+type DomainRow struct { domain string  owner string  artifact string  version int  no_chrome int  created int  updated int }
 
 // g_cfg holds values loaded from ~/.hart/config and .hart.env (CLI only, not serve).
 var g_cfg = make(map[string]string)
@@ -333,6 +334,7 @@ func opendb() (db) {
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS members(owner TEXT, email TEXT, key_hash TEXT, role TEXT DEFAULT 'writer', created INTEGER, PRIMARY KEY(owner, email))", []string{})   // M3 slice 1: pro teams (per-member keys)
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS joins(token TEXT PRIMARY KEY, owner TEXT, status TEXT DEFAULT 'pending', email TEXT DEFAULT '', member_key TEXT DEFAULT '', created INTEGER)", []string{})   // teams SSO: pending `hart join` self-onboarding flows
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS oidc_meta(issuer TEXT PRIMARY KEY, authz TEXT, token TEXT, userinfo TEXT, fetched INTEGER)", []string{})   // cached OIDC discovery per issuer
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS domains(domain TEXT PRIMARY KEY, owner TEXT, artifact TEXT, version INTEGER DEFAULT 0, no_chrome INTEGER DEFAULT 1, created INTEGER, updated INTEGER)", []string{})   // multi-tenant (#16 slice 1): custom domain -> artifact mapping (serve by Host)
 }
 
 // referer_host — the bare host of an inbound Referer header ("" -> "direct"). Self-referrals
@@ -605,7 +607,7 @@ func owner_bytes(db, owner) (n) {
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
 // hart_version — single source of truth for the version reported to clients (MCP serverInfo).
-func hart_version() (s) { s = "0.5.2" }
+func hart_version() (s) { s = "0.6.0" }
 
 func unq(s) (o) {
     o = s
@@ -790,6 +792,155 @@ func pubbase(req) (b) {
         if host == "" { host = "127.0.0.1:8799" }
         b = "http://" + host
     }
+}
+
+// ---- custom domains (#16 slice 1) -----------------------------------------
+// A creator points example.com at hart (via Traefik) and hart serves a mapped artifact by the
+// Host header. Provisioning (the Traefik router/cert) lives in Traefik, NOT here — hart only owns
+// the mapping table + the runtime "serve this artifact for this Host" behavior. Prefer host-only
+// (mapping B): GET / on the custom host serves the artifact. Traefik addPrefix (mapping A) sends
+// /a/<owner>/<artifact> and hart serves it chromeless.
+
+// canonical_host — the bare host of HART_PUBLIC (the instance's own domain). A request to this host
+// is never a custom-domain mapping, so we skip the domains lookup for it (the common path).
+func canonical_host() (h) {
+    h = cfg("HART_PUBLIC")
+    ci := index(h, "://")
+    if ci >= 0 { h = substr(h, ci + 3, len(h)) }
+    si := index(h, "/")
+    if si >= 0 { h = substr(h, 0, si) }
+}
+
+// req_scheme — https when the proxy forwards X-Forwarded-Proto: https, else http. Used to build the
+// custom-domain base (matched-domain-wins): a mapped page's absolute links use its own host.
+func req_scheme(req) (s) {
+    s = "http"
+    if header(req, "x-forwarded-proto") == "https" { s = "https" }
+}
+
+// domain_row — look up a custom-domain mapping by exact Host. Empty .domain = no mapping.
+func domain_row(host) (d) {
+    db := opendb()
+    rows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE domain = ?", []string{host})
+    sqlite_close(db)
+    ds := parse(rows, []DomainRow{})
+    if len(ds) > 0 { d = ds[0] }
+}
+
+// serve_domain_artifact — mapping B: serve the artifact mapped to this Host at "/", chromeless by
+// default, with the custom host as the link base (matched-domain-wins). Read-gating is unchanged
+// (a private mapped artifact still needs its read key), so this is safe for public landing pages.
+func serve_domain_artifact(req, d) (res) {
+    id := d.owner + "/" + d.artifact
+    if valid_id(id) == 0 { return response("404 Not Found", "text/plain; charset=utf-8", "domain mapping points at an invalid artifact") }
+    db := opendb()
+    base := req_scheme(req) + "://" + header(req, "host")
+    res = serve_artifact(db, req, id, d.version, d.no_chrome, base)
+}
+
+// valid_domain — a bare, shell-safe hostname (lowercased [a-z0-9.-], has a dot, <=253 chars). The
+// strict charset also makes it safe to pass to HART_DOMAIN_HOOK (no shell metacharacters).
+func valid_domain(d) (ok) {
+    ok = 0
+    if d == "" || len(d) > 253 { return 0 }
+    if index(d, ".") < 0 { return 0 }
+    i := 0
+    for i < len(d) {
+        c := substr(d, i, i + 1)
+        okc := 0
+        if c >= "a" && c <= "z" { okc = 1 }
+        if c >= "0" && c <= "9" { okc = 1 }
+        if c == "." || c == "-" { okc = 1 }
+        if okc == 0 { return 0 }
+        i = i + 1
+    }
+    ok = 1
+}
+
+func domain_json(d) (j) {
+    j = "{\"domain\":\"" + jesc(d.domain) + "\",\"id\":\"" + jesc(d.owner + "/" + d.artifact) + "\",\"owner\":\"" + jesc(d.owner) + "\",\"artifact\":\"" + jesc(d.artifact) + "\",\"version\":" + str(d.version) + ",\"no_chrome\":" + str(d.no_chrome) + ",\"updated\":" + str(d.updated) + "}"
+}
+
+// domain_hook — best-effort reconcile hook (#16 slice 1). When the operator sets HART_DOMAIN_HOOK,
+// hart runs `<hook> <add|remove> <domain> <owner> <artifact>` on mapping changes so an external
+// provisioner (hotify / a Traefik writer) can reconcile the proxy. Off by default; same trust model
+// as `refresh --cmd` (arbitrary shell on the box, operator-configured). Never blocks the response.
+func domain_hook(action, domain, owner, artifact) {
+    cmd := cfg("HART_DOMAIN_HOOK")
+    if cmd == "" { return }
+    _, _, _ := exec(cmd + " " + action + " " + domain + " " + owner + " " + artifact)
+}
+
+// POST /v1/domain?domain=&id=&version=&chrome=  — set/update a custom-domain -> artifact mapping.
+// Owner-key protected (the mapped artifact's owner). no_chrome defaults to 1; chrome=1 keeps chrome.
+func h_domain_set(req) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    domain := to_lower(trim(query(req, "domain")))
+    if valid_domain(domain) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid domain — a bare hostname like shop.example.com\"}") }
+    id := query(req, "id")
+    o := query(req, "owner")
+    art := query(req, "artifact")
+    if id == "" && o != "" && art != "" { id = o + "/" + art }
+    if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need id (or owner + artifact)\"}") }
+    arows := sqlite_query(db, "SELECT owner FROM artifacts WHERE id = ?", []string{id})
+    orow, oerr := json_get(arows, "[0].owner")
+    if oerr != "" { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"artifact not found: " + jesc(id) + "\"}") }
+    owner := unq(orow)
+    if owner_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + jesc(owner) + "' is claimed — pass the owner key\"}") }
+    slash := index(id, "/")
+    row_owner := substr(id, 0, slash)
+    row_art := substr(id, slash + 1, len(id))
+    ver := parse_int(query(req, "version"))
+    nochrome := 1
+    if query(req, "chrome") == "1" { nochrome = 0 }
+    n := now()
+    sqlite_exec(db, "INSERT INTO domains(domain, owner, artifact, version, no_chrome, created, updated) VALUES(?,?,?,?,?,?,?) ON CONFLICT(domain) DO UPDATE SET owner=excluded.owner, artifact=excluded.artifact, version=excluded.version, no_chrome=excluded.no_chrome, updated=excluded.updated", []string{domain, row_owner, row_art, str(ver), str(nochrome), str(n), str(n)})
+    audit(db, "domain-set", owner, id, ver, domain, req)
+    sqlite_close(db)
+    domain_hook("add", domain, row_owner, row_art)
+    res = ok_json("{\"ok\":true,\"domain\":\"" + jesc(domain) + "\",\"id\":\"" + jesc(id) + "\",\"version\":" + str(ver) + ",\"no_chrome\":" + str(nochrome) + "}")
+}
+
+// GET /v1/domain?domain=  -> one mapping;  GET /v1/domain[?owner=]  -> list mappings.
+func h_domain_get(req) (res) {
+    db := opendb()
+    domain := to_lower(trim(query(req, "domain")))
+    if domain != "" {
+        rows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE domain = ?", []string{domain})
+        sqlite_close(db)
+        ds := parse(rows, []DomainRow{})
+        if len(ds) == 0 { return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no mapping for " + jesc(domain) + "\"}") }
+        return ok_json(domain_json(ds[0]))
+    }
+    o := query(req, "owner")
+    rows := ""
+    if o != "" { rows = sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE owner = ? ORDER BY domain", []string{o}) } else { rows = sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains ORDER BY domain", []string{}) }
+    sqlite_close(db)
+    ds := parse(rows, []DomainRow{})
+    out := "["
+    i := 0
+    for i < len(ds) { if i > 0 { out = out + "," }  out = out + domain_json(ds[i])  i = i + 1 }
+    out = out + "]"
+    res = ok_json("{\"ok\":true,\"domains\":" + out + "}")
+}
+
+// DELETE /v1/domain?domain=  — remove a mapping (owner-key protected).
+func h_domain_rm(req) (res) {
+    db := opendb()
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
+    domain := to_lower(trim(query(req, "domain")))
+    if domain == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need domain\"}") }
+    rows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE domain = ?", []string{domain})
+    ds := parse(rows, []DomainRow{})
+    if len(ds) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no mapping for " + jesc(domain) + "\"}") }
+    owner := ds[0].owner
+    if owner_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + jesc(owner) + "' is claimed — pass the owner key\"}") }
+    sqlite_exec(db, "DELETE FROM domains WHERE domain = ?", []string{domain})
+    audit(db, "domain-rm", owner, ds[0].owner + "/" + ds[0].artifact, 0, domain, req)
+    sqlite_close(db)
+    domain_hook("remove", domain, ds[0].owner, ds[0].artifact)
+    res = ok_json("{\"ok\":true,\"removed\":\"" + jesc(domain) + "\"}")
 }
 
 // ---- daemon ---------------------------------------------------------------
@@ -1694,24 +1845,26 @@ func h_artifact_html(db, req, id) (res) {
 // wrap stored content in a minimal doctype skeleton (the content itself carries inline
 // <title>/<style>/<script>, artifact-style) and serve under the strict CSP. Data is applied
 // two ways: {{key}} substitution in the markup + a window.HART_DATA global for scripts.
-func render_page(html, title, data, id, base, read_key, visibility) (page) {
+func render_page(html, title, data, id, base, read_key, visibility, no_chrome) (page) {
     t := title
     if t == "" { t = "hart artifact" }
     b := apply_template(html, data)
     chrome_css := artifact_chrome_css()
     chrome_html := artifact_chrome_html(id, base, read_key, visibility)
+    if no_chrome == 1 { chrome_css = ""; chrome_html = "" }   // custom-domain / raw mode (#16 slice 1)
     page = "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>" + chrome_css + data_script(data) + "</head><body>" + b + chrome_html + "</body></html>"
 }
 
 // JSX: load the same-origin React + Babel runtime, then transform the agent's JSX with the
 // CLASSIC runtime (emits React.createElement — no `import` of jsx-runtime, which would fail
 // outside a module) and eval it. React/ReactDOM are globals; the agent renders into #root.
-func render_page_jsx(jsx, title, data, id, base, read_key, visibility) (page) {
+func render_page_jsx(jsx, title, data, id, base, read_key, visibility, no_chrome) (page) {
     t := title
     if t == "" { t = "hart artifact" }
     src := replace(jsx, "</script>", "<\\/script>")   // don't let the source close its host tag
     chrome_css := artifact_chrome_css()
     chrome_html := artifact_chrome_html(id, base, read_key, visibility)
+    if no_chrome == 1 { chrome_css = ""; chrome_html = "" }   // custom-domain / raw mode (#16 slice 1)
     head := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>" + t + "</title>" + chrome_css + data_script(data)
     rt := "<script src=\"/_hart/runtime/react.js\"></script><script src=\"/_hart/runtime/react-dom.js\"></script><script src=\"/_hart/runtime/babel.js\"></script></head>"
     boot := "<script>(function(){try{var s=document.getElementById('__hart_jsx').textContent;var o=Babel.transform(s,{presets:[['react',{runtime:'classic'}]]}).code;(0,eval)(o);}catch(e){document.getElementById('root').innerHTML='<pre style=\"color:#b00020;padding:24px;font:14px ui-monospace,monospace;white-space:pre-wrap\">hart: JSX error\\n\\n'+((e&&e.message)?e.message:e)+'</pre>';}})();</script>"
@@ -1729,7 +1882,10 @@ func serve_runtime(fname) (res) {
     res = r
 }
 
-func serve_artifact(db, req, id, ver) (res) {
+// serve_artifact — render a stored artifact under its CSP. no_chrome=1 drops the hart chrome
+// (custom-domain / raw mode, #16 slice 1); base_over overrides the link base (matched-domain-wins)
+// — pass "" to use pubbase(req).
+func serve_artifact(db, req, id, ver, no_chrome, base_over) (res) {
     arows := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{id})
     ars := parse(arows, []ArtRow{})
     if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "text/plain; charset=utf-8", "artifact not found") }
@@ -1769,14 +1925,15 @@ func serve_artifact(db, req, id, ver) (res) {
     sqlite_close(db)
     hs := parse(hrows, []HtmlRow{})
     if len(hs) == 0 { return response("404 Not Found", "text/plain; charset=utf-8", "version not found") }
-    base := pubbase(req)
+    base := base_over
+    if base == "" { base = pubbase(req) }
     read_key := ""
     if ars[0].read_key_hash != "" {
         qk := query(req, "read_key")
         if qk != "" { read_key = qk } else { read_key = header(req, "x-hart-read-key") }
     }
-    page := render_page(hs[0].html, hs[0].title, data, id, base, read_key, ars[0].visibility)
-    if hs[0].format == "jsx" { page = render_page_jsx(hs[0].html, hs[0].title, data, id, base, read_key, ars[0].visibility) }
+    page := render_page(hs[0].html, hs[0].title, data, id, base, read_key, ars[0].visibility, no_chrome)
+    if hs[0].format == "jsx" { page = render_page_jsx(hs[0].html, hs[0].title, data, id, base, read_key, ars[0].visibility, no_chrome) }
     // live (D2 slice 2): inject the self-polling repainter (CSP relaxation handled by csp_for).
     if live == 1 { page = inject_live(page, id, poll_ms) }
     // resolve the CSP header by the artifact's mode (#16 slice 2): strict|landing|custom.
@@ -1895,7 +2052,7 @@ func is_version_seg(seg) (yes) {
 
 // parse /a/<id>, /a/<owner>/<artifact>, plus an optional trailing /latest or /v<n>.
 // The id is everything before a trailing version segment (so owner/artifact ids keep their slash).
-func handle_artifact(req, p) (res) {
+func handle_artifact(req, p, no_chrome) (res) {
     rest := substr(p, 3, len(p))   // strip "/a/"
     if rest == "" { return response("404 Not Found", "text/plain", "no id") }
     parts := split(rest, "/")
@@ -1912,7 +2069,7 @@ func handle_artifact(req, p) (res) {
     if id == "" { return response("404 Not Found", "text/plain", "no id") }
     if valid_id(id) == 0 { return response("400 Bad Request", "application/json", invalid_id_json()) }
     db := opendb()
-    res = serve_artifact(db, req, id, ver)
+    res = serve_artifact(db, req, id, ver, no_chrome, "")
 }
 
 // POST /v1/visibility?id=&visibility=&read_key=  — change an artifact's visibility/read-key
@@ -2194,6 +2351,20 @@ func hart_route(req) (res) {
     p := req.path
     qi := index(p, "?")
     if qi >= 0 { p = substr(p, 0, qi) }
+    // custom-domain routing (#16 slice 1): a GET to a page path on a non-canonical Host may be a
+    // mapped custom domain. Only "/" (mapping B) and "/a/..." page paths consult the domains table,
+    // so /v1, /_health, and assets are unaffected; data.json is never hijacked (falls through so a
+    // live mapped page can still poll its own data). The canonical HART_PUBLIC host is skipped.
+    if req.method == "GET" && (p == "/" || has_prefix(p, "/a/")) {
+        host := header(req, "host")
+        if host != "" && host != canonical_host() {
+            dr := domain_row(host)
+            if dr.domain != "" {
+                if p == "/" { return serve_domain_artifact(req, dr) }
+                if has_suffix(p, "/data.json") == false { return handle_artifact(req, p, dr.no_chrome) }
+            }
+        }
+    }
     if p == "/" { if cfg("HART_HOME") == "dashboard" { return serve_status(req) }  return serve_landing() }
     if p == "/llms.txt" { return serve_llms(req) }
     if p == "/guide.md" || p == "/guide" { return serve_guide(req) }
@@ -2285,6 +2456,9 @@ func hart_route(req) (res) {
     if req.method == "POST" && p == "/v1/refresh" { return h_refresh_set(req) }
     if req.method == "GET" && p == "/v1/refresh" { return h_refresh_get(req) }
     if req.method == "POST" && p == "/v1/live" { return h_live(req) }
+    if req.method == "POST" && p == "/v1/domain" { return h_domain_set(req) }
+    if req.method == "GET" && p == "/v1/domain" { return h_domain_get(req) }
+    if req.method == "DELETE" && p == "/v1/domain" { return h_domain_rm(req) }
     if req.method == "GET" && p == "/v1/license/status" { return h_license_status(req) }
     if req.method == "POST" && p == "/v1/license" { return h_license_set(req) }
     if req.method == "GET" && p == "/v1/audit" { return h_audit(req) }
@@ -2303,7 +2477,7 @@ func hart_route(req) (res) {
         return h_unlock(req, rest)
     }
     if req.method == "GET" && has_prefix(p, "/a/") && has_suffix(p, "/data.json") { return h_artifact_data(req, substr(p, 3, len(p) - 10)) }
-    if req.method == "GET" && has_prefix(p, "/a/") { return handle_artifact(req, p) }
+    if req.method == "GET" && has_prefix(p, "/a/") { return handle_artifact(req, p, 0) }
     res = response("404 Not Found", "text/plain; charset=utf-8", "not found")
 }
 
@@ -3214,6 +3388,86 @@ func cmd_rm(a) {
     say(resp)
 }
 
+// traefik_yaml — a ready Traefik dynamic-config block (mapping B, host-only): route the custom
+// domain's Host to hart, TLS via letsencrypt. Hart does NOT write this — the operator/agent drops it
+// into the proxy's watched dir. service_url is hart's internal address as Traefik reaches it.
+func traefik_yaml(domain, service_url) (y) {
+    slug := replace(domain, ".", "-")
+    y = "http:\n"
+    y = y + "  routers:\n"
+    y = y + "    hart-" + slug + ":\n"
+    y = y + "      entryPoints: [https]\n"
+    y = y + "      rule: Host(`" + domain + "`)\n"
+    y = y + "      service: hart-" + slug + "\n"
+    y = y + "      tls: { certResolver: letsencrypt }\n"
+    y = y + "  services:\n"
+    y = y + "    hart-" + slug + ":\n"
+    y = y + "      loadBalancer:\n"
+    y = y + "        servers:\n"
+    y = y + "          - url: '" + service_url + "'\n"
+}
+
+// hart domain <id> <domain> [--version <n>] [--chrome] [--emit-traefik [--service-url <url>]]
+// Map a custom domain to an artifact (served by Host, chromeless by default). --emit-traefik prints
+// the Traefik block to STDOUT (redirect it into the proxy's watched dir); the API confirmation then
+// goes to stderr. Provisioning stays in Traefik — hart only records the mapping + serves it.
+func cmd_domain(a) {
+    if len(a) < 4 { die(80, "usage: hart domain <id> <domain> [--version <n>] [--chrome] [--emit-traefik [--service-url <url>]]") }
+    require_valid_id(a[2])
+    id := a[2]
+    domain := to_lower(a[3])
+    url := hart_url() + "/v1/domain?domain=" + url_encode(domain) + "&id=" + url_encode(id)
+    ver := flagv(a, "--version", "")
+    if ver != "" { url = url + "&version=" + url_encode(ver) }
+    if has_flag(a, "--chrome") == 1 { url = url + "&chrome=1" }
+    o := substr(id, 0, index(id, "/"))
+    headers := []string{}
+    tok := client_token()
+    if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
+    ok := owner_key_of(a, o)
+    if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
+    mk := flagv(a, "--member-key", cfg("HART_MEMBER_KEY"))
+    if mk != "" { headers = append(headers, "x-hart-member-key: " + mk) }
+    status, resp, err := http_request("POST", url, headers, "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }
+    if has_flag(a, "--emit-traefik") == 1 {
+        svc := flagv(a, "--service-url", "http://127.0.0.1:8799")
+        write(2, resp + "\n")
+        say(traefik_yaml(domain, svc))
+    } else {
+        say(resp)
+    }
+}
+
+// hart domain-rm <domain> [--owner-key <k>]
+func cmd_domain_rm(a) {
+    if len(a) < 3 { die(80, "usage: hart domain-rm <domain> [--owner-key <k>]") }
+    domain := to_lower(a[2])
+    headers := []string{}
+    tok := client_token()
+    if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
+    ok := flagv(a, "--owner-key", cfg("HART_OWNER_KEY"))
+    if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
+    mk := flagv(a, "--member-key", cfg("HART_MEMBER_KEY"))
+    if mk != "" { headers = append(headers, "x-hart-member-key: " + mk) }
+    status, resp, err := http_request("DELETE", hart_url() + "/v1/domain?domain=" + url_encode(domain), headers, "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { write(2, resp + "\n"); exit(80) }
+    say(resp)
+}
+
+// hart domains [--owner <who>]  — list custom-domain mappings (JSON).
+func cmd_domains(a) {
+    url := hart_url() + "/v1/domain"
+    o := flagv(a, "--owner", "")
+    if o != "" { url = url + "?owner=" + url_encode(o) }
+    status, resp, err := http_request("GET", url, []string{}, "")
+    if err != "" { die(100, "cannot reach hart daemon: " + err) }
+    if status != 200 { die(90, "domains failed (" + str(status) + ")") }
+    say(resp)
+}
+
 // hart data <id> '<json>'   |   hart data --owner X --artifact Y '<json>'
 // updates the artifact's live data (the template re-renders with it).
 func cmd_data(a) {
@@ -3776,6 +4030,9 @@ func main() {
     if cmd == "mcp" { cmd_mcp(a); return }
     if cmd == "feedback" { cmd_feedback(a); return }
     if cmd == "rm" { cmd_rm(a); return }
+    if cmd == "domain" { cmd_domain(a); return }
+    if cmd == "domain-rm" { cmd_domain_rm(a); return }
+    if cmd == "domains" { cmd_domains(a); return }
     if cmd == "owner-key" { cmd_owner_key(a); return }
     if cmd == "admin" { cmd_admin(a); return }
     write(2, "{\"ok\":false,\"error\":\"unknown command: " + cmd + "\"}\n")
