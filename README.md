@@ -125,6 +125,12 @@ attack or exfiltration vector. A **publish-time linter** rejects external refs +
 (HTTP 422) unless you pass `--force`; `hart publish --dry-run` lints without storing. Full spec:
 [`CONTRACT.md`](CONTRACT.md).
 
+**Sales funnels / landing pages** are the deliberate exception: publish with `--csp-mode landing`
+and hart relaxes the CSP for the marketing sources real funnels need (Stripe JS, GA/GTM analytics,
+web fonts, YouTube/Loom embeds, outbound `connect-src`) and skips the self-contained linter for
+that artifact. `--csp-mode custom --csp-policy '<CSP>'` serves an exact policy you supply. The
+default stays `strict` — the full lockdown above.
+
 ## Versioning
 
 Re-publishing the same `--owner/--artifact` appends a version; `latest` tracks newest, old
@@ -149,6 +155,29 @@ hart data you/sales '{"points":[3,1,4,1,5]}'   # re-renders, same URL — great 
 `hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a **same-origin**
 React+Babel runtime (`/_hart/runtime/*`) and transpiles **in the browser**. No build step, no CDN.
 `React`/`ReactDOM` are globals; render into `#root`.
+
+## Custom domains (multi-tenant)
+
+Serve a public artifact on a creator's **own domain** — hart the page engine behind a
+creator-commerce platform (self-hosted Gumroad for landings/playbooks). hart maps `Host → artifact`
+and serves it at `/`; **provisioning stays in your reverse proxy** (Traefik), hart only records the
+mapping and serves it by the `Host` header.
+
+```sh
+hart domain you/landing shop.example.com                 # map — served chromeless at /
+hart domain you/landing shop.example.com --emit-traefik  # + print a ready Traefik router block
+hart domains                                             # list mappings (JSON)
+hart domain-rm shop.example.com                          # unmap
+```
+
+A mapped page is served **chromeless** (the hart chrome/links dropped) and its absolute links use
+the custom host — pair with `--csp-mode landing` for funnels. A **private** mapped artifact still
+requires its read key. Provisioning is Traefik's job: `--emit-traefik --service-url <hart-url>`
+prints a host-only router block for the proxy's watched dir, and an optional `HART_DOMAIN_HOOK` on
+the daemon runs `<hook> add|remove <domain> <owner> <artifact>` on changes so an external
+provisioner can reconcile the proxy automatically (off by default). A platform backend can also pull
+a raw stored body server-side with `hart get <id> --html [--read-key <pw>]` (private needs the read
+key, no owner/admin token) to re-serve it or deliver a gated download.
 
 ## Visibility & discovery
 
@@ -179,7 +208,8 @@ Non-interactive and idempotent. `hart guide` prints the full manual.
 | `data <id> '<json>'` | update the live data — template re-renders |
 | `visibility <id> <unlisted\|public\|private> [--read-key --clear-read-key]` | change visibility |
 | `versions <id>` / `rollback <id> <v>` | history / instant revert |
-| `list [--owner <who>]` / `get <id>` / `rm <id>` | manage artifacts |
+| `list [--owner <who>]` / `get <id> [--html --read-key]` / `rm <id>` | manage artifacts (`get --html` = raw stored body) |
+| `domain <id> <domain> [--chrome --emit-traefik]` / `domain-rm <domain>` / `domains` | map a custom domain to an artifact (served by `Host`; provisioning stays in Traefik) |
 | `stats <id>` | living-deliverable analytics — views, last view, freshness, top referrers (server-side, CSP-safe) |
 | `fresh <id> <30s\|15m\|2h\|1d\|off>` / `stale [--owner <who>] [--older-than <dur>]` | freshness SLA + the staleness signal (JSON; your agent alerts) |
 | `explore [query]` | public discovery feed (JSON) |
