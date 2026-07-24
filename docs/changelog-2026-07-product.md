@@ -1,6 +1,18 @@
 
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-fuchsia-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🌐</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Custom domains &amp; landing pages</h3>
+              <p class="text-white/40 leading-relaxed">hart is now multi-tenant — the page engine behind a creator-commerce platform. Point <code>shop.example.com</code> at hart and it serves a chosen artifact by the <code>Host</code> header, chromeless, at the domain root (<code>hart domain you/landing shop.example.com</code>; <code>--emit-traefik</code> prints a ready proxy config). Provisioning stays in your reverse proxy — hart just records the mapping and serves it. Real sales funnels get a <code>--csp-mode landing</code> preset that allows Stripe, analytics, web fonts, and YouTube/Loom embeds (or <code>--csp-mode custom</code> for an exact policy), while every other artifact keeps the strict lockdown. And a platform backend can fetch a private artifact's raw body with just its read key (<code>hart get id --html --read-key</code>) to re-serve it or deliver a gated download.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
             <div class="w-12 h-12 rounded-lg bg-teal-500/10 flex items-center justify-center flex-shrink-0">
               <span class="text-2xl">🔑</span>
             </div>

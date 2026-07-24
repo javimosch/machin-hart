@@ -41,6 +41,18 @@
 
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-fuchsia-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🌐</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Custom domains &amp; landing pages</h3>
+              <p class="text-white/40 leading-relaxed">hart is now multi-tenant — the page engine behind a creator-commerce platform. Point <code>shop.example.com</code> at hart and it serves a chosen artifact by the <code>Host</code> header, chromeless, at the domain root (<code>hart domain you/landing shop.example.com</code>; <code>--emit-traefik</code> prints a ready proxy config). Provisioning stays in your reverse proxy — hart just records the mapping and serves it. Real sales funnels get a <code>--csp-mode landing</code> preset that allows Stripe, analytics, web fonts, and YouTube/Loom embeds (or <code>--csp-mode custom</code> for an exact policy), while every other artifact keeps the strict lockdown. And a platform backend can fetch a private artifact's raw body with just its read key (<code>hart get id --html --read-key</code>) to re-serve it or deliver a gated download.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
             <div class="w-12 h-12 rounded-lg bg-teal-500/10 flex items-center justify-center flex-shrink-0">
               <span class="text-2xl">🔑</span>
             </div>
@@ -218,13 +230,22 @@
             <span>🚀</span> Features
           </h2>
           <ul class="space-y-2 text-slate-300">
-            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>feat: draggable hart pill with localStorage position persistence</li>
-            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>feat: memory layer — provenance, search, lineage, diff, checkpoints, links (closes #15)</li>
-            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>feat: MCP hart_search, hart_meta, hart_lineage tools</li>
-            <li><span class="text-slate-500 text-sm mr-3">[22/07]</span>feat: hart owner-key — set/rotate namespace owner keys from the CLI</li>
-            <li><span class="text-slate-500 text-sm mr-3">[22/07]</span>feat: per-owner and per-read keys in flat .hart.env / ~/.hart/config</li>
-            <li><span class="text-slate-500 text-sm mr-3">[22/07]</span>feat: .hart.env + ~/.hart/config loader for hart CLI</li>
-            <li><span class="text-slate-500 text-sm mr-3">[22/07]</span>feat: inject a small top-right semitransparent chrome into rendered artifacts</li>
+            <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>feat: custom-domain routing — serve artifacts by Host (#16 slice 1)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>feat: server-side read-key fetch of raw artifact body (#16 slice 3)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>feat: CSP presets for multi-tenant landings/funnels (#16 slice 2)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>feat: draggable hart pill with localStorage position persistence.</li>
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>feat: memory layer — provenance, search, lineage, diff, checkpoints, links.</li>
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>feat: inject a small top-right semitransparent chrome into rendered artifacts</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>feat: friendly agent JSON errors for private artifacts + ?read_key support</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>feat: polish slug validation, unify /a/* errors, and extend BYOK ops guide (#12)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>feat: tighten valid_id to reject malformed owner/artifact paths (#11)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>feat: close artifact-slug validation gaps and expand hardening tests (#10)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>feat: close team/join slug validation gaps and expand hardening tests (#9)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/07]</span>feat: extend owner-slug validation to list/stale/data routes and expand hardening tests (#8)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/07]</span>feat: complete MCP/CLI slug validation and expand hardening tests (#7)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/07]</span>feat: harden CLI/MCP id validation and extend BYOK ops guide (#6)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/07]</span>feat: extend valid_id hardening to all routes, CLI, and BYOK discoverability (#5)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[20/07]</span>feat: harden daemon (machweb harden, ID validation) and document BYOK setup (#4)</li>
             <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: teams SSO — agent-first self-onboarding via `hart join` (teams Part 2)</li>
             <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: hart upgrade — agent-first purchase (mint a checkout link) (M3 Plan A)</li>
             <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>feat: hart Pro teams — per-member keys for a shared namespace (M3 Plan A, slice 1)</li>
@@ -257,6 +278,7 @@
             <span>🐛</span> Bug Fixes
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>fix(site): correct GitHub links (machin-hart) + readable code chips in dark mode</li>
             <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>fix: rm/admin-mv now maintain the refresh table (no orphan self-refresh sources)</li>
             <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>fix(digest): use timezone-aware UTC (drop utcnow deprecation warning)</li>
             <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>fix(dashboard): readable inline <code> on the dark page (login + /_status)</li>
@@ -269,12 +291,17 @@
             <span>📚</span> Documentation
           </h2>
           <ul class="space-y-2 text-slate-300">
-            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>docs: update skill.md and agent skill files (agents, claude, opencode) for memory layer</li>
-            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>docs: update cmd_help with memory-layer commands and data provenance flags</li>
-            <li><span class="text-slate-500 text-sm mr-3">[22/07]</span>docs: add AGENTS.md with project conventions and config-loading notes</li>
-            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>docs: add workflow caveats and agent self-improvement note to guide/skill/llms</li>
+            <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>docs: wire custom domains + CSP presets + read-key fetch into all doc surfaces (#16 slice 4)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>docs: update July changelog with memory layer, draggable chrome, per-owner keys.</li>
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>docs: update skill.md and agent skill files for memory layer; tweak chrome pill.</li>
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>docs: update cmd_help with memory-layer commands and data provenance flags.</li>
+            <li><span class="text-slate-500 text-sm mr-3">[22/07]</span>docs: document curl HTTP auth headers in BYOK guide (#14)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>docs: make docs/ GitHub Pages site the project homepage; hart.intrane.fr is the demo instance</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>docs: clarify BYOK key choices and agent setup paths (#13)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>docs: update July changelog and rebuild docs/ static site</li>
             <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>docs: add in-repo hart-artifact-design skill for self-hosting users</li>
-            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>site: rebuild docs/ landing with updated skill/guide strings</li>
+            <li><span class="text-slate-500 text-sm mr-3">[21/07]</span>docs: add workflow caveats and agent self-improvement note to guide/skill/llms</li>
+            <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>docs: refresh site + July changelog for the D2/M3 arc</li>
             <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>docs: complete the hart help JSON catalog — Pro commands + env + guide</li>
             <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>docs: wire teams SSO / OIDC env vars into the skill + installer (M3 Plan A)</li>
             <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>docs: hosted-tier interest CTA — email javi@intrane.fr</li>
@@ -299,7 +326,6 @@
             <span>🧪</span> Testing
           </h2>
           <ul class="space-y-2 text-slate-300">
-            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>test: 26 memory-layer regression checks (provenance, search, meta, diff, lineage, checkpoint, labels, link, related, MCP) — 194 total</li>
             <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>test: end-to-end regression suite (test.sh) — 38 checks over the whole surface</li>
           </ul>
         </section>
@@ -318,6 +344,10 @@
             <span>💼</span> Other
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>Add per-owner and per-read keys in flat .hart.env / ~/.hart/config.</li>
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>Add AGENTS.md with project conventions and config-loading notes.</li>
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>Add .hart.env + ~/.hart/config loader for hart CLI.</li>
+            <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>Add `hart owner-key` to set/rotate namespace owner keys.</li>
             <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>harden: anti-clickjacking on the operator dashboard (Phase 0 of origin isolation)</li>
             <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>ops: scripts/deploy.sh — deploy with backup rotation (closes #3)</li>
             <li><span class="text-slate-500 text-sm mr-3">[16/07]</span>peage overage: X-Peage-Wallet buys past the free rate limit (publish + data)</li>
