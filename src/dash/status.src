@@ -33,8 +33,9 @@ func dash_hsize(n) (s) {
 }
 
 // fleet_qs — rebuild the filter portion of the /_fleet query string for pagination links.
-func fleet_qs(q, has_domains, limit) (s) {
+func fleet_qs(owner, q, has_domains, limit) (s) {
     s = "limit=" + str(limit)
+    if owner != "" { s = s + "&owner=" + url_encode(owner) }
     if q != "" { s = s + "&q=" + url_encode(q) }
     if has_domains == "1" { s = s + "&has_domains=1" }
 }
@@ -157,10 +158,12 @@ func fleet_login_page(errmsg) (res) {
     if errmsg != "" { em = "<p class=\"mt-3 text-xs text-danger-400\">" + ui_esc(errmsg) + "</p>" }
     inner := "<div class=\"mx-auto max-w-sm\">"
     inner = inner + "<header class=\"mb-4 flex items-center gap-3\"><h1 class=\"text-xl font-semibold tracking-tight\">hart</h1>" + ui_badge("operator", "blue") + "</header>"
-    inner = inner + ui_card("Operator sign-in", "<form method=\"POST\" action=\"/_fleet/login\" class=\"flex flex-col gap-3\"><p class=\"text-sm text-muted\">Enter the instance admin token (<code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 text-ink dark:text-ink-100\">HART_ADMIN_TOKEN</code>) to view the fleet.</p><input type=\"password\" name=\"token\" placeholder=\"admin token\" autofocus autocomplete=\"current-password\" class=\"w-full rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm text-ink\"><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">View fleet</button>" + em + "</form>")
+    form := "<form id=\"flogin\" method=\"POST\" action=\"/_fleet/login\" class=\"flex flex-col gap-3\"><p class=\"text-sm text-muted\">Enter the instance admin token (<code class=\"rounded bg-surface-100 dark:bg-surface-800 px-1 py-0.5 text-ink dark:text-ink-100\">HART_ADMIN_TOKEN</code>) to view the fleet.</p><input type=\"password\" name=\"token\" placeholder=\"admin token\" autofocus autocomplete=\"current-password\" class=\"w-full rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm text-ink\"><label class=\"flex items-center gap-2 text-sm text-muted\"><input type=\"checkbox\" name=\"remember\" value=\"1\" class=\"rounded accent-accent\"> Remember this token on this device</label><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">View fleet</button>" + em + "</form>"
+    form = form + "<script>(function(){var f=document.getElementById('flogin');var t=localStorage.getItem('hart_admin_token');if(t){f.token.value=t;f.remember.checked=true;}f.addEventListener('submit',function(){if(f.remember.checked){localStorage.setItem('hart_admin_token',f.token.value);}else{localStorage.removeItem('hart_admin_token');}});})();</script>"
+    inner = inner + ui_card("Operator sign-in", form)
     inner = inner + "</div>"
     r := response("401 Unauthorized", "text/html; charset=utf-8", dash_page(inner))
-    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'self'; frame-ancestors 'none'")
+    r = with_header(r, "Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; form-action 'self'; frame-ancestors 'none'")
     r = with_header(r, "Cache-Control", "no-store")
     r = no_frame(r)
     res = r
@@ -215,12 +218,18 @@ func serve_fleet(req) (res) {
     if limit > 500 { limit = 500 }
     page := parse_int(query(req, "page"))
     if page <= 0 { page = 1 }
+    owner := trim(query(req, "owner"))
     q := trim(query(req, "q"))
     has_domains := query(req, "has_domains")
     offset := (page - 1) * limit
 
     where := "WHERE 1=1"
     args := []string{}
+    if owner != "" {
+        like := "%" + owner + "%"
+        where = where + " AND LOWER(a.owner) LIKE ?"
+        args = append(args, like)
+    }
     if q != "" {
         like := "%" + q + "%"
         where = where + " AND (LOWER(a.id) LIKE ? OR LOWER(a.title) LIKE ?)"
@@ -339,7 +348,7 @@ func serve_fleet(req) (res) {
         arows = append(arows, ui_tr(cells))
     }
     // filter form + pagination
-    qs := fleet_qs(q, has_domains, limit)
+    qs := fleet_qs(owner, q, has_domains, limit)
     chk := ""
     if has_domains == "1" { chk = " checked" }
     opts := ""
@@ -349,7 +358,7 @@ func serve_fleet(req) (res) {
         if opt == str(limit) { sel = " selected" }
         opts = opts + "<option value=\"" + opt + "\"" + sel + ">" + opt + "</option>"
     }
-    filter_html := "<form method=\"GET\" action=\"/_fleet\" class=\"mb-4 flex flex-wrap items-end gap-3\"><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">search</label><input type=\"search\" name=\"q\" value=\"" + ui_esc(q) + "\" placeholder=\"id or title\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">has domain</label><input type=\"checkbox\" name=\"has_domains\" value=\"1\"" + chk + " class=\"h-5 w-5 rounded accent-accent\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">per page</label><select name=\"limit\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\">" + opts + "</select></div><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">Filter</button></form>"
+    filter_html := "<form method=\"GET\" action=\"/_fleet\" class=\"mb-4 flex flex-wrap items-end gap-3\"><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">owner</label><input type=\"search\" name=\"owner\" value=\"" + ui_esc(owner) + "\" placeholder=\"owner\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">search</label><input type=\"search\" name=\"q\" value=\"" + ui_esc(q) + "\" placeholder=\"id or title\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">has domain</label><input type=\"checkbox\" name=\"has_domains\" value=\"1\"" + chk + " class=\"h-5 w-5 rounded accent-accent\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">per page</label><select name=\"limit\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\">" + opts + "</select></div><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">Filter</button></form>"
 
     pager := "<div class=\"mt-4 flex flex-wrap items-center gap-3 text-sm\">"
     if page > 1 {
