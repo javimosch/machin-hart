@@ -44,5 +44,6 @@ The examples below use the public demo instance at `https://hart.intrane.fr`; re
 - https://hart.intrane.fr/install.sh — one-line CLI install: `curl -fsSL https://hart.intrane.fr/install.sh | sh` (drops `hart` on PATH, pre-pointed at the demo instance).
 - https://hart.intrane.fr/explore — public discovery feed (HTML); `/v1/public?q=` for JSON.
 - https://hart.intrane.fr/o/<owner> — an owner's public artifacts.
+- https://hart.intrane.fr/v1/skills/<owner> — compact skill catalog (title, description, keywords, url). Use `hart list --owner <who> --format skills`.
 - https://hart.intrane.fr/a/<owner>/<artifact>[/latest|/v<n>] — a published artifact.
 - https://hart.intrane.fr/_health — liveness JSON. /_status — instance dashboard.

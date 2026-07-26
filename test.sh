@@ -374,13 +374,43 @@ has "memory: related finds dash" "$R" 'memo/dash'
 # invalid parent rejected
 R=$(./hart publish "$P" --owner memo --artifact orphan --parent memo/nope >/dev/null 2>&1)
 eq "memory: invalid parent rejected" "$?" "80"
+
+echo "== skill catalog =="
+SKILL="$TMP/skill.html"
+printf '<!doctype html><html><head><meta name="title" content="Skill Title"><meta name="description" content="A skill catalog entry."><meta name="keywords" content="skill, agent, catalog"></head><body><h1>skill</h1></body></html>' > "$SKILL"
+R=$(./hart publish "$SKILL" --owner acme --artifact skill --title "CLI Title")
+has "skill: get has description" "$(./hart get acme/skill)" '"description":"A skill catalog entry."'
+has "skill: get has keywords" "$(./hart get acme/skill)" '["skill","agent","catalog"]'
+eq "skill: title flag wins over meta title" "$(./hart get acme/skill | jget title)" "CLI Title"
+
+# re-publish with updated description; title should stay because --title is passed
+printf '<!doctype html><html><head><meta name="description" content="Updated description."><meta name="keywords" content="updated"></head><body><h1>skill</h1></body></html>' > "$SKILL"
+R=$(./hart publish "$SKILL" --owner acme --artifact skill --title "CLI Title")
+has "skill: re-publish updates description" "$(./hart get acme/skill)" '"description":"Updated description."'
+has "skill: re-publish updates keywords" "$(./hart get acme/skill)" '["updated"]'
+eq "skill: title preserved on re-publish" "$(./hart get acme/skill | jget title)" "CLI Title"
+
+# explicit --meta wins over HTML extraction
+R=$(./hart publish "$SKILL" --owner acme --artifact skill --title "CLI Title" --meta '{"description":"Explicit meta wins."}')
+has "skill: explicit --meta wins over html" "$(./hart get acme/skill)" '"description":"Explicit meta wins."'
+
+# list skills and search by extracted keyword
+R=$(./hart list --owner acme --format skills)
+has "skill: list --format skills" "$R" '"name":"skill"'
+has "skill: skills url" "$R" '/a/acme/skill"'
+R=$(./hart search --tag updated --owner acme)
+has "skill: search by extracted keyword" "$R" 'acme/skill'
+
 # MCP tools
+
 MCP_MEM=$(printf '%s\n' '{"jsonrpc":"2.0","id":20,"method":"tools/call","params":{"name":"hart_search","arguments":{"q":"q3"}}}' | ./hart mcp 2>/dev/null)
 has "mcp hart_search returns result" "$MCP_MEM" 'memo/child'
 MCP_MEM=$(printf '%s\n' '{"jsonrpc":"2.0","id":21,"method":"tools/call","params":{"name":"hart_lineage","arguments":{"id":"memo/child"}}}' | ./hart mcp 2>/dev/null)
 has "mcp hart_lineage returns lineage" "$MCP_MEM" 'memo/brief'
 MCP_MEM=$(printf '%s\n' '{"jsonrpc":"2.0","id":22,"method":"tools/call","params":{"name":"hart_meta","arguments":{"id":"memo/child"}}}' | ./hart mcp 2>/dev/null)
 has "mcp hart_meta returns meta" "$MCP_MEM" 'cost'
+MCP_MEM=$(printf '%s\n' '{"jsonrpc":"2.0","id":23,"method":"tools/call","params":{"name":"hart_list","arguments":{"owner":"acme","format":"skills"}}}' | ./hart mcp 2>/dev/null)
+has "mcp hart_list format=skills" "$MCP_MEM" 'acme/skill'
 
 eq "API admin mv invalid to owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/page&to=!!!/x")" "400"
 eq "API admin mv invalid to artifact rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=acme/page&to=acme/!!!")" "400"
