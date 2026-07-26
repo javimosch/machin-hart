@@ -368,7 +368,7 @@ func serve_fleet(req) (res) {
             key := ui_badge("open", "neutral")
             if o.has_key == 1 { key = ui_badge("keyed", "green") }
             owner_link := "<span class=\"text-muted\">" + ui_esc(oname) + "</span>"
-            if o.owner != "" { owner_link = "<a class=\"text-accent hover:underline\" href=\"" + base + "/_fleet?owner=" + url_encode(o.owner) + "\">" + ui_esc(oname) + "</a>" }
+            if o.owner != "" { owner_link = "<a class=\"text-accent hover:underline\" href=\"" + base + "/_fleet?owner=" + url_encode(o.owner) + "#artifacts\">" + ui_esc(oname) + "</a>" }
             cells := ui_td(owner_link)
             cells = cells + ui_td("<span class=\"text-ink\">" + str(o.cnt) + "</span>")
             cells = cells + ui_td("<span class=\"text-muted\">" + dash_hsize(o.bytes) + "</span>")
@@ -434,7 +434,7 @@ func serve_fleet(req) (res) {
     }
     pager = pager + "</div>"
 
-    h = h + ui_card("All artifacts", filter_html + ui_table([]string{"artifact", "visibility", "domains", "views", "updated"}, arows) + pager)
+    h = h + "<section id=\"artifacts\">" + ui_card("All artifacts", filter_html + ui_table([]string{"artifact", "visibility", "domains", "views", "updated"}, arows) + pager) + "</section>"
 
     // recent feedback (hart feedback + the relay dual-write land here)
     if len(fbs) > 0 {
