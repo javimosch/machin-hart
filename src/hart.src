@@ -496,11 +496,17 @@ func as_meta(s) (out) {
 // ---- skill metadata extraction -------------------------------------------------
 
 // extract_meta — return the `content` of the first `<meta name="<name>">` tag in html.
-// Handles single or double quotes and attribute order. Returns "" if not found.
+// Handles single or double quotes and either attribute order. Returns "" if not found.
 func extract_meta(html, name) (val) {
     val = ""
     if html == "" || name == "" { return }
     tag := regex_find(html, "<meta[^>]*name=[\"']?" + name + "[\"']?[^>]*>")
+    if tag == "" {
+        tag = regex_find(html, "<meta[^>]*content=[\"'][^\"']*[\"'][^>]*name=[\"']?" + name + "[\"']?[^>]*>")
+    }
+    if tag == "" {
+        tag = regex_find(html, "<meta[^>]*content='[^']*'[^>]*name=[\"']?" + name + "[\"']?[^>]*>")
+    }
     if tag == "" { return }
     vals := regex_groups(tag, "content=\"([^\"]*)\"")
     if len(vals) > 1 { val = vals[1]; return }
@@ -508,33 +514,127 @@ func extract_meta(html, name) (val) {
     if len(vals) > 1 { val = vals[1] }
 }
 
+// normalize_skill_keywords — comma-separated or JSON array → deduped JSON array (max 20).
+func normalize_skill_keywords(s) (out) {
+    out = "[]"
+    if s == "" { return }
+    s = trim(s)
+    if substr(s, 0, 1) == "[" {
+        _, e := json_get(s, "[0]")
+        if e == "" {
+            out = "["
+            idx := 0
+            first := 1
+            count := 0
+            seen := ","
+            while count < 20 {
+                v, er := json_get(s, "[" + str(idx) + "]")
+                if er != "" { break }
+                t := trim(unq(v))
+                if t != "" {
+                    low := to_lower(t)
+                    needle := "," + low + ","
+                    if index(seen, needle) < 0 {
+                        seen = seen + low + ","
+                        if first == 0 { out = out + "," }
+                        out = out + "\"" + jesc(t) + "\""
+                        first = 0
+                        count = count + 1
+                    }
+                }
+                idx = idx + 1
+            }
+            out = out + "]"
+            return
+        }
+    }
+    parts := split(s, ",")
+    out = "["
+    i := 0
+    first := 1
+    count := 0
+    seen := ","
+    while i < len(parts) && count < 20 {
+        t := trim(parts[i])
+        if t != "" {
+            low := to_lower(t)
+            needle := "," + low + ","
+            if index(seen, needle) < 0 {
+                seen = seen + low + ","
+                if first == 0 { out = out + "," }
+                out = out + "\"" + jesc(t) + "\""
+                first = 0
+                count = count + 1
+            }
+        }
+        i = i + 1
+    }
+    out = out + "]"
+}
+
 // skill_keywords — extract `<meta name="keywords">` and normalize to a JSON array string.
 func skill_keywords(html) (out) {
     out = "[]"
     raw := extract_meta(html, "keywords")
     if raw == "" { return }
-    out = normalize_tags(raw)
+    out = normalize_skill_keywords(raw)
 }
 
-// skill_meta_from_html — extract title/description/keywords from html `<meta>` tags.
-// Title falls back to fallback_title then fallback_name. Description has no fallback.
-func skill_meta_from_html(html, fallback_title, fallback_name) (title, description, keywords) {
+// skill_meta_from_frontmatter — parse `<!-- --- key: value ... --- -->` comment block.
+func skill_meta_from_frontmatter(html) (title, description, keywords) {
+    title = ""
+    description = ""
+    keywords = ""
+    if html == "" { return }
+    block := regex_find(html, "<!--\\s*---([\\s\\S]*?)---\\s*-->")
+    if block == "" { return }
+    vals := regex_groups(block, "<!--\\s*---([\\s\\S]*?)---")
+    if len(vals) < 2 { return }
+    lines := split(vals[1], "\n")
+    i := 0
+    while i < len(lines) {
+        line := trim(lines[i])
+        ci := index(line, ":")
+        if line != "" && ci >= 0 {
+            key := to_lower(trim(substr(line, 0, ci)))
+            val := trim(substr(line, ci + 1, len(line)))
+            if key == "title" && title == "" { title = val }
+            if key == "description" && description == "" { description = val }
+            if key == "keywords" && keywords == "" { keywords = val }
+        }
+        i = i + 1
+    }
+}
+
+// skill_meta_from_html — extract title/description/keywords from html `<meta>` tags only.
+func skill_meta_from_html(html) (title, description, keywords) {
     title = ""
     description = ""
     keywords = "[]"
-    if html == "" {
-        title = fallback_title
-        if title == "" { title = fallback_name }
-        return
-    }
+    if html == "" { return }
     title = trim(extract_meta(html, "title"))
     description = trim(extract_meta(html, "description"))
     keywords = skill_keywords(html)
+}
+
+// skill_meta_extract — frontmatter > HTML meta > fallback_title > fallback_name (no stored meta).
+func skill_meta_extract(html, fallback_title, fallback_name) (title, description, keywords) {
+    title = ""
+    description = ""
+    keywords = "[]"
+    fm_title, fm_desc, fm_kw := skill_meta_from_frontmatter(html)
+    if fm_title != "" { title = fm_title }
+    if fm_desc != "" { description = fm_desc }
+    if fm_kw != "" { keywords = normalize_skill_keywords(fm_kw) }
+    sm_title, sm_desc, sm_kw := skill_meta_from_html(html)
+    if title == "" { title = sm_title }
+    if description == "" { description = sm_desc }
+    if keywords == "[]" { keywords = sm_kw }
     if title == "" { title = fallback_title }
     if title == "" { title = fallback_name }
 }
 
-// skill_meta_resolve — prefer stored meta JSON, fall back to parsing the html body.
+// skill_meta_resolve — prefer stored meta JSON, then frontmatter, HTML meta, title, name.
 func skill_meta_resolve(html, meta, fallback_title, fallback_name) (title, description, keywords) {
     title = ""
     description = ""
@@ -546,10 +646,10 @@ func skill_meta_resolve(html, meta, fallback_title, fallback_name) (title, descr
     if m_desc != "" { description = trim(unq(m_desc)) }
     if m_kw != "" { keywords = m_kw }
     if title == "" || description == "" || keywords == "[]" {
-        sm_title, sm_desc, sm_kw := skill_meta_from_html(html, fallback_title, fallback_name)
-        if title == "" { title = sm_title }
-        if description == "" { description = sm_desc }
-        if keywords == "[]" { keywords = sm_kw }
+        ex_title, ex_desc, ex_kw := skill_meta_extract(html, fallback_title, fallback_name)
+        if title == "" { title = ex_title }
+        if description == "" { description = ex_desc }
+        if keywords == "[]" { keywords = ex_kw }
     }
     if title == "" { title = fallback_title }
     if title == "" { title = fallback_name }
@@ -1132,19 +1232,17 @@ func h_publish(req) (res) {
     ars := parse(arows, []ArtRow{})
     // on re-publish with no explicit --meta, start from existing meta so extracted fields update
     if id != "" && len(ars) > 0 && p_meta_raw == "" { p_meta = ars[0].meta }
-    // Extract skill-oriented metadata from html <meta> tags (title/description/keywords).
+    // Extract skill metadata: frontmatter > HTML meta > CLI title > slug.
     // When --meta is provided, it wins and extraction only adds missing keys.
     // When --meta is omitted, extraction overwrites existing html-derived keys.
-    meta_title := extract_meta(body, "title")
-    meta_desc := extract_meta(body, "description")
-    meta_kw := skill_keywords(body)
-    if title == "" && meta_title != "" { title = trim(meta_title) }
+    ext_title, ext_desc, ext_kw := skill_meta_extract(body, title, artifact)
+    if title == "" && ext_title != "" { title = ext_title }
     if p_meta_raw == "" {
-        if meta_desc != "" { p_meta = meta_set_string(p_meta, "description", trim(meta_desc)) }
-        if meta_kw != "[]" { p_meta = meta_set_json(p_meta, "keywords", meta_kw) }
+        if ext_desc != "" { p_meta = meta_set_string(p_meta, "description", ext_desc) }
+        if ext_kw != "[]" { p_meta = meta_set_json(p_meta, "keywords", ext_kw) }
     } else {
-        if meta_desc != "" { p_meta = meta_upsert_string(p_meta, "description", trim(meta_desc)) }
-        if meta_kw != "[]" { p_meta = meta_upsert_json(p_meta, "keywords", meta_kw) }
+        if ext_desc != "" { p_meta = meta_upsert_string(p_meta, "description", ext_desc) }
+        if ext_kw != "[]" { p_meta = meta_upsert_json(p_meta, "keywords", ext_kw) }
     }
     if id != "" && len(ars) > 0 {
         // next version = highest ever + 1 (NOT latest+1 — rollback can move latest backward)
