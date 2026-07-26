@@ -1,14 +1,22 @@
 # hart — Vision
 
-> **Artifacts for every agent.** A terminal agent generates a self-contained HTML deliverable
-> and gets back a live, shareable URL — from *any* agent, on *your* infrastructure, in one
+> **Artifacts, domains, and skills for every agent.** A terminal agent generates a self-contained
+> HTML deliverable and gets back a live, shareable URL — then maps it to a custom domain, and
+> exposes it as a discoverable skill — all from *any* agent, on *your* infrastructure, in one
 > CLI call.
 
 `hart` (HTML ARTifacts) is an agent-first, CLI-only micro-SaaS that publishes self-contained
-HTML to hosted URLs. It is the **deliverable layer for terminal agents** — the thing Claude
-Artifacts do inside claude.ai, unbundled and made universal: usable from Claude Code, Cursor,
-aider, Codex CLI, Gemini CLI, Aider, OpenClaw, cron jobs, or a shell script. One static MFL
-binary, fully **BYOK**, open-core, self-hostable.
+HTML to hosted URLs. It started as the **deliverable layer for terminal agents** — the thing
+Claude Artifacts do inside claude.ai, unbundled and made universal — and has grown into three
+complementary surfaces:
+
+1. **Artifacts** — one self-contained HTML/JSX file becomes a live, versioned, sandboxed URL.
+2. **Custom domains** — any artifact can be served as a first-class site on its own `Host`.
+3. **Skill registry** — artifacts declare `title`, `description`, and `keywords` in `<meta>` tags
+   and are exposed as a discoverable catalog via `GET /v1/skills/<owner>`.
+
+All three are usable from Claude Code, Cursor, aider, Codex CLI, Gemini CLI, Aider, OpenClaw,
+cron jobs, or a shell script. One static MFL binary, fully **BYOK**, open-core, self-hostable.
 
 ---
 
@@ -48,13 +56,25 @@ identical in spirit to the CSP that wraps Claude's own artifacts — is the prod
 ## What it is (and isn't)
 
 **It is:** a publish contract + a hosting daemon + an agent-first CLI. You point an agent at it,
-the agent ships HTML, a URL comes back. Self-host it on your own box, or use a thin hosted
+the agent ships a finished, self-contained HTML file, and gets back a URL — optionally mapped to a
+custom domain and listed as a discoverable skill. Self-host it on your own box, or use a thin hosted
 control plane. Bring your own storage and domain.
 
 **It is not:** a web framework, a site builder, a CMS, or a general PaaS. It hosts *finished,
 self-contained HTML artifacts* — one file, everything inlined, no build step, no server-side
 runtime. If it needs a bundler or a backend, it's out of scope. That constraint is a feature:
 it's what makes the security model tractable and the CLI a one-liner.
+
+## The three surfaces
+
+| Surface | What an agent gets | Headless contract |
+|---|---|---|
+| **Artifact host** | `https://host/a/<owner>/<artifact>` — versioned, sandboxed, shareable. | `hart publish page.html --owner O --artifact A` |
+| **Custom domains** | `https://shop.example.com/` served from the mapped artifact, chromeless by default. | `hart domain O/A shop.example.com` |
+| **Skill registry** | `GET /v1/skills/<owner>` listing title, description, keywords, visibility, url for every artifact. | `hart list --owner O --format skills` |
+
+The common denominator is the same self-contained HTML publish contract: one target, three
+consumption patterns.
 
 ## The BYOK / open-core model (same playbook as grepapi)
 
@@ -88,11 +108,16 @@ rather than a threat.
 
 ## Positioning
 
-> **The agent-first artifact host.** Any terminal agent, any infra, one CLI call from HTML to URL.
+> **The agent-first artifact host — now also the agent-first domain mapper and skill registry.**
+> Any terminal agent, any infra, one CLI call from HTML to URL, domain, or catalog entry.
 
 Not "a better Netlify" (that's human-first PaaS). Not "hosted Pastebin" (no rendering, no
 safety). It's the **publish primitive for the agent era** — the counterpart to grepapi (find),
 bland-cli (call), and crm-cli (remember) in an agent-first tool suite: `hart` is **show**.
+
+The skill-catalog angle makes `hart` a lightweight registry for agent *capabilities*, not just
+agent *outputs*: a runbook, a prompt pack, or a reusable workflow can be published as an artifact,
+annotated with `<meta>` tags, and discovered by other agents through `hart list --format skills`.
 
 ## Design principles
 
@@ -115,8 +140,10 @@ bland-cli (call), and crm-cli (remember) in an agent-first tool suite: `hart` is
   agent hands the URL to the user                     ─┘
         …data changes…                    hart data u/d '<json>'     → same URL, re-rendered
         …user edits request…              hart publish … (same u/d)  → new version, latest moves
+        …user wants a clean domain…       hart domain u/d shop.example.com
+        …other agents need to find it…    hart list --owner u --format skills
                                           hart rollback u/d 2         → instant revert
 ```
 
 When that loop is one CLI call on every agent runtime, `hart` is the default way agents ship
-what they make.
+what they make — and let other agents find and reuse it.

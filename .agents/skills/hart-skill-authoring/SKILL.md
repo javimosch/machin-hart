@@ -89,11 +89,12 @@ Use `--visibility unlisted` if no password is needed.
 ```bash
 wc -l fix-x.html          # should be < 200
 hart publish fix-x.html --dry-run
+hart list --owner jar-skills --format skills  # confirm the skill appears in the catalog
 claude -p "read https://hart.intrane.fr/a/jar-skills/fix-x and follow it"
 ```
 
 ## Notes
 
-- Description/keywords are read from `<meta>` tags. Once hart issue #17 lands, they will be exposed in skill catalog listings automatically.
+- Description/keywords are read from `<meta>` tags and exposed automatically in `hart list --owner <who> --format skills` and `GET /v1/skills/<owner>`.
 - For password-gated skills, agents fetch with `X-Hart-Read-Key: <password>` or `HART_READ_KEY`.
 - Re-publish the same `--owner/--artifact` to version the skill.

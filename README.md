@@ -299,9 +299,9 @@ any host must be blocked by the CSP.
 
 ## Positioning
 
-**The agent-first artifact host.** Not a Netlify (human-first PaaS), not a Pastebin (no rendering,
+**The agent-first artifact host, domain mapper, and skill registry.** Not a Netlify (human-first PaaS), not a Pastebin (no rendering,
 no safety) — the **publish primitive for the agent era**. Any terminal agent, any infra, one CLI
-call from HTML to URL. See [VISION.md](VISION.md) and the running [ROADMAP.md](ROADMAP.md).
+call from HTML to URL, custom domain, or catalog entry. See [VISION.md](docs/VISION.md) and the running [ROADMAP.md](ROADMAP.md).
 
 ## Status & license
 
