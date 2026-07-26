@@ -522,6 +522,9 @@ eq "/_fleet pagination shows page info" "$(curl -s -b "$TMP/cj" "$HART_URL/_flee
 has "/_fleet name filter finds secret" "$(curl -s -b "$TMP/cj" "$HART_URL/_fleet?q=secret")" "acme/secret"
 has "/_fleet has_domains filter shows mapped artifact" "$(curl -s -b "$TMP/cj" "$HART_URL/_fleet?has_domains=1")" "acme/secret"
 has "/_fleet owner filter shows acme artifacts" "$(curl -s -b "$TMP/cj" "$HART_URL/_fleet?owner=acme")" "acme/secret"
+has "/_fleet owner list partial filter" "$(curl -s -b "$TMP/cj" "$HART_URL/_fleet?own_q=acme")" ">acme<"
+eq "/_fleet owner list pagination shows page info" "$(curl -s -b "$TMP/cj" "$HART_URL/_fleet?own_limit=1" | grep -c "Page 1 of")" "1"
+has "/_fleet owner list has public page link" "$(curl -s -b "$TMP/cj" "$HART_URL/_fleet?own_q=acme")" "/o/acme"
 has "/_fleet is anti-clickjacking (X-Frame-Options DENY)" "$(curl -s -D - -o /dev/null -b "$TMP/cj" "$HART_URL/_fleet")" "X-Frame-Options: DENY"
 has "admin cookie is SameSite=Strict" "$(curl -s -D - -o /dev/null -X POST -d "token=$HART_ADMIN_TOKEN" "$HART_URL/_fleet/login")" "SameSite=Strict"
 

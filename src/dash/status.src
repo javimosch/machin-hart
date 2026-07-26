@@ -40,6 +40,14 @@ func fleet_qs(owner, q, has_domains, limit) (s) {
     if has_domains == "1" { s = s + "&has_domains=1" }
 }
 
+// fleet_owner_qs — rebuild the owner-list filter portion of the /_fleet query string.
+func fleet_owner_qs(owner, own_q, own_limit) (s) {
+    s = ""
+    if owner != "" { s = s + "owner=" + url_encode(owner) + "&" }
+    s = s + "own_limit=" + str(own_limit)
+    if own_q != "" { s = s + "&own_q=" + url_encode(own_q) }
+}
+
 func serve_status(req) (res) {
     db := opendb()
     base := pubbase(req)
@@ -210,7 +218,34 @@ func serve_fleet(req) (res) {
     d_art := dash_count(db, "SELECT COUNT(*) AS n FROM artifacts WHERE created > " + cut7)
     d_act := dash_count(db, "SELECT COUNT(*) AS n FROM artifacts WHERE updated > " + cut7)
     bytes := dash_bytes(db)
-    ownrows := sqlite_query(db, "SELECT a.owner AS owner, COUNT(DISTINCT a.id) AS cnt, MAX(a.updated) AS updated, COALESCE(SUM(LENGTH(v.html)),0) AS bytes, CASE WHEN o.key_hash IS NOT NULL AND o.key_hash != '' THEN 1 ELSE 0 END AS has_key FROM artifacts a LEFT JOIN versions v ON v.artifact_id = a.id LEFT JOIN owners o ON o.owner = a.owner GROUP BY a.owner ORDER BY bytes DESC", []string{})
+
+    // owner list pagination + filter state
+    own_q := trim(query(req, "own_q"))
+    own_limit := parse_int(query(req, "own_limit"))
+    if own_limit <= 0 { own_limit = 10 }
+    if own_limit > 100 { own_limit = 100 }
+    own_page := parse_int(query(req, "own_page"))
+    if own_page <= 0 { own_page = 1 }
+    own_offset := (own_page - 1) * own_limit
+
+    own_where := "WHERE 1=1"
+    own_args := []string{}
+    if own_q != "" {
+        own_like := "%" + own_q + "%"
+        own_where = own_where + " AND LOWER(a.owner) LIKE ?"
+        own_args = append(own_args, own_like)
+    }
+
+    own_count_rows := sqlite_query(db, "SELECT COUNT(DISTINCT a.owner) AS n FROM artifacts a " + own_where, own_args)
+    own_count_rs := parse(own_count_rows, []CntRow{})
+    own_total := 0
+    if len(own_count_rs) > 0 { own_total = own_count_rs[0].n }
+
+    if own_offset >= own_total && own_total > 0 { own_page = 1; own_offset = 0 }
+    own_pages := (own_total + own_limit - 1) / own_limit
+    if own_pages <= 0 { own_pages = 1 }
+
+    ownrows := sqlite_query(db, "SELECT a.owner AS owner, COUNT(DISTINCT a.id) AS cnt, MAX(a.updated) AS updated, COALESCE(SUM(LENGTH(v.html)),0) AS bytes, CASE WHEN o.key_hash IS NOT NULL AND o.key_hash != '' THEN 1 ELSE 0 END AS has_key FROM artifacts a LEFT JOIN versions v ON v.artifact_id = a.id LEFT JOIN owners o ON o.owner = a.owner " + own_where + " GROUP BY a.owner ORDER BY updated DESC LIMIT " + str(own_limit) + " OFFSET " + str(own_offset), own_args)
     owns := parse(ownrows, []AdmOwn{})
     // pagination + filter state
     limit := parse_int(query(req, "limit"))
@@ -302,20 +337,49 @@ func serve_fleet(req) (res) {
     }
 
     // owners
-    if len(owns) > 0 {
+    if len(owns) > 0 || own_q != "" {
+        // owner filter + per-page form
+        own_opts := ""
+        own_opt_parts := split("5,10,25,50,100", ",")
+        for _, opt := range own_opt_parts {
+            sel := ""
+            if opt == str(own_limit) { sel = " selected" }
+            own_opts = own_opts + "<option value=\"" + opt + "\"" + sel + ">" + opt + "</option>"
+        }
+        own_hidden := ""
+        if owner != "" { own_hidden = "<input type=\"hidden\" name=\"owner\" value=\"" + ui_esc(owner) + "\">" }
+        own_filter_html := "<form method=\"GET\" action=\"/_fleet\" class=\"mb-4 flex flex-wrap items-end gap-3\">" + own_hidden + "<div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">owner filter</label><input type=\"search\" name=\"own_q\" value=\"" + ui_esc(own_q) + "\" placeholder=\"owner\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">per page</label><select name=\"own_limit\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\">" + own_opts + "</select></div><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">Filter owners</button></form>"
+
+        own_qs := fleet_owner_qs(owner, own_q, own_limit)
+        own_pager := "<div class=\"mt-4 flex flex-wrap items-center gap-3 text-sm\">"
+        if own_page > 1 {
+            own_pager = own_pager + "<a class=\"rounded-lg border border-line dark:border-line-700 px-3 py-1 hover:bg-surface-100 dark:hover:bg-surface-800\" href=\"/_fleet?" + own_qs + "&own_page=" + str(own_page-1) + "\">&larr; prev</a>"
+        }
+        own_pager = own_pager + "<span class=\"text-muted\">Page " + str(own_page) + " of " + str(own_pages) + " (" + str(own_total) + " total)</span>"
+        if own_page < own_pages {
+            own_pager = own_pager + "<a class=\"rounded-lg border border-line dark:border-line-700 px-3 py-1 hover:bg-surface-100 dark:hover:bg-surface-800\" href=\"/_fleet?" + own_qs + "&own_page=" + str(own_page+1) + "\">next &rarr;</a>"
+        }
+        own_pager = own_pager + "</div>"
+
         orows := []string{}
         for _, o := range owns {
             oname := o.owner
             if oname == "" { oname = "(anonymous)" }
             key := ui_badge("open", "neutral")
             if o.has_key == 1 { key = ui_badge("keyed", "green") }
-            cells := ui_td("<a class=\"text-accent hover:underline\" href=\"" + base + "/o/" + o.owner + "\">" + ui_esc(oname) + "</a>")
+            owner_link := "<span class=\"text-muted\">" + ui_esc(oname) + "</span>"
+            if o.owner != "" { owner_link = "<a class=\"text-accent hover:underline\" href=\"" + base + "/_fleet?owner=" + url_encode(o.owner) + "\">" + ui_esc(oname) + "</a>" }
+            cells := ui_td(owner_link)
             cells = cells + ui_td("<span class=\"text-ink\">" + str(o.cnt) + "</span>")
             cells = cells + ui_td("<span class=\"text-muted\">" + dash_hsize(o.bytes) + "</span>")
+            cells = cells + ui_td("<span class=\"text-muted\">" + human_dur(n - o.updated) + " ago</span>")
             cells = cells + ui_td(key)
+            pub_link := "<span class=\"text-muted\">—</span>"
+            if o.owner != "" { pub_link = "<a class=\"text-accent hover:underline\" href=\"" + base + "/o/" + ui_esc(o.owner) + "\">Public page</a>" }
+            cells = cells + ui_td(pub_link)
             orows = append(orows, ui_tr(cells))
         }
-        h = h + ui_card("Owners", ui_table([]string{"owner", "artifacts", "stored", "namespace"}, orows))
+        h = h + ui_card("Owners", own_filter_html + ui_table([]string{"owner", "artifacts", "stored", "updated", "namespace", "public page"}, orows) + own_pager)
     }
 
     // all artifacts
