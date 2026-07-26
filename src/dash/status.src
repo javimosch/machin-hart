@@ -32,6 +32,13 @@ func dash_hsize(n) (s) {
     s = str(n / 1048576) + " MB"
 }
 
+// fleet_qs — rebuild the filter portion of the /_fleet query string for pagination links.
+func fleet_qs(q, has_domains, limit) (s) {
+    s = "limit=" + str(limit)
+    if q != "" { s = s + "&q=" + url_encode(q) }
+    if has_domains == "1" { s = s + "&has_domains=1" }
+}
+
 func serve_status(req) (res) {
     db := opendb()
     base := pubbase(req)
@@ -202,7 +209,39 @@ func serve_fleet(req) (res) {
     bytes := dash_bytes(db)
     ownrows := sqlite_query(db, "SELECT a.owner AS owner, COUNT(DISTINCT a.id) AS cnt, MAX(a.updated) AS updated, COALESCE(SUM(LENGTH(v.html)),0) AS bytes, CASE WHEN o.key_hash IS NOT NULL AND o.key_hash != '' THEN 1 ELSE 0 END AS has_key FROM artifacts a LEFT JOIN versions v ON v.artifact_id = a.id LEFT JOIN owners o ON o.owner = a.owner GROUP BY a.owner ORDER BY bytes DESC", []string{})
     owns := parse(ownrows, []AdmOwn{})
-    artrows := sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views, a.fresh_ttl AS fresh_ttl FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id ORDER BY a.updated DESC LIMIT 500", []string{})
+    // pagination + filter state
+    limit := parse_int(query(req, "limit"))
+    if limit <= 0 { limit = 50 }
+    if limit > 500 { limit = 500 }
+    page := parse_int(query(req, "page"))
+    if page <= 0 { page = 1 }
+    q := trim(query(req, "q"))
+    has_domains := query(req, "has_domains")
+    offset := (page - 1) * limit
+
+    where := "WHERE 1=1"
+    args := []string{}
+    if q != "" {
+        like := "%" + q + "%"
+        where = where + " AND (LOWER(a.id) LIKE ? OR LOWER(a.title) LIKE ?)"
+        args = append(args, like)
+        args = append(args, like)
+    }
+    if has_domains == "1" {
+        where = where + " AND EXISTS (SELECT 1 FROM domains d WHERE d.owner = a.owner AND d.artifact = a.name)"
+    }
+
+    count_rows := sqlite_query(db, "SELECT COUNT(*) AS n FROM artifacts a " + where, args)
+    count_rs := parse(count_rows, []CntRow{})
+    total := 0
+    if len(count_rs) > 0 { total = count_rs[0].n }
+
+    if offset >= total && total > 0 { page = 1; offset = 0 }
+    pages := (total + limit - 1) / limit
+    if pages <= 0 { pages = 1 }
+
+    art_sql := "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views, a.fresh_ttl AS fresh_ttl FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id " + where + " ORDER BY a.updated DESC LIMIT " + str(limit) + " OFFSET " + str(offset)
+    artrows := sqlite_query(db, art_sql, args)
     arts := parse(artrows, []AdmArt{})
     domrows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains ORDER BY domain", []string{})
     doms := parse(domrows, []DomainRow{})
@@ -299,7 +338,30 @@ func serve_fleet(req) (res) {
         cells = cells + ui_td("<span class=\"text-muted\">v" + str(a.latest) + " &middot; " + human_dur(n - a.updated) + " ago</span>")
         arows = append(arows, ui_tr(cells))
     }
-    h = h + ui_card("All artifacts", ui_table([]string{"artifact", "visibility", "domains", "views", "updated"}, arows))
+    // filter form + pagination
+    qs := fleet_qs(q, has_domains, limit)
+    chk := ""
+    if has_domains == "1" { chk = " checked" }
+    opts := ""
+    opt_parts := split("10,25,50,100,250", ",")
+    for _, opt := range opt_parts {
+        sel := ""
+        if opt == str(limit) { sel = " selected" }
+        opts = opts + "<option value=\"" + opt + "\"" + sel + ">" + opt + "</option>"
+    }
+    filter_html := "<form method=\"GET\" action=\"/_fleet\" class=\"mb-4 flex flex-wrap items-end gap-3\"><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">search</label><input type=\"search\" name=\"q\" value=\"" + ui_esc(q) + "\" placeholder=\"id or title\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">has domain</label><input type=\"checkbox\" name=\"has_domains\" value=\"1\"" + chk + " class=\"h-5 w-5 rounded accent-accent\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">per page</label><select name=\"limit\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\">" + opts + "</select></div><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">Filter</button></form>"
+
+    pager := "<div class=\"mt-4 flex flex-wrap items-center gap-3 text-sm\">"
+    if page > 1 {
+        pager = pager + "<a class=\"rounded-lg border border-line dark:border-line-700 px-3 py-1 hover:bg-surface-100 dark:hover:bg-surface-800\" href=\"/_fleet?" + qs + "&page=" + str(page-1) + "\">&larr; prev</a>"
+    }
+    pager = pager + "<span class=\"text-muted\">Page " + str(page) + " of " + str(pages) + " (" + str(total) + " total)</span>"
+    if page < pages {
+        pager = pager + "<a class=\"rounded-lg border border-line dark:border-line-700 px-3 py-1 hover:bg-surface-100 dark:hover:bg-surface-800\" href=\"/_fleet?" + qs + "&page=" + str(page+1) + "\">next &rarr;</a>"
+    }
+    pager = pager + "</div>"
+
+    h = h + ui_card("All artifacts", filter_html + ui_table([]string{"artifact", "visibility", "domains", "views", "updated"}, arows) + pager)
 
     // recent feedback (hart feedback + the relay dual-write land here)
     if len(fbs) > 0 {
