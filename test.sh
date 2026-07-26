@@ -95,6 +95,7 @@ FUN2="$TMP/funnel2.html"; printf '<h1>Funnel page</h1>' > "$FUN2"
 has "domain map ok" "$(./hart domain creator/shop shop.test)" '"domain":"shop.test"'
 has "Host serves mapped artifact at /" "$(curl -s -H 'Host: shop.test' "$HART_URL/")" "Funnel page"
 eq "custom domain: chromeless (no /_fleet chrome link)" "$(curl -s -H 'Host: shop.test' "$HART_URL/" | grep -c '/_fleet')" "0"
+has "artifact chrome links to owner gallery" "$(curl -s "$HART_URL/a/creator/shop")" "/o/creator"
 has "custom domain: landing CSP header" "$(curl -sD - -o /dev/null -H 'Host: shop.test' "$HART_URL/")" "default-src 'self'"
 eq "unmapped Host at / -> landing 200" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: nope.test' "$HART_URL/")" "200"
 eq "mapped Host: data.json not hijacked (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: shop.test' "$HART_URL/a/creator/shop/data.json")" "200"

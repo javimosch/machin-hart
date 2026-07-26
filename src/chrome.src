@@ -33,6 +33,9 @@ func artifact_chrome_html(id, base, read_key, visibility) (h) {
     url := base + "/a/" + id
     url_label := "URL copied"
     if read_key != "" { url = url + "?read_key=" + url_encode(read_key); url_label = "Authenticated URL copied" }
+    owner := ""
+    slash := index(id, "/")
+    if slash > 0 { owner = substr(id, 0, slash) }
     h = "<details class=\"hartc-wrap\">"
     h = h + "<summary>≡ hart</summary>"
     h = h + "<div class=\"hartc-menu\">"
@@ -40,6 +43,9 @@ func artifact_chrome_html(id, base, read_key, visibility) (h) {
     h = h + "<div class=\"hartc-id\"><code>" + html_escape(id) + "</code><span class=\"" + vis_class + "\">" + visibility + "</span></div>"
     h = h + "<a href=\"" + html_escape(base) + "\">🏠 hart home</a>"
     h = h + "<a href=\"" + html_escape(base) + "/explore\">🔎 Explore public</a>"
+    if owner != "" {
+        h = h + "<a href=\"" + html_escape(base) + "/o/" + html_escape(owner) + "\">👤 More from " + html_escape(owner) + "</a>"
+    }
     h = h + "<div class=\"hartc-sep\"></div>"
     h = h + "<button data-val=\"" + html_escape(curl) + "\" data-label=\"" + html_escape(curl_label) + "\" onclick=\"hartc_copy(this)\">📋 Copy curl</button>"
     h = h + "<button data-val=\"" + html_escape(url) + "\" data-label=\"" + html_escape(url_label) + "\" onclick=\"hartc_copy(this)\">🔗 Copy URL</button>"
