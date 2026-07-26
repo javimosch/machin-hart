@@ -204,6 +204,15 @@ func serve_fleet(req) (res) {
     owns := parse(ownrows, []AdmOwn{})
     artrows := sqlite_query(db, "SELECT a.id AS id, a.owner AS owner, a.name AS name, a.title AS title, a.latest AS latest, a.visibility AS visibility, a.read_key_hash AS read_key_hash, a.updated AS updated, COALESCE(vw.total,0) AS views, a.fresh_ttl AS fresh_ttl FROM artifacts a LEFT JOIN views vw ON vw.artifact_id = a.id ORDER BY a.updated DESC LIMIT 500", []string{})
     arts := parse(artrows, []AdmArt{})
+    domrows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains ORDER BY domain", []string{})
+    doms := parse(domrows, []DomainRow{})
+    dom_map := make(map[string]string)
+    for _, dr := range doms {
+        did := dr.owner + "/" + dr.artifact
+        cur := ""
+        if has(dom_map, did) { cur = dom_map[did] + "," }
+        dom_map[did] = cur + dr.domain
+    }
     fbrows := sqlite_query(db, "SELECT id, kind, message, context, reporter, version, created FROM feedback ORDER BY created DESC LIMIT 8", []string{})
     fbs := parse(fbrows, []FbRow{})
     sqlite_close(db)
@@ -263,6 +272,7 @@ func serve_fleet(req) (res) {
 
     // all artifacts
     arows := []string{}
+    scheme := req_scheme(req)
     for _, a := range arts {
         title := a.title
         if title == "" { title = a.name }
@@ -272,11 +282,24 @@ func serve_fleet(req) (res) {
         }
         cells := ui_td("<a class=\"text-accent hover:underline\" href=\"" + base + "/a/" + a.id + "\">" + ui_esc(a.id) + "</a>" + stbadge)
         cells = cells + ui_td(vis_badge(a.visibility))
+        dom_html := "<span class=\"text-muted\">—</span>"
+        if has(dom_map, a.id) {
+            parts := split(dom_map[a.id], ",")
+            dl := ""
+            first := 1
+            for _, dom := range parts {
+                if first == 0 { dl = dl + "<br>" }
+                dl = dl + "<a class=\"text-accent hover:underline\" href=\"" + scheme + "://" + ui_esc(dom) + "\" target=\"_blank\" rel=\"noopener\">" + ui_esc(dom) + "</a>"
+                first = 0
+            }
+            dom_html = dl
+        }
+        cells = cells + ui_td(dom_html)
         cells = cells + ui_td("<span class=\"text-ink\">" + str(a.views) + "</span>")
         cells = cells + ui_td("<span class=\"text-muted\">v" + str(a.latest) + " &middot; " + human_dur(n - a.updated) + " ago</span>")
         arows = append(arows, ui_tr(cells))
     }
-    h = h + ui_card("All artifacts", ui_table([]string{"artifact", "visibility", "views", "updated"}, arows))
+    h = h + ui_card("All artifacts", ui_table([]string{"artifact", "visibility", "domains", "views", "updated"}, arows))
 
     // recent feedback (hart feedback + the relay dual-write land here)
     if len(fbs) > 0 {
