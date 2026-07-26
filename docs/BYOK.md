@@ -39,6 +39,8 @@ Pick the row that matches your setup — only configure what that row lists.
 | **Member key** | Team admin (Pro) | — | `--member-key`, `HART_MEMBER_KEY` env, or `.hart.env` / `~/.hart/config` | Per-member write access to a shared owner namespace. Stored **hashed**. |
 | **License key** | Buyer (Pro) | `HART_LICENSE_KEY` | `hart license <key>` | Unlocks Pro features (limits, audit log, teams). Verified offline (Ed25519). |
 | **Cookie secret** | Operator | `HART_COOKIE_SECRET` | — | Signs private-artifact unlock cookies. Pin across restarts or users re-enter passwords after deploy. |
+| **Domain policy** | Operator | `HART_DOMAIN_ALLOW`, `HART_DOMAIN_DENY`, `HART_DOMAIN_PRIVATE_PATTERNS`, `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH`, `HART_DOMAIN_MAX_PER_OWNER`, `HART_DOMAIN_GC_INTERVAL` | — | Controls self-service custom domains: allow/deny patterns, forced-private patterns, owner-label matching, per-owner cap, and orphan cleanup interval. |
+| **Domain hook** | Operator | `HART_DOMAIN_HOOK=<path>` | — | Executable invoked `add|remove <domain> <owner> <artifact>` on every mapping change (e.g. `hart-domain-sync`). |
 | **OIDC client** | Operator (Pro SSO) | `HART_OIDC_ISSUER`, `HART_OIDC_CLIENT_ID`, `HART_OIDC_CLIENT_SECRET` | — | Generic OpenID Connect for `hart join` team self-onboarding. |
 
 **Rule of thumb:** daemon env = operator knobs; client env / flags = what your agents carry.
@@ -73,6 +75,14 @@ HART_TRUST_PROXY=1
 HART_MAX_BODY_BYTES=10485760
 HART_MAX_SUBMITS_PER_MIN=30
 HART_MAX_OWNER_MB=30
+# Optional — self-service custom domains (patterns are comma-separated; examples use *.example.com):
+# HART_DOMAIN_ALLOW=*.example.com
+# HART_DOMAIN_DENY=blocked.example.com
+# HART_DOMAIN_PRIVATE_PATTERNS=secret.example.com
+# HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1
+# HART_DOMAIN_MAX_PER_OWNER=10
+# HART_DOMAIN_GC_INTERVAL=5m
+# HART_DOMAIN_HOOK=/opt/hart/hart-domain-hook.sh
 # Optional — hart Pro + teams SSO (see key map above):
 # HART_LICENSE_KEY=<pro-key>
 # HART_OIDC_ISSUER=https://your-idp.example.com

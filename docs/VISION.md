@@ -70,11 +70,13 @@ it's what makes the security model tractable and the CLI a one-liner.
 | Surface | What an agent gets | Headless contract |
 |---|---|---|
 | **Artifact host** | `https://host/a/<owner>/<artifact>` — versioned, sandboxed, shareable. | `hart publish page.html --owner O --artifact A` |
-| **Custom domains** | `https://shop.example.com/` served from the mapped artifact, chromeless by default. | `hart domain O/A shop.example.com` |
+| **Custom domains** | `https://shop.example.com/` or self-service `*.hart.intrane.fr` served from the mapped artifact, chromeless by default. | `hart domain O/A shop.example.com` |
 | **Skill registry** | `GET /v1/skills/<owner>` listing title, description, keywords, visibility, url for every artifact. | `hart list --owner O --format skills` |
 
 The common denominator is the same self-contained HTML publish contract: one target, three
-consumption patterns.
+consumption patterns. Self-service domains add a policy layer — `HART_DOMAIN_ALLOW/DENY`, owner-label
+matching, per-owner caps, and automatic cleanup — so a shared hart instance can hand out
+`*.hart.intrane.fr` subdomains safely without per-domain operator toil.
 
 ## The BYOK / open-core model (same playbook as grepapi)
 

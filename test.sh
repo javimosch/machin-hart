@@ -14,7 +14,13 @@ TMP="$(mktemp -d)"
 export HART_DB="$TMP/test.db"
 export HART_URL="http://127.0.0.1:$PORT"
 export HART_ADMIN_TOKEN="test-admin-$$"
-export HART_PUBLIC=""
+export HART_PUBLIC=hart.test
+export HART_DOMAIN_DENY="denied.test"
+export HART_DOMAIN_PRIVATE_PATTERNS="secret.hart.test"
+export HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1
+export HART_DOMAIN_MAX_PER_OWNER=3
+export HART_OWNER_KEY_alice=akey
+export HART_OWNER_KEY_bob=bkey
 export HART_MAX_SUBMITS_PER_MIN=100000   # the suite does many writes fast — don't rate-limit tests
 ADMH="authorization: Bearer $HART_ADMIN_TOKEN"
 
@@ -96,6 +102,47 @@ has "GET /v1/domain?domain=" "$(curl -s "$HART_URL/v1/domain?domain=shop.test")"
 has "domain --emit-traefik prints Traefik block" "$(./hart domain creator/shop shop.test --emit-traefik --service-url http://hart:8799 2>/dev/null)" "Host(\`shop.test\`)"
 has "domain-rm ok" "$(./hart domain-rm shop.test)" '"removed":"shop.test"'
 eq "after rm: Host at / -> landing (not mapped)" "$(curl -s -H 'Host: shop.test' "$HART_URL/" | grep -c 'Funnel page')" "0"
+
+echo "== self-service domain policy ==="
+# publish fixtures
+./hart publish "$FUN2" --owner alice --artifact page --csp-mode landing --visibility public >/dev/null
+./hart publish "$FUN2" --owner bob --artifact page2 --csp-mode landing --visibility public >/dev/null
+./hart publish "$FUN2" --owner carol --artifact cpage --csp-mode landing --visibility public >/dev/null
+# deny list
+eq "denied domain rejected" "$(./hart domain alice/page denied.test >/dev/null 2>&1; echo $?)" "80"
+# subdomain owner-match (HART_PUBLIC=hart.test)
+has "owner-match: matching owner ok" "$(./hart domain alice/page alice.hart.test)" '"domain":"alice.hart.test"'
+eq "owner-match: wrong owner label rejected" "$(./hart domain alice/page bob.hart.test >/dev/null 2>&1; echo $?)" "80"
+# max per owner (limit=3; alice already has alice.hart.test; sub-labels + external domains count)
+has "max per owner: second mapping ok" "$(./hart domain alice/page foo.alice.hart.test)" '"domain":"foo.alice.hart.test"'
+./hart domain alice/page example.com >/dev/null
+eq "max per owner: fourth mapping rejected" "$(./hart domain alice/page bar.alice.hart.test >/dev/null 2>&1; echo $?)" "80"
+# private pattern requires private artifact + read key
+PRIVATE="$TMP/private.html"; printf '<h1>private</h1>' > "$PRIVATE"
+./hart publish "$PRIVATE" --owner secret --artifact vault --visibility public >/dev/null
+eq "private pattern: public artifact rejected" "$(./hart domain secret/vault secret.hart.test >/dev/null 2>&1; echo $?)" "80"
+./hart publish "$PRIVATE" --owner secret --artifact vault --visibility private --read-key rkey >/dev/null
+has "private pattern: private+read-key ok" "$(./hart domain secret/vault secret.hart.test --read-key rkey)" '"domain":"secret.hart.test"'
+# overwrite requires both current and new owner keys (external domain, owner-match off)
+./hart domain alice/page example.com >/dev/null
+eq "overwrite without current owner key rejected" "$(env -u HART_OWNER_KEY_alice ./hart domain bob/page2 example.com >/dev/null 2>&1; echo $?)" "80"
+has "overwrite with both owner keys ok" "$(./hart domain bob/page2 example.com)" '"domain":"example.com","id":"bob/page2"'
+# rm artifact deletes its domain mappings
+./hart rm bob/page2 >/dev/null
+eq "after rm artifact: mapped Host -> landing" "$(curl -s -H 'Host: example.com' "$HART_URL/" | grep -c 'Funnel page')" "0"
+# check endpoint
+has "domain check: available" "$(curl -s -X POST "$HART_URL/v1/domain/check?domain=free.hart.test")" '"available":true'
+has "domain check: taken" "$(curl -s -X POST "$HART_URL/v1/domain/check?domain=foo.alice.hart.test")" '"available":false'
+# admin mv updates domains
+./hart domain carol/cpage example.org >/dev/null
+MV=$(curl -s -H "$ADMH" -X POST "$HART_URL/v1/admin/mv?from=carol/cpage&to=carol2/cpage")
+eq "admin mv updates domain mapping" "$(echo "$MV" | jget ok)" "True"
+has "admin mv: new host serves artifact" "$(curl -s -H 'Host: example.org' "$HART_URL/")" "Funnel page"
+has "admin mv: domain owner updated" "$(curl -s "$HART_URL/v1/domain?domain=example.org")" '"owner":"carol2"'
+# manual prune (example.com is orphan because alice/page deleted; example.org moved)
+PRUNE=$(curl -s -H "$ADMH" -X POST "$HART_URL/v1/admin/domains/prune")
+has "admin prune returns ok" "$PRUNE" '"ok":true'
+has "admin prune removed orphan" "$PRUNE" '"removed":'
 
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null

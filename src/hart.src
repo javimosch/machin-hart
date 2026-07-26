@@ -1066,6 +1066,151 @@ func valid_domain(d) (ok) {
     ok = 1
 }
 
+// domain_match_pattern — a pattern is either an exact hostname or "*.suffix" to match any
+// subdomain of suffix (any depth). Used by allow/deny/private-patterns lists.
+func domain_match_pattern(domain, pat) (ok) {
+    ok = 0
+    pat = trim(pat)
+    if pat == "" { return 0 }
+    if pat == domain { ok = 1; return }
+    if has_prefix(pat, "*.") {
+        suffix := substr(pat, 1, len(pat))   // leading dot + suffix
+        if has_suffix(domain, suffix) {
+            prefix := substr(domain, 0, len(domain) - len(suffix))
+            if prefix != "" { ok = 1 }
+        }
+    }
+}
+
+// domain_match_any — true if domain matches any comma-separated pattern in list_str.
+func domain_match_any(domain, list_str) (ok) {
+    ok = 0
+    if list_str == "" { return 0 }
+    parts := split(list_str, ",")
+    i := 0
+    for i < len(parts) {
+        if domain_match_pattern(domain, parts[i]) == 1 { ok = 1; return }
+        i = i + 1
+    }
+}
+
+// domain_allowed — passes valid_domain, is not denied, and matches HART_DOMAIN_ALLOW (if set).
+func domain_allowed(domain) (ok) {
+    ok = 0
+    if valid_domain(domain) == 0 { return }
+    deny := cfg("HART_DOMAIN_DENY")
+    if domain_match_any(domain, deny) == 1 { return }
+    allow := cfg("HART_DOMAIN_ALLOW")
+    if allow == "" { ok = 1; return }
+    ok = domain_match_any(domain, allow)
+}
+
+// domain_private_required — true if this domain is in HART_DOMAIN_PRIVATE_PATTERNS, or if
+// HART_DOMAIN_PRIVATE_ONLY=1 forces every domain to require a private+read-key artifact.
+func domain_private_required(domain) (ok) {
+    ok = 0
+    if cfg("HART_DOMAIN_PRIVATE_ONLY") == "1" { ok = 1; return }
+    ok = domain_match_any(domain, cfg("HART_DOMAIN_PRIVATE_PATTERNS"))
+}
+
+// domain_owner_label — for a subdomain of the instance's canonical host, the label immediately
+// before the instance host (e.g. "myagent" for "foo.myagent.hart.intrane.fr").
+func domain_owner_label(domain, host) (label) {
+    label = ""
+    if host == "" { return }
+    suffix := "." + host
+    if has_suffix(domain, suffix) == false { return }
+    prefix := substr(domain, 0, len(domain) - len(suffix))
+    if prefix == "" { return }
+    parts := split(prefix, ".")
+    label = parts[len(parts) - 1]
+}
+
+// domain_owner_match — when HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1, a *.hart.intrane.fr style
+// domain must end with "<owner>.<instance-host>". External domains are not checked.
+func domain_owner_match(domain, owner) (ok) {
+    ok = 1
+    if cfg("HART_DOMAIN_SUBDOMAIN_OWNER_MATCH") != "1" { return }
+    host := canonical_host()
+    if host == "" { return }
+    label := domain_owner_label(domain, host)
+    if label == "" { return }   // not a subdomain of the instance host; allow
+    if label == owner { return }
+    ok = 0
+}
+
+// domain_count — number of domains mapped to an owner.
+func domain_count(db, owner) (n) {
+    n = 0
+    if owner == "" { return }
+    rows := sqlite_query(db, "SELECT COUNT(*) AS n FROM domains WHERE owner = ?", []string{owner})
+    rs := parse(rows, []CntRow{})
+    if len(rs) > 0 { n = rs[0].n }
+}
+
+// domain_max_per_owner_ok — enforces HART_DOMAIN_MAX_PER_OWNER when set.
+func domain_max_per_owner_ok(db, owner) (ok) {
+    ok = 1
+    max_s := cfg("HART_DOMAIN_MAX_PER_OWNER")
+    if max_s == "" { return }
+    max_n := parse_int(max_s)
+    if max_n <= 0 { return }
+    if domain_count(db, owner) >= max_n { ok = 0 }
+}
+
+// owner_key_hash — hash of a key from a named header, or empty if the header is absent.
+func owner_key_hash(req, header_name) (h) {
+    h = ""
+    k := header(req, header_name)
+    if k != "" { h = to_hex(sha256_bytes(bytes(k))) }
+}
+
+// owner_authorized_via — same claim/ownership model as owner_authorized, but reads the key from a
+// named header. Lets h_domain_set require both the current mapping owner key and the new owner key.
+func owner_authorized_via(db, owner, req, header_name) (ok) {
+    ok = 0
+    if owner == "" { return 1 }
+    provided := owner_key_hash(req, header_name)
+    rows := sqlite_query(db, "SELECT owner, key_hash, created FROM owners WHERE owner = ?", []string{owner})
+    os := parse(rows, []OwnerRow{})
+    if len(os) == 0 {
+        sqlite_exec(db, "INSERT INTO owners(owner, key_hash, created) VALUES(?,?,?)", []string{owner, provided, str(now())})
+        return 1
+    }
+    if os[0].key_hash == "" { return 1 }
+    if provided == os[0].key_hash { return 1 }
+    if licensed_db(db, "teams") == 1 && member_email(db, owner, req) != "" { return 1 }
+}
+
+// domain_delete_rows — fire remove hooks and delete mapping rows. Caller must hold the db handle.
+func domain_delete_rows(db, ds, req) {
+    i := 0
+    for i < len(ds) {
+        d := ds[i]
+        id := d.owner + "/" + d.artifact
+        domain_hook("remove", d.domain, d.owner, d.artifact)
+        sqlite_exec(db, "DELETE FROM domains WHERE domain = ?", []string{d.domain})
+        audit(db, "domain-rm", d.owner, id, 0, d.domain, req)
+        i = i + 1
+    }
+}
+
+// domain_delete_for_artifact — remove all mappings for one artifact.
+func domain_delete_for_artifact(db, owner, artifact, req) {
+    rows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE owner = ? AND artifact = ?", []string{owner, artifact})
+    ds := parse(rows, []DomainRow{})
+    domain_delete_rows(db, ds, req)
+}
+
+// domain_delete_for_id — remove all mappings for an id string.
+func domain_delete_for_id(db, id, req) {
+    slash := index(id, "/")
+    if slash < 0 { return }
+    owner := substr(id, 0, slash)
+    artifact := substr(id, slash + 1, len(id))
+    domain_delete_for_artifact(db, owner, artifact, req)
+}
+
 func domain_json(d) (j) {
     j = "{\"domain\":\"" + jesc(d.domain) + "\",\"id\":\"" + jesc(d.owner + "/" + d.artifact) + "\",\"owner\":\"" + jesc(d.owner) + "\",\"artifact\":\"" + jesc(d.artifact) + "\",\"version\":" + str(d.version) + ",\"no_chrome\":" + str(d.no_chrome) + ",\"updated\":" + str(d.updated) + "}"
 }
@@ -1080,38 +1225,72 @@ func domain_hook(action, domain, owner, artifact) {
     _, _, _ := exec(cmd + " " + action + " " + domain + " " + owner + " " + artifact)
 }
 
-// POST /v1/domain?domain=&id=&version=&chrome=  — set/update a custom-domain -> artifact mapping.
-// Owner-key protected (the mapped artifact's owner). no_chrome defaults to 1; chrome=1 keeps chrome.
+// POST /v1/domain?domain=&id=&version=&chrome=&read_key=  — set/update a custom-domain -> artifact mapping.
+// Owner-key protected (both the current mapped owner on overwrite and the new artifact owner).
+// no_chrome defaults to 1; chrome=1 keeps chrome. Domain policy (allow/deny/private/owner-match)
+// is enforced before the mapping is written.
 func h_domain_set(req) (res) {
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
     domain := to_lower(trim(query(req, "domain")))
-    if valid_domain(domain) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid domain — a bare hostname like shop.example.com\"}") }
+    if domain_allowed(domain) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"domain not allowed\"}") }
     id := query(req, "id")
     o := query(req, "owner")
     art := query(req, "artifact")
     if id == "" && o != "" && art != "" { id = o + "/" + art }
     if valid_id(id) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need id (or owner + artifact)\"}") }
-    arows := sqlite_query(db, "SELECT owner FROM artifacts WHERE id = ?", []string{id})
-    orow, oerr := json_get(arows, "[0].owner")
-    if oerr != "" { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"artifact not found: " + jesc(id) + "\"}") }
-    owner := unq(orow)
-    if owner_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + jesc(owner) + "' is claimed — pass the owner key\"}") }
+    arows := sqlite_query(db, "SELECT owner, name, visibility, read_key_hash FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(arows, []ArtRow{})
+    if len(ars) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"artifact not found: " + jesc(id) + "\"}") }
+    owner := ars[0].owner
+    name := ars[0].name
+    visibility := ars[0].visibility
+    read_key_hash := ars[0].read_key_hash
     slash := index(id, "/")
     row_owner := substr(id, 0, slash)
     row_art := substr(id, slash + 1, len(id))
+    // existing mapping? require current owner key to overwrite (anti-hijack)
+    existing_rows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE domain = ?", []string{domain})
+    existing := parse(existing_rows, []DomainRow{})
+    existing_owner := ""
+    existing_artifact := ""
+    mapping_changed := 1
+    if len(existing) > 0 {
+        existing_owner = existing[0].owner
+        existing_artifact = existing[0].artifact
+        if existing_owner == row_owner && existing_artifact == row_art { mapping_changed = 0 }
+        if mapping_changed == 1 {
+            if owner_authorized_via(db, existing_owner, req, "x-hart-current-owner-key") == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"domain '" + jesc(domain) + "' is mapped to owner '" + jesc(existing_owner) + "' — pass the current owner key\"}") }
+        }
+    }
+    if owner_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + jesc(owner) + "' is claimed — pass the owner key\"}") }
+    if domain_owner_match(domain, owner) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"domain owner label must match artifact owner\"}") }
+    if mapping_changed == 1 {
+        if domain_max_per_owner_ok(db, owner) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"owner has reached the maximum number of domains\"}") }
+    }
+    if domain_private_required(domain) == 1 {
+        if visibility != "private" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"domain pattern requires a private artifact\"}") }
+        if read_key_hash == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"domain pattern requires the artifact to have a read key\"}") }
+        if read_authorized(db, id, read_key_hash, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"domain pattern requires the artifact read key\"}") }
+    }
     ver := parse_int(query(req, "version"))
     nochrome := 1
     if query(req, "chrome") == "1" { nochrome = 0 }
     n := now()
+    if mapping_changed == 1 && len(existing) > 0 {
+        domain_hook("remove", domain, existing_owner, existing_artifact)
+    }
     sqlite_exec(db, "INSERT INTO domains(domain, owner, artifact, version, no_chrome, created, updated) VALUES(?,?,?,?,?,?,?) ON CONFLICT(domain) DO UPDATE SET owner=excluded.owner, artifact=excluded.artifact, version=excluded.version, no_chrome=excluded.no_chrome, updated=excluded.updated", []string{domain, row_owner, row_art, str(ver), str(nochrome), str(n), str(n)})
     audit(db, "domain-set", owner, id, ver, domain, req)
     sqlite_close(db)
-    domain_hook("add", domain, row_owner, row_art)
+    if mapping_changed == 1 || len(existing) == 1 {
+        domain_hook("add", domain, row_owner, row_art)
+    }
     res = ok_json("{\"ok\":true,\"domain\":\"" + jesc(domain) + "\",\"id\":\"" + jesc(id) + "\",\"version\":" + str(ver) + ",\"no_chrome\":" + str(nochrome) + "}")
 }
 
 // GET /v1/domain?domain=  -> one mapping;  GET /v1/domain[?owner=]  -> list mappings.
+// Single-domain lookup is public (used by provisioning tools); listing requires the publish token.
 func h_domain_get(req) (res) {
     db := opendb()
     domain := to_lower(trim(query(req, "domain")))
@@ -1122,6 +1301,7 @@ func h_domain_get(req) (res) {
         if len(ds) == 0 { return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"no mapping for " + jesc(domain) + "\"}") }
         return ok_json(domain_json(ds[0]))
     }
+    if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
     o := query(req, "owner")
     rows := ""
     if o != "" { rows = sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE owner = ? ORDER BY domain", []string{o}) } else { rows = sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains ORDER BY domain", []string{}) }
@@ -1132,6 +1312,60 @@ func h_domain_get(req) (res) {
     for i < len(ds) { if i > 0 { out = out + "," }  out = out + domain_json(ds[i])  i = i + 1 }
     out = out + "]"
     res = ok_json("{\"ok\":true,\"domains\":" + out + "}")
+}
+
+// POST /v1/domain/check?domain=  — public availability check (rate-limited by serve hardening).
+func h_domain_check(req) (res) {
+    domain := to_lower(trim(query(req, "domain")))
+    if domain == "" { return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"need domain\"}") }
+    if valid_domain(domain) == 0 { return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid domain\"}") }
+    if domain_allowed(domain) == 0 { return response("400 Bad Request", "application/json", "{\"ok\":false,\"available\":false,\"reason\":\"domain not allowed\"}") }
+    db := opendb()
+    rows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE domain = ?", []string{domain})
+    ds := parse(rows, []DomainRow{})
+    sqlite_close(db)
+    if len(ds) > 0 { return ok_json("{\"ok\":true,\"available\":false,\"domain\":\"" + jesc(domain) + "\",\"id\":\"" + jesc(ds[0].owner + "/" + ds[0].artifact) + "\"}") }
+    res = ok_json("{\"ok\":true,\"available\":true,\"domain\":\"" + jesc(domain) + "\"}")
+}
+
+// run_domain_gc — remove orphan/stale mappings. Returns count removed. No audit for daemon runs.
+func run_domain_gc(db) (removed) {
+    removed = 0
+    rows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains", []string{})
+    ds := parse(rows, []DomainRow{})
+    i := 0
+    for i < len(ds) {
+        d := ds[i]
+        id := d.owner + "/" + d.artifact
+        arows := sqlite_query(db, "SELECT owner, name FROM artifacts WHERE id = ?", []string{id})
+        ars := parse(arows, []ArtRow{})
+        stale := 0
+        if len(ars) == 0 { stale = 1 }
+        else {
+            if ars[0].owner != d.owner || ars[0].name != d.artifact { stale = 1 }
+            else {
+                if domain_allowed(d.domain) == 0 { stale = 1 }
+                else {
+                    if cfg("HART_DOMAIN_SUBDOMAIN_OWNER_MATCH") == "1" && domain_owner_match(d.domain, d.owner) == 0 { stale = 1 }
+                }
+            }
+        }
+        if stale == 1 {
+            domain_hook("remove", d.domain, d.owner, d.artifact)
+            sqlite_exec(db, "DELETE FROM domains WHERE domain = ?", []string{d.domain})
+            removed = removed + 1
+        }
+        i = i + 1
+    }
+}
+
+// POST /v1/admin/domains/prune — admin-only manual GC.
+func h_domain_prune(req) (res) {
+    if check_admin(req) == 0 { return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"admin token required\"}") }
+    db := opendb()
+    removed := run_domain_gc(db)
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"removed\":" + str(removed) + "}")
 }
 
 // DELETE /v1/domain?domain=  — remove a mapping (owner-key protected).
@@ -1459,6 +1693,38 @@ func h_admin_mv(req) (res) {
     dst := sqlite_query(db, "SELECT id, owner, name, title, latest, data, visibility, read_key_hash, created, updated, meta, agent, run_id, parent_id, tags FROM artifacts WHERE id = ?", []string{nnid})
     ds := parse(dst, []ArtRow{})
     if len(ds) > 0 { sqlite_close(db); return response("409 Conflict", "application/json", "{\"ok\":false,\"error\":\"target already exists: " + nnid + " (pick another name or rm it first)\"}") }
+    // update domain mappings: keep ones still allowed, delete ones that would violate policy.
+    from_owner := ss[0].owner
+    from_name := ss[0].name
+    drows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE owner = ? AND artifact = ?", []string{from_owner, from_name})
+    doms := parse(drows, []DomainRow{})
+    rm_dom := []string{}
+    rm_own := []string{}
+    rm_art := []string{}
+    up_dom := []string{}
+    up_old_own := []string{}
+    up_old_art := []string{}
+    i := 0
+    for i < len(doms) {
+        d := doms[i]
+        keep := 1
+        if domain_allowed(d.domain) == 0 { keep = 0 }
+        else {
+            if cfg("HART_DOMAIN_SUBDOMAIN_OWNER_MATCH") == "1" && domain_owner_match(d.domain, nowner) == 0 { keep = 0 }
+        }
+        if keep == 0 {
+            rm_dom = append(rm_dom, d.domain)
+            rm_own = append(rm_own, d.owner)
+            rm_art = append(rm_art, d.artifact)
+            sqlite_exec(db, "DELETE FROM domains WHERE domain = ?", []string{d.domain})
+        } else {
+            up_dom = append(up_dom, d.domain)
+            up_old_own = append(up_old_own, d.owner)
+            up_old_art = append(up_old_art, d.artifact)
+            sqlite_exec(db, "UPDATE domains SET owner = ?, artifact = ?, updated = ? WHERE domain = ?", []string{nowner, nname, str(now()), d.domain})
+        }
+        i = i + 1
+    }
     // atomic across both tables — id is the FK from versions.artifact_id. `updated` is left as-is
     // so a move doesn't masquerade as a content edit in recency-ordered listings.
     sqlite_exec(db, "BEGIN", []string{})
@@ -1468,6 +1734,10 @@ func h_admin_mv(req) (res) {
     sqlite_exec(db, "COMMIT", []string{})
     audit(db, "admin-mv", nowner, nnid, 0, "from " + from, req)
     sqlite_close(db)
+    i = 0
+    for i < len(rm_dom) { domain_hook("remove", rm_dom[i], rm_own[i], rm_art[i]); i = i + 1 }
+    i = 0
+    for i < len(up_dom) { domain_hook("remove", up_dom[i], up_old_own[i], up_old_art[i]); domain_hook("add", up_dom[i], nowner, nname); i = i + 1 }
     base := pubbase(req)
     res = ok_json("{\"ok\":true,\"moved\":{\"from\":\"" + from + "\",\"to\":\"" + nnid + "\"},\"owner\":\"" + nowner + "\",\"name\":\"" + nname + "\",\"version\":" + str(ss[0].latest) + ",\"url\":\"" + base + "/a/" + nnid + "\"}")
 }
@@ -1938,6 +2208,7 @@ func h_delete(req, id) (res) {
     if owner_authorized(db, oa[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + oa[0].owner + "' is claimed — pass the owner key\"}") }
     sqlite_exec(db, "DELETE FROM versions WHERE artifact_id = ?", []string{id})
     sqlite_exec(db, "DELETE FROM refresh WHERE artifact_id = ?", []string{id})   // no orphan self-refresh source
+    domain_delete_for_id(db, id, req)
     audit(db, "rm", oa[0].owner, id, 0, "", req)
     sqlite_exec(db, "DELETE FROM artifacts WHERE id = ?", []string{id})
     sqlite_close(db)
@@ -2450,10 +2721,10 @@ func guide_md(base, authline) (g) {
     g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
     g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). To retrofit a key on an existing open namespace (or rotate a keyed one), use `hart owner-key <owner> <new-key>` (admin or current owner key required). Anonymous (no-owner) artifacts get a random id.\n\n## Memory layer (provenance, search, lineage)\n\nArtifacts can carry provenance so agents can trace, find, and relate their work. At publish: `--agent <name> --run <id> --parent <id> --tags a,b --meta \'{...}\'`. `hart get` and `hart versions` return this metadata.\n\n- `hart search [query] [--owner --tag --agent --run --limit]` searches title, name, data, tags, meta, agent, run_id, owner, and parent_id. Visibility is respected.\n- `hart meta <id> [json]` reads or overwrites an artifact\'s structured meta JSON.\n- `hart lineage <id>` walks the `parent_id` chain up to 20 hops.\n- `hart diff <id> <v1> <v2>` reports changed/lines_added/lines_removed/size_delta.\n- `hart checkpoint <id>[@v] --name <label>` labels a version; `hart labels <id>` lists them.\n- `hart link <from> <to> --rel derived|depends|related|supersedes` relates two artifacts; `hart related <id>` follows those links.\n\n"
     g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
-    g = g + "## Custom domains (multi-tenant)\n\nServe a public artifact on a creator's own domain. hart maps `Host -> artifact` and serves it at `/`; **provisioning stays in your reverse proxy** (Traefik) — hart only records the mapping and serves it by the `Host` header.\n\n```sh\nhart domain you/landing shop.example.com                 # map (served chromeless at /)\nhart domain you/landing shop.example.com --emit-traefik  # + print a ready Traefik router block\nhart domains                                             # list mappings (JSON)\nhart domain-rm shop.example.com                          # unmap\n```\nPoint the domain at hart in Traefik with a host-only rule (TLS via your cert resolver) — `--emit-traefik --service-url <hart-url>` prints exactly that block for the proxy's watched dir. A mapped page is served **chromeless** (the hart chrome/links are dropped) and its absolute links use the custom host, not the instance host. Pair with `--csp-mode landing` for funnels that load Stripe/analytics/fonts. A **private** mapped artifact still requires its read key. Pass `--chrome` to keep the hart chrome. Optional `HART_DOMAIN_HOOK` on the daemon runs `<hook> add|remove <domain> <owner> <artifact>` on every mapping change, so an external provisioner (e.g. a Traefik-config writer) can reconcile the proxy automatically (off by default).\n\n**Fetch a raw body server-side.** A platform backend can pull the raw stored HTML/JSX of an artifact (e.g. to re-serve it or deliver a gated download) with `hart get <id> --html [--read-key <pw>] [--version <n>]` (API: `GET /v1/artifacts/<id>/html`). Public/unlisted need no key; a private artifact needs its read key — no owner/admin token required.\n\n"
+    g = g + "## Custom domains (multi-tenant / self-service)\n\nServe an artifact on a creator's own domain. hart maps `Host -> artifact` and serves it at `/`; **provisioning stays in your reverse proxy** (Traefik) — hart only records the mapping and serves it by the `Host` header. On a shared instance, `*.hart.intrane.fr`-style subdomains can be self-service: any owner can claim `<label>.<owner>.hart.intrane.fr` and the daemon enforces limits, an allow/deny list, and anti-hijack rules.\n\n```sh\nhart domain you/landing shop.example.com                 # map (served chromeless at /)\nhart domain you/landing shop.example.com --emit-traefik  # + print a ready Traefik router block\nhart domain you/landing you.shop.example.com --read-key <pw>  # private artifact needs its read key\nhart domains                                             # list mappings (JSON)\nhart domains --prune                                    # admin: remove orphan/stale mappings\nhart domain-rm shop.example.com                          # unmap\ncurl -s -X POST '"" + base + ""/v1/domain/check?domain=foo.example.com   # check availability\n```\nPoint the domain at hart in Traefik with a host-only rule (TLS via your cert resolver) — `--emit-traefik --service-url <hart-url>` prints exactly that block for the proxy's watched dir. For wildcard instance subdomains (`*.hart.intrane.fr`) use a single Traefik `HostRegexp` or `*.hart.intrane.fr` router instead of per-domain configs. A mapped page is served **chromeless** (the hart chrome/links are dropped) and its absolute links use the custom host, not the instance host. Pair with `--csp-mode landing` for funnels that load Stripe/analytics/fonts. A **private** mapped artifact still requires its read key. Pass `--chrome` to keep the hart chrome.\n\n**Domain policy knobs** (server env): `HART_DOMAIN_ALLOW` (comma patterns, e.g. `*.example.com` — if set, only matching domains allowed), `HART_DOMAIN_DENY` (comma patterns, blocked even if allowed), `HART_DOMAIN_PRIVATE_PATTERNS` (matching domains force the artifact to be private / read-key gated), `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1` (for `*.hart.intrane.fr` the label before the instance host must match the owner, e.g. `foo.alice.hart.intrane.fr` is owned by `alice`), `HART_DOMAIN_MAX_PER_OWNER` (default unlimited), `HART_DOMAIN_GC_INTERVAL` (duration, e.g. `5m` — background cleanup of orphan/stale mappings). Optional `HART_DOMAIN_HOOK` runs `<hook> add|remove <domain> <owner> <artifact>` on every mapping change so an external provisioner (e.g. `hart-domain-sync`) can reconcile Traefik/Cloudflare automatically (off by default).\n\n**Anti-hijack.** Overwriting an existing domain mapping requires the **current owner's key** plus the **new owner's key**. For `hart domain`, pass `--owner-key` (or `HART_OWNER_KEY_<owner>`) for the new owner; the CLI fetches the current owner and adds its `HART_OWNER_KEY_<current>` automatically.\n\n**Fetch a raw body server-side.** A platform backend can pull the raw stored HTML/JSX of an artifact (e.g. to re-serve it or deliver a gated download) with `hart get <id> --html [--read-key <pw>] [--version <n>]` (API: `GET /v1/artifacts/<id>/html`). Public/unlisted need no key; a private artifact needs its read key — no owner/admin token required.\n\n"
     g = g + "## Skill catalog\n\nAny artifact can be published and discovered as an agent **skill**. Include `<meta>` tags in the `<head>`:\n\n```html\n<meta name=\"title\" content=\"My skill\">\n<meta name=\"description\" content=\"One-line description\">\n<meta name=\"keywords\" content=\"agent, skill, ops\">\n```\n\n- `--title` (or API `title=`) wins over `<meta name=\"title\">`.\n- `--meta '{\"description\":\"...\"}'` wins over the HTML `<meta name=\"description\">`; if `--meta` is omitted, the HTML-derived value is stored and overwrites any previous HTML-derived value on re-publish.\n- `<meta name=\"keywords\">` is normalized to a JSON array.\n\nList skills with `hart list --owner <who> --format skills` or `GET " + base + "/v1/skills/<owner>`. The response includes `id`, `title`, `description`, `keywords`, `visibility`, and `url` for each artifact. Private artifacts are only described for callers with the read key, owner key, or admin token; `hart get <id>` returns `description` and `keywords` when present. `hart search --tag <kw>` matches both `tags` and extracted `keywords`.\n\n"
-    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --csp-mode strict\\|landing\\|custom --csp-policy --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>] [--format skills]` / `get <id> [--html --read-key]` / `rm <id>` | manage (`--format skills` = compact skill catalog; get --html = raw stored body) |\n| `owner-key <owner> <new-key>` | set/rotate the owner key for a namespace (admin or current key required) |\n| `domain <id> <domain> [--chrome --emit-traefik]` / `domain-rm <domain>` / `domains` | map a custom domain to an artifact (served by Host; provisioning stays in Traefik) |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `feedback <msg> [--kind bug\\|idea\\|praise] [--context <c>]` | send feedback (dual-writes to this instance + a central relay) |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `refresh <id> [--url <URL>\\|--cmd '<sh>'] --every <dur> [--header 'H: v']\\|--off\\|--now` | daemon self-refreshes the artifact's data on a schedule (living loop) |\n| `live <id> <on\\|off>` | allow the page to poll its own data.json and repaint live (opt-in CSP relax) |\n| `upgrade [--plan pro]` | mint a checkout link to buy hart Pro (give the URL to the human to pay) |\n| `license <key>` / `license status` | set / inspect the hart Pro license (unlocks pro features) |\n| `audit [--owner --action --since --limit]` | who changed what — the audit log (**hart Pro**) |\n| `team add\\|invite\\|list\\|rm <owner> [<email>]` | manage team members / per-member keys (**hart Pro**) |\n| `join <owner>` | SSO self-onboarding — sign in once, receive your member key (**hart Pro**) |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `meta <id> [json]` | read or overwrite artifact meta JSON |\n| `search [query] [--owner --tag --agent --run --limit]` | memory-layer artifact search |\n| `diff <id> <v1> <v2>` | line/byte delta between two versions |\n| `lineage <id>` | walk the parent chain (provenance) |\n| `checkpoint <id>[@v] --name <label>` | label a version |\n| `labels <id>` | list checkpoint labels |\n| `link <from> <to> --rel <derived|depends|related|supersedes>` | relate two artifacts |\n| `related <id>` | artifacts linked to/from this id |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `mcp` | run as a stdio MCP server (native tools for MCP agents) |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## MCP (native tools for MCP-capable agents)\n\nBesides the CLI, hart can run as a **stdio MCP server** so MCP-native agents (Claude Desktop, Cursor, …) get hart as first-class tools. One binary, no extra runtime — it wraps hart's own HTTP API and inherits auth from env. Configure your MCP client:\n\n```json\n{\"mcpServers\":{\"hart\":{\"command\":\"hart\",\"args\":[\"mcp\"],\"env\":{\"HART_URL\":\"" + base + "\"}}}}\n```\nTools exposed: `hart_publish`, `hart_data`, `hart_list`, `hart_get`, `hart_stats`, `hart_stale`, `hart_explore`. (The CLI remains the primary interface; MCP is an additional surface.)\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Living loop (self-refreshing deliverables)\n\n`hart data` and `hart fresh`/`hart stale` assume **something external** keeps pushing data. `hart refresh` closes the loop: the daemon runs a **source** on a schedule and pushes the result as the artifact's live data itself — no external cron. Pair it with `hart fresh` and the SLA stays green because hart is the one keeping it green.\n\n```sh\n# GET a JSON URL every 15 min and make it the artifact's data (url sources need the owner key)\nhart refresh you/board --url https://api.example.com/metrics --every 15m --header 'Authorization: Bearer XYZ'\n\n# or run a shell command (pipes/curl|jq ok) — arbitrary shell on the server, so ADMIN ONLY\nhart refresh you/board --cmd 'curl -s https://api.example.com/m | jq .summary' --every 15m\n\nhart refresh you/board            # show config + last run status\nhart refresh you/board --now      # run once, right now, inline\nhart refresh you/board --off      # stop refreshing\n```\nThe source's output must be a JSON object or array (it becomes `window.HART_DATA` + `{{key}}`); non-JSON or a failed fetch is recorded in `last_status` and the existing data is left untouched. Minimum interval 30s. `--url` sources need the owner key; `--cmd` sources require `HART_ADMIN_TOKEN` (they execute shell on your box). The daemon runs due sources every few seconds in-process — one binary, no scheduler to deploy.\n\n**Live repaint (no reload).** By default a refreshed page shows new data on the *next load*. Mark an artifact **live** and it repaints while someone's watching it: hart injects a small poller that fetches the artifact's own `" + base + "/a/<id>/data.json` and updates `window.HART_DATA`, then fires a `hart:data` event. Your template paints from `window.HART_DATA` on load and repaints on the event:\n\n```html\n<script>\n  function paint(d){ /* render d */ }\n  paint(window.HART_DATA);                               // initial\n  addEventListener('hart:data', e => paint(e.detail));   // live updates\n</script>\n```\n```sh\nhart publish board.html --owner you --artifact board --live   # publish as live\nhart live you/board on|off                                    # toggle anytime (setting a refresh source turns it on)\n```\nLive is **opt-in per artifact**: only a live page's CSP is relaxed to `connect-src 'self'` (so it can fetch *its own* data.json and nothing else) — every other artifact keeps the full `default-src 'none'` lockdown. The poll interval tracks the refresh cadence (override with `window.HART_LIVE_MS`). `data.json` uses the same read-gating as the page (a private artifact's poll rides its unlock cookie).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin digest [--days N]       # adoption: new owners/artifacts (default 7d), totals, top by views\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**Visual operator dashboard:** point a browser at `" + base + "/_fleet` and sign in with the admin token — every owner + artifact (incl. unlisted/private), view counts, and stale living-deliverables flagged, server-rendered. The JSON API above is for agents; `/_fleet` is for you.\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
-    g = g + "## Env\n\nAll client env vars can also be set in `~/.hart/config` or a per-project `.hart.env` (loaded for all CLI commands except `serve`; precedence: flag > env > `.hart.env` > `~/.hart/config`). `HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key; also `HART_OWNER_KEY_<owner>` per namespace) · `HART_READ_KEY` (read key for a private artifact; also `HART_READ_KEY_<owner>_<artifact>` per artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30 — the per-owner storage cap; raising it above `HART_FREE_MAX_OWNER_MB` requires a **hart Pro** license), `HART_FREE_MAX_OWNER_MB` (30 — the free-tier ceiling), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`, `HART_LICENSE_KEY` (Pro key), `HART_LICENSE_PUBKEY` (run your own issuer). **Production hardening** (auto on when `HART_PUBLIC` is set): `HART_HARDEN=1` · `HART_TRUST_PROXY=1` (only behind a proxy you control) · `HART_MAX_BODY_BYTES` (default 10 MiB) · `HART_READ_TIMEOUT_MS` (default 30s) · `HART_ACCESS_LOG=1`; opt out locally with `HART_HARDEN=0`. **BYOK key map:** `" + base + "/byok.md` (also `docs/BYOK.md` in the repo).\n\n## hart Pro (self-host)\n\nhart is open-core: the CLI is fully functional and free, and a few features unlock with a **license key** (`hart license <key>`, or `HART_LICENSE_KEY` on the daemon; `hart license status` shows your tier). Keys are Ed25519-signed and verified offline (no phone-home). Pro today: **limits** (raise the per-owner storage quota), **audit-log** (`hart audit` — who changed what), **teams** (`hart team` — per-member keys). Enforcement is honest, not DRM — pay for support, updates, and to stay compliant.\n\n**Teams SSO (optional, your IdP).** `hart join <owner>` lets a member self-onboard via **any OpenID Connect provider you configure** — you bring the IdP, hart is a standard OIDC client. Set `HART_OIDC_ISSUER` (e.g. your Auth0/Okta/Keycloak/Google/machin-idp), `HART_OIDC_CLIENT_ID`, `HART_OIDC_CLIENT_SECRET` (register `<your-hart>/team/callback` as the redirect URI at your IdP); optional `HART_OIDC_SCOPES` (default `openid email`). hart discovers the endpoints, runs the code flow, and reads the member's email from `userinfo`. Unset = SSO off (teams still work via `hart team add` member keys).\n\n**Buying is agent-first.** Run `hart upgrade` — it returns a checkout URL; give it to the human to pay. They're emailed a license key; then run `hart license <key>` (or set `HART_LICENSE_KEY`). Lost the key? `" + base + "/manage` re-emails it. Contact: javi@intrane.fr.\n\n"
+    g = g + "## Commands\n\n| cmd | does |\n|---|---|\n| `publish <file> [--owner --artifact --title --format html\\|jsx --visibility --read-key --csp-mode strict\\|landing\\|custom --csp-policy --unguessable --dry-run --force]` | upload -> {id,url,version} |\n| `data <id> '<json>'` | update the live data (re-renders) |\n| `visibility <id> <unlisted\\|public\\|private> [--read-key --clear-read-key]` | change visibility |\n| `versions <id>` / `rollback <id> <v>` | history / revert |\n| `list [--owner <who>] [--format skills]` / `get <id> [--html --read-key]` / `rm <id>` | manage (`--format skills` = compact skill catalog; get --html = raw stored body) |\n| `owner-key <owner> <new-key>` | set/rotate the owner key for a namespace (admin or current key required) |\n| `domain <id> <domain> [--chrome --emit-traefik --read-key <pw>]` / `domain-rm <domain>` / `domains [--prune]` | map a custom domain to an artifact; `--prune` removes orphan/stale mappings (admin) |\n| `stats <id>` | living-deliverable analytics: views, last view, freshness, top referrers |\n| `feedback <msg> [--kind bug\\|idea\\|praise] [--context <c>]` | send feedback (dual-writes to this instance + a central relay) |\n| `fresh <id> <30s\\|15m\\|2h\\|1d\\|off>` | set/clear a freshness SLA |\n| `refresh <id> [--url <URL>\\|--cmd '<sh>'] --every <dur> [--header 'H: v']\\|--off\\|--now` | daemon self-refreshes the artifact's data on a schedule (living loop) |\n| `live <id> <on\\|off>` | allow the page to poll its own data.json and repaint live (opt-in CSP relax) |\n| `upgrade [--plan pro]` | mint a checkout link to buy hart Pro (give the URL to the human to pay) |\n| `license <key>` / `license status` | set / inspect the hart Pro license (unlocks pro features) |\n| `audit [--owner --action --since --limit]` | who changed what — the audit log (**hart Pro**) |\n| `team add\\|invite\\|list\\|rm <owner> [<email>]` | manage team members / per-member keys (**hart Pro**) |\n| `join <owner>` | SSO self-onboarding — sign in once, receive your member key (**hart Pro**) |\n| `stale [--owner <who>] [--older-than <dur>]` | living deliverables that went quiet (JSON signal) |\n| `explore [query]` | public discovery feed (JSON) |\n| `meta <id> [json]` | read or overwrite artifact meta JSON |\n| `search [query] [--owner --tag --agent --run --limit]` | memory-layer artifact search |\n| `diff <id> <v1> <v2>` | line/byte delta between two versions |\n| `lineage <id>` | walk the parent chain (provenance) |\n| `checkpoint <id>[@v] --name <label>` | label a version |\n| `labels <id>` | list checkpoint labels |\n| `link <from> <to> --rel <derived|depends|related|supersedes>` | relate two artifacts |\n| `related <id>` | artifacts linked to/from this id |\n| `admin owners` / `admin list [--owner <who>]` | operator cross-owner visibility (needs `HART_ADMIN_TOKEN`) |\n| `serve [port]` | run the daemon |\n| `mcp` | run as a stdio MCP server (native tools for MCP agents) |\n| `guide` / `skill` | this manual / a drop-in agent SKILL.md |\n\n## MCP (native tools for MCP-capable agents)\n\nBesides the CLI, hart can run as a **stdio MCP server** so MCP-native agents (Claude Desktop, Cursor, …) get hart as first-class tools. One binary, no extra runtime — it wraps hart's own HTTP API and inherits auth from env. Configure your MCP client:\n\n```json\n{\"mcpServers\":{\"hart\":{\"command\":\"hart\",\"args\":[\"mcp\"],\"env\":{\"HART_URL\":\"" + base + "\"}}}}\n```\nTools exposed: `hart_publish`, `hart_data`, `hart_list`, `hart_get`, `hart_stats`, `hart_stale`, `hart_explore`. (The CLI remains the primary interface; MCP is an additional surface.)\n\n## Stats (living deliverables)\n\nView counts are **server-side** (the CSP blocks any client-side beacon), so they're privacy-respecting — no cookies, no JS, no third-party trackers. `hart stats <id>` returns total views, last-view time, freshness (last publish `updated` + last `hart data` push `data_updated`), and the top inbound referrer hosts.\n\n```sh\nhart stats you/sales\n# -> {\"views\":128,\"last_view\":..,\"updated\":..,\"data_updated\":..,\"referrers\":[{\"host\":\"news.ycombinator.com\",\"count\":41},{\"host\":\"direct\",\"count\":52}]}\n```\nGated to the owner (owner-key) or the admin token; open for an unclaimed owner. `hart admin list` also carries a `views` count per artifact.\n\n## Staleness (living deliverables that went quiet)\n\nSome artifacts are kept fresh by an agent/cron pushing `hart data` on a cadence. Give one a **freshness SLA** and hart will flag it once it hasn't been refreshed in time — so a silently-dead dashboard doesn't go unnoticed.\n\n```sh\nhart fresh you/board 15m        # SLA: expect a refresh at least every 15 min (off = clear)\nhart stale                      # artifacts past their own SLA (admin: all owners)\nhart stale --owner you          # scoped to one owner\nhart stale --older-than 2h      # ad-hoc: anything not touched in 2h (ignores SLAs)\n# -> {\"mode\":\"sla\",\"count\":1,\"stale\":[{\"id\":\"you/board\",\"age\":\"22m\",\"fresh_ttl\":900, ...}]}\n```\nhart emits the **signal** (JSON); your agent/cron does the alerting (Slack, etc.). `fresh_ttl` + a computed `stale` also appear in `hart stats` and `hart admin list`. Freshness = time since the last publish or `hart data` push (`updated`).\n\n## Living loop (self-refreshing deliverables)\n\n`hart data` and `hart fresh`/`hart stale` assume **something external** keeps pushing data. `hart refresh` closes the loop: the daemon runs a **source** on a schedule and pushes the result as the artifact's live data itself — no external cron. Pair it with `hart fresh` and the SLA stays green because hart is the one keeping it green.\n\n```sh\n# GET a JSON URL every 15 min and make it the artifact's data (url sources need the owner key)\nhart refresh you/board --url https://api.example.com/metrics --every 15m --header 'Authorization: Bearer XYZ'\n\n# or run a shell command (pipes/curl|jq ok) — arbitrary shell on the server, so ADMIN ONLY\nhart refresh you/board --cmd 'curl -s https://api.example.com/m | jq .summary' --every 15m\n\nhart refresh you/board            # show config + last run status\nhart refresh you/board --now      # run once, right now, inline\nhart refresh you/board --off      # stop refreshing\n```\nThe source's output must be a JSON object or array (it becomes `window.HART_DATA` + `{{key}}`); non-JSON or a failed fetch is recorded in `last_status` and the existing data is left untouched. Minimum interval 30s. `--url` sources need the owner key; `--cmd` sources require `HART_ADMIN_TOKEN` (they execute shell on your box). The daemon runs due sources every few seconds in-process — one binary, no scheduler to deploy.\n\n**Live repaint (no reload).** By default a refreshed page shows new data on the *next load*. Mark an artifact **live** and it repaints while someone's watching it: hart injects a small poller that fetches the artifact's own `" + base + "/a/<id>/data.json` and updates `window.HART_DATA`, then fires a `hart:data` event. Your template paints from `window.HART_DATA` on load and repaints on the event:\n\n```html\n<script>\n  function paint(d){ /* render d */ }\n  paint(window.HART_DATA);                               // initial\n  addEventListener('hart:data', e => paint(e.detail));   // live updates\n</script>\n```\n```sh\nhart publish board.html --owner you --artifact board --live   # publish as live\nhart live you/board on|off                                    # toggle anytime (setting a refresh source turns it on)\n```\nLive is **opt-in per artifact**: only a live page's CSP is relaxed to `connect-src 'self'` (so it can fetch *its own* data.json and nothing else) — every other artifact keeps the full `default-src 'none'` lockdown. The poll interval tracks the refresh cadence (override with `window.HART_LIVE_MS`). `data.json` uses the same read-gating as the page (a private artifact's poll rides its unlock cookie).\n\n## Admin (operator god-mode)\n\nOn an instance **you host**, set `HART_ADMIN_TOKEN` (separate from `HART_TOKEN`) on the daemon to unlock cross-owner discovery — for auditing all artifacts your agents/operators produced on your own box.\n\n```sh\nexport HART_ADMIN_TOKEN=<secret>   # or: hart admin login <secret>\nhart admin owners                  # every owner: {owner, artifacts, bytes, has_owner_key, updated}\nhart admin list [--owner <who>]    # every artifact: {id, owner, url, visibility, has_read_key, version, updated}\nhart admin digest [--days N]       # adoption: new owners/artifacts (default 7d), totals, top by views\nhart admin mv <old-id> <new-owner/new-name>   # move/rename, keeps version history + read-key\n```\n\n**Visual operator dashboard:** point a browser at `" + base + "/_fleet` and sign in with the admin token — every owner + artifact (incl. unlisted/private), view counts, and stale living-deliverables flagged, server-rendered. The JSON API above is for agents; `/_fleet` is for you.\n\n**`admin mv` examples** — reorganize owners without losing anything (history, visibility, live data, and read-key all move with the artifact; the old URL 404s):\n\n```sh\n# fold a per-agent owner into a shared namespace, prefixing to keep provenance\nhart admin mv am/fleet-monitor   intrane/am-fleet-monitor      # v36 stays v36\nhart admin mv crmd/product       intrane/crmd-product\n# regroup several owners under a new project namespace\nhart admin mv geored/e2e-retroplanning     simpliciti/geored-e2e-retroplanning\nhart admin mv sso-server/changelog-7d      simpliciti/sso-server-changelog-7d\n# a plain rename (same owner)\nhart admin mv acme/q3-draft      acme/q3-final\n```\n\nGuards: `404` if the source is missing, `409` if the target id already exists, `400` on a same-id or malformed `to` (must be `<owner>/<name>`).\n\nKeys/read-keys are stored **hashed**, so admin surfaces `has_owner_key`/`has_read_key` booleans, never the secret. `admin mv` renames an artifact and all its versions to a new owner/name in place — history, visibility, live data, and read-key are preserved (nothing is re-uploaded); the old URL 404s. Unset `HART_ADMIN_TOKEN` = the admin API is **off** (403), and cross-owner `hart list` is then admin-only on multi-tenant instances (owner-scoped `list --owner X` is unaffected).\n\n"
+    g = g + "## Env\n\nAll client env vars can also be set in `~/.hart/config` or a per-project `.hart.env` (loaded for all CLI commands except `serve`; precedence: flag > env > `.hart.env` > `~/.hart/config`). `HART_URL` (daemon) · `HART_TOKEN` (publish token, if the instance requires one) · `HART_OWNER_KEY` (namespace write key; also `HART_OWNER_KEY_<owner>` per namespace) · `HART_READ_KEY` (read key for a private artifact; also `HART_READ_KEY_<owner>_<artifact>` per artifact) · `HART_ADMIN_TOKEN` (operator god-token for the admin API — cross-owner list; separate from `HART_TOKEN`, unset = admin off). Server: `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10), `HART_MAX_OWNER_MB` (30 — the per-owner storage cap; raising it above `HART_FREE_MAX_OWNER_MB` requires a **hart Pro** license), `HART_FREE_MAX_OWNER_MB` (30 — the free-tier ceiling), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`, `HART_LICENSE_KEY` (Pro key), `HART_LICENSE_PUBKEY` (run your own issuer). **Custom domains:** `HART_DOMAIN_ALLOW` (allow patterns), `HART_DOMAIN_DENY` (deny patterns), `HART_DOMAIN_PRIVATE_PATTERNS` (force private), `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1` (`*.hart.intrane.fr` label must match owner), `HART_DOMAIN_MAX_PER_OWNER` (limit per owner), `HART_DOMAIN_GC_INTERVAL` (duration — background orphan cleanup), `HART_DOMAIN_HOOK` (executable for `add|remove` events). **Production hardening** (auto on when `HART_PUBLIC` is set): `HART_HARDEN=1` · `HART_TRUST_PROXY=1` (only behind a proxy you control) · `HART_MAX_BODY_BYTES` (default 10 MiB) · `HART_READ_TIMEOUT_MS` (default 30s) · `HART_ACCESS_LOG=1`; opt out locally with `HART_HARDEN=0`. **BYOK key map:** `" + base + "/byok.md` (also `docs/BYOK.md` in the repo).\n\n## hart Pro (self-host)\n\nhart is open-core: the CLI is fully functional and free, and a few features unlock with a **license key** (`hart license <key>`, or `HART_LICENSE_KEY` on the daemon; `hart license status` shows your tier). Keys are Ed25519-signed and verified offline (no phone-home). Pro today: **limits** (raise the per-owner storage quota), **audit-log** (`hart audit` — who changed what), **teams** (`hart team` — per-member keys). Enforcement is honest, not DRM — pay for support, updates, and to stay compliant.\n\n**Teams SSO (optional, your IdP).** `hart join <owner>` lets a member self-onboard via **any OpenID Connect provider you configure** — you bring the IdP, hart is a standard OIDC client. Set `HART_OIDC_ISSUER` (e.g. your Auth0/Okta/Keycloak/Google/machin-idp), `HART_OIDC_CLIENT_ID`, `HART_OIDC_CLIENT_SECRET` (register `<your-hart>/team/callback` as the redirect URI at your IdP); optional `HART_OIDC_SCOPES` (default `openid email`). hart discovers the endpoints, runs the code flow, and reads the member's email from `userinfo`. Unset = SSO off (teams still work via `hart team add` member keys).\n\n**Buying is agent-first.** Run `hart upgrade` — it returns a checkout URL; give it to the human to pay. They're emailed a license key; then run `hart license <key>` (or set `HART_LICENSE_KEY`). Lost the key? `" + base + "/manage` re-emails it. Contact: javi@intrane.fr.\n\n"
     g = g + "## Workflow caveats from usage\n\n"
     g = g + "- No `hart` binary? Publish with curl: `curl -s -X POST '" + base + "/v1/publish?owner=<owner>&artifact=<slug>&visibility=unlisted' -H 'content-type: text/html' --data-binary @file.html`\n"
     g = g + "- Convert Markdown to self-contained HTML with pandoc: `pandoc --embed-resources --standalone --css style.css -f markdown-yaml_metadata_block --metadata title='...' -o out.html in.md`. Use `-f markdown-yaml_metadata_block` when the Markdown frontmatter contains unquoted colons (e.g. `Asunto: foo: bar`).\n"
@@ -2482,7 +2753,7 @@ func skill_md(base, authline) (s) {
     s = s + "## Skill authoring\n\nTo expose an artifact as a skill, add these `<meta>` tags in the `<head>`:\n\n```html\n<meta name=\"title\" content=\"Skill title\">\n<meta name=\"description\" content=\"One-line description\">\n<meta name=\"keywords\" content=\"ops, runbook, agent-skill\">\n```\n\n- `--title` wins over `<meta name=\"title\">`.\n- `--meta '{\"description\":\"...\"}'` wins over `<meta name=\"description\">`; without `--meta`, HTML-derived values update on re-publish.\n- `<meta name=\"keywords\">` becomes a JSON array and is searchable with `hart search --tag`.\n\nThen `hart list --owner <you> --format skills` returns a compact catalog with `title`, `description`, `keywords`, `visibility`, and `url`. Private skills are only described for callers with the read/owner/admin key.\n\n"
     s = s + "## Memory layer\n\nAttach provenance at publish: `--agent <name> --run <id> --parent <id> --tags a,b --meta '{...}'`. Use `hart meta <id> [json]` to annotate, `hart search` to find, `hart diff` to compare versions, `hart checkpoint` to label versions, and `hart link` / `hart related` to relate artifacts.\n\n"
     s = s + "## Visibility\n\n`--visibility unlisted` (default: public-read, unlisted) · `public` (listed at `/explore`) · `private` (password-gated; agents send `X-Hart-Read-Key` / `HART_READ_KEY`). Set at publish (`--visibility --read-key`) or later via `hart visibility <id> <mode>`.\n\n"
-    s = s + "## Custom domains & platform delivery\n\nServe a public artifact on a creator's own domain: `hart domain <you>/<name> shop.example.com` maps `Host -> artifact` and hart serves it chromeless at `/` (add `--emit-traefik` to print a ready Traefik router block; `hart domains` lists, `hart domain-rm <domain>` unmaps). Provisioning stays in your reverse proxy — hart only records + serves the mapping. A platform backend can also fetch a raw stored body server-side with `hart get <id> --html [--read-key <pw>]` (private needs the read key, no owner/admin token) to re-serve or deliver it as a gated download.\n\n"
+    s = s + "## Custom domains & platform delivery\n\nServe a public artifact on a creator's own domain: `hart domain <you>/<name> shop.example.com` maps `Host -> artifact` and hart serves it chromeless at `/` (add `--emit-traefik` to print a ready Traefik router block; `hart domains` lists, `hart domain-rm <domain>` unmaps, `hart domains --prune` removes orphan/stale mappings). Provisioning stays in your reverse proxy — hart only records + serves the mapping. For self-service `*.hart.intrane.fr` subdomains the daemon enforces `HART_DOMAIN_ALLOW/DENY/PRIVATE_PATTERNS/SUBDOMAIN_OWNER_MATCH/MAX_PER_OWNER/GC_INTERVAL`. Check availability with `POST " + base + "/v1/domain/check?domain=foo.example.com`. A platform backend can also fetch a raw stored body server-side with `hart get <id> --html [--read-key <pw>]` (private needs the read key, no owner/admin token) to re-serve or deliver it as a gated download.\n\n"
     s = s + "## Teams, SSO & Pro\n\nSome features need a **hart Pro** license — run `hart upgrade` for a checkout link (hand the URL to the human; they're emailed a key; then `hart license <key>`, or set `HART_LICENSE_KEY` on the daemon; `hart license status` shows your tier). Pro unlocks higher storage limits, `hart audit` (who changed what), and **teams**.\n\n**Teams** — share an `--owner` namespace with per-member keys: an admin runs `hart team invite <owner> <email>`; each member holds their own key (send it as `HART_MEMBER_KEY` or `--member-key`), and the audit log records who did what. Revoke with `hart team rm`.\n\n**SSO self-onboarding** — a member runs `hart join <owner>`, opens the returned link to sign in, and their agent receives the member key (no key hand-off). hart is a **generic OpenID Connect client**: to enable it, the operator sets on the daemon `HART_OIDC_ISSUER` (your IdP — Auth0/Okta/Keycloak/Google/machin-idp/…), `HART_OIDC_CLIENT_ID`, `HART_OIDC_CLIENT_SECRET` (optional `HART_OIDC_SCOPES`, default `openid email`), and registers `" + base + "/team/callback` as the redirect URI at that IdP. Unset = SSO off (teams still work via member keys).\n\n"
     s = s + "## Workflow caveats from usage\n\n"
     s = s + "- No `hart` binary? Publish with curl: `curl -s -X POST '" + base + "/v1/publish?owner=<owner>&artifact=<slug>&visibility=unlisted' -H 'content-type: text/html' --data-binary @file.html`\n"
@@ -2539,7 +2810,7 @@ func llms_txt(base, authline) (t) {
     t = t + "## Rules\n\n"
     t = t + "- Pages must be SELF-CONTAINED: inline all CSS/JS, `data:` URIs for assets. No external refs, no network (fetch/XHR blocked by CSP). External refs are rejected at publish (pass `--force` to override).\n"
     t = t + "- Landing pages / sales funnels: publish with `--csp-mode landing` (allows Stripe/analytics/fonts/embeds + skips the linter) or `--csp-mode custom --csp-policy '<CSP>'`. Default `strict` = the lockdown.\n"
-    t = t + "- Custom domains (multi-tenant): `hart domain you/name shop.example.com` serves the artifact by `Host` at `/` (chromeless); `--emit-traefik` prints a Traefik router block (provisioning stays in your proxy). Server-side fetch of a raw body: `hart get <id> --html [--read-key <pw>]`.\n"
+    t = t + "- Custom domains (multi-tenant / self-service): `hart domain you/name shop.example.com` serves the artifact by `Host` at `/` (chromeless); `--emit-traefik` prints a Traefik router block (provisioning stays in your proxy). Self-service `*.hart.intrane.fr` subdomains are policy-controlled: `HART_DOMAIN_ALLOW`, `HART_DOMAIN_DENY`, `HART_DOMAIN_PRIVATE_PATTERNS`, `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH`, `HART_DOMAIN_MAX_PER_OWNER`, `HART_DOMAIN_GC_INTERVAL`. Availability check: `POST " + base + "/v1/domain/check?domain=shop.example.com`. Server-side fetch of a raw body: `hart get <id> --html [--read-key <pw>]`.\n"
     t = t + "- JSX: add `--format jsx` (transpiled in-browser, no build step).\n"
     t = t + "- Markdown -> HTML: `pandoc --embed-resources --standalone --css style.css -f markdown-yaml_metadata_block` avoids YAML parse errors when frontmatter contains colons.\n"
     t = t + "- Re-publishing same owner/artifact updates `latest`; delete/move with `curl -X DELETE " + base + "/v1/artifacts/<owner>/<artifact>`.\n"
@@ -2728,6 +2999,8 @@ func hart_route(req) (res) {
     if req.method == "POST" && p == "/v1/domain" { return h_domain_set(req) }
     if req.method == "GET" && p == "/v1/domain" { return h_domain_get(req) }
     if req.method == "DELETE" && p == "/v1/domain" { return h_domain_rm(req) }
+    if req.method == "POST" && p == "/v1/domain/check" { return h_domain_check(req) }
+    if req.method == "POST" && p == "/v1/admin/domains/prune" { return h_domain_prune(req) }
     if req.method == "GET" && p == "/v1/license/status" { return h_license_status(req) }
     if req.method == "POST" && p == "/v1/license" { return h_license_set(req) }
     if req.method == "GET" && p == "/v1/audit" { return h_audit(req) }
@@ -3113,6 +3386,21 @@ func refresh_loop() {
     }
 }
 
+// domain_gc_loop — background cleanup of orphan/stale domain mappings. Runs every
+// HART_DOMAIN_GC_INTERVAL (parsed as a duration). Off when unset or zero.
+func domain_gc_loop() {
+    for {
+        interval_s := parse_duration(cfg("HART_DOMAIN_GC_INTERVAL"))
+        if interval_s > 0 {
+            sleep(interval_s * 1000)
+            db := opendb()
+            if db != 0 { run_domain_gc(db); sqlite_close(db) }
+        } else {
+            sleep(60000)   // check again in a minute in case the operator enables it
+        }
+    }
+}
+
 func run_due_refreshes() {
     db := opendb()
     if db == 0 { return }
@@ -3198,6 +3486,7 @@ func cmd_serve(a) {
     if pubbase_over_https() == 1 { set_secure_cookies(1) }
     say("{\"ok\":true,\"serving\":\"hart\",\"port\":" + str(port) + ",\"routes\":[\"POST /v1/publish\",\"GET /a/<id>[/latest|/v<n>]\",\"GET /v1/artifacts\",\"GET /v1/skills/<owner>\"]}")
     go refresh_loop()
+    go domain_gc_loop()
     serve(port, func(req) { return hart_route(req) })
 }
 
@@ -3676,12 +3965,12 @@ func traefik_yaml(domain, service_url) (y) {
     y = y + "          - url: '" + service_url + "'\n"
 }
 
-// hart domain <id> <domain> [--version <n>] [--chrome] [--emit-traefik [--service-url <url>]]
+// hart domain <id> <domain> [--version <n>] [--chrome] [--read-key <k>] [--emit-traefik [--service-url <url>]]
 // Map a custom domain to an artifact (served by Host, chromeless by default). --emit-traefik prints
 // the Traefik block to STDOUT (redirect it into the proxy's watched dir); the API confirmation then
 // goes to stderr. Provisioning stays in Traefik — hart only records the mapping + serves it.
 func cmd_domain(a) {
-    if len(a) < 4 { die(80, "usage: hart domain <id> <domain> [--version <n>] [--chrome] [--emit-traefik [--service-url <url>]]") }
+    if len(a) < 4 { die(80, "usage: hart domain <id> <domain> [--version <n>] [--chrome] [--read-key <k>] [--emit-traefik [--service-url <url>]]") }
     require_valid_id(a[2])
     id := a[2]
     domain := to_lower(a[3])
@@ -3695,8 +3984,19 @@ func cmd_domain(a) {
     if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
     ok := owner_key_of(a, o)
     if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
+    rk := flagv(a, "--read-key", read_key_for(id))
+    if rk != "" { headers = append(headers, "x-hart-read-key: " + rk) }
     mk := flagv(a, "--member-key", cfg("HART_MEMBER_KEY"))
     if mk != "" { headers = append(headers, "x-hart-member-key: " + mk) }
+    // if overwriting a mapping owned by someone else, fetch the current owner and add its key.
+    cur_owner := ""
+    cur_status, cur_resp, _ := http_request("GET", hart_url() + "/v1/domain?domain=" + url_encode(domain), []string{}, "")
+    if cur_status == 200 { cur_owner = json_field(cur_resp, ".owner", "") }
+    if cur_owner != "" && cur_owner != o {
+        cok := owner_key_for(cur_owner)
+        if cok == "" { cok = cfg("HART_OWNER_KEY") }
+        if cok != "" { headers = append(headers, "x-hart-current-owner-key: " + cok) }
+    }
     status, resp, err := http_request("POST", url, headers, "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
@@ -3726,12 +4026,23 @@ func cmd_domain_rm(a) {
     say(resp)
 }
 
-// hart domains [--owner <who>]  — list custom-domain mappings (JSON).
+// hart domains [--owner <who>] [--prune]  — list custom-domain mappings (JSON), or prune orphans.
 func cmd_domains(a) {
+    if has_flag(a, "--prune") == 1 {
+        headers := admin_headers()
+        status, resp, err := http_request("POST", hart_url() + "/v1/admin/domains/prune", headers, "")
+        if err != "" { die(100, "cannot reach hart daemon: " + err) }
+        if status != 200 { write(2, resp + "\n"); exit(80) }
+        say(resp)
+        return
+    }
     url := hart_url() + "/v1/domain"
     o := flagv(a, "--owner", "")
     if o != "" { url = url + "?owner=" + url_encode(o) }
-    status, resp, err := http_request("GET", url, []string{}, "")
+    headers := []string{}
+    tok := client_token()
+    if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
+    status, resp, err := http_request("GET", url, headers, "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "domains failed (" + str(status) + ")") }
     say(resp)

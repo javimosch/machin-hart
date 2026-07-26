@@ -156,26 +156,39 @@ hart data you/sales '{"points":[3,1,4,1,5]}'   # re-renders, same URL — great 
 React+Babel runtime (`/_hart/runtime/*`) and transpiles **in the browser**. No build step, no CDN.
 `React`/`ReactDOM` are globals; render into `#root`.
 
-## Custom domains (multi-tenant)
+## Custom domains (multi-tenant / self-service)
 
-Serve a public artifact on a creator's **own domain** — hart the page engine behind a
-creator-commerce platform (self-hosted Gumroad for landings/playbooks). hart maps `Host → artifact`
-and serves it at `/`; **provisioning stays in your reverse proxy** (Traefik), hart only records the
-mapping and serves it by the `Host` header.
+Serve an artifact on a creator's **own domain**, or let agents self-serve `*.hart.intrane.fr`-style
+subdomains on a shared instance. hart maps `Host → artifact` and serves it at `/`; **provisioning
+stays in your reverse proxy** (Traefik), hart only records the mapping and serves it by the `Host`
+header.
 
 ```sh
 hart domain you/landing shop.example.com                 # map — served chromeless at /
 hart domain you/landing shop.example.com --emit-traefik  # + print a ready Traefik router block
+hart domain you/landing you.shop.example.com --read-key <pw>  # private artifact needs its read key
 hart domains                                             # list mappings (JSON)
+hart domains --prune                                    # admin: remove orphan/stale mappings
 hart domain-rm shop.example.com                          # unmap
+curl -s -X POST https://hart.intrane.fr/v1/domain/check?domain=foo.example.com  # availability
 ```
 
 A mapped page is served **chromeless** (the hart chrome/links dropped) and its absolute links use
 the custom host — pair with `--csp-mode landing` for funnels. A **private** mapped artifact still
 requires its read key. Provisioning is Traefik's job: `--emit-traefik --service-url <hart-url>`
-prints a host-only router block for the proxy's watched dir, and an optional `HART_DOMAIN_HOOK` on
-the daemon runs `<hook> add|remove <domain> <owner> <artifact>` on changes so an external
-provisioner can reconcile the proxy automatically (off by default) —
+prints a host-only router block for the proxy's watched dir. For wildcard instance subdomains, a
+single Traefik `*.hart.intrane.fr` router is enough.
+
+**Policy knobs** (daemon env): `HART_DOMAIN_ALLOW` (allow patterns), `HART_DOMAIN_DENY` (deny
+patterns), `HART_DOMAIN_PRIVATE_PATTERNS` (force private/read-key), `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1`
+(`*.hart.intrane.fr` label must match the owner, e.g. `foo.alice.hart.intrane.fr` belongs to `alice`),
+`HART_DOMAIN_MAX_PER_OWNER` (per-owner cap), `HART_DOMAIN_GC_INTERVAL` (background orphan cleanup,
+e.g. `5m`), and `HART_DOMAIN_HOOK` (executable invoked `add|remove <domain> <owner> <artifact>` on
+every mapping change). **Anti-hijack:** overwriting a domain requires both the current owner's key
+and the new owner's key.
+
+An optional `HART_DOMAIN_HOOK` on the daemon runs `<hook> add|remove <domain> <owner> <artifact>` on
+changes so an external provisioner can reconcile the proxy automatically (off by default) —
 [**hart-domain-sync**](https://github.com/javimosch/hart-domain-sync) is a reference reconciler that
 consumes this hook to manage Traefik dynamic config + Cloudflare DNS. A platform backend can also pull
 a raw stored body server-side with `hart get <id> --html [--read-key <pw>]` (private needs the read
@@ -211,7 +224,7 @@ Non-interactive and idempotent. `hart guide` prints the full manual.
 | `visibility <id> <unlisted\|public\|private> [--read-key --clear-read-key]` | change visibility |
 | `versions <id>` / `rollback <id> <v>` | history / instant revert |
 | `list [--owner <who>]` / `get <id> [--html --read-key]` / `rm <id>` | manage artifacts (`get --html` = raw stored body) |
-| `domain <id> <domain> [--chrome --emit-traefik]` / `domain-rm <domain>` / `domains` | map a custom domain to an artifact (served by `Host`; provisioning stays in Traefik) |
+| `domain <id> <domain> [--chrome --emit-traefik --read-key <pw>]` / `domain-rm <domain>` / `domains [--prune]` | map a custom domain to an artifact (served by `Host`; `--prune` removes orphan mappings) |
 | `stats <id>` | living-deliverable analytics — views, last view, freshness, top referrers (server-side, CSP-safe) |
 | `fresh <id> <30s\|15m\|2h\|1d\|off>` / `stale [--owner <who>] [--older-than <dur>]` | freshness SLA + the staleness signal (JSON; your agent alerts) |
 | `explore [query]` | public discovery feed (JSON) |
@@ -261,7 +274,9 @@ over the CLI.
 `HART_URL`, `HART_TOKEN` (publish token, if the instance requires one), `HART_OWNER_KEY` (namespace write key; also `HART_OWNER_KEY_<owner>` per namespace),
 `HART_READ_KEY` (read a private artifact; also `HART_READ_KEY_<owner>_<artifact>` per artifact), `HART_ADMIN_TOKEN` (operator admin API — cross-owner list; separate from `HART_TOKEN`). Server:
 `HART_DB`, `HART_RUNTIME_DIR`, `HART_PUBLIC`, `HART_LANDING`, `HART_MAX_SUBMITS_PER_MIN` (10),
-`HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`.
+`HART_MAX_OWNER_MB` (30), `HART_EXPLORE=0`, `HART_COOKIE_SECRET`, plus custom-domain knobs
+`HART_DOMAIN_ALLOW`, `HART_DOMAIN_DENY`, `HART_DOMAIN_PRIVATE_PATTERNS`, `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH`,
+`HART_DOMAIN_MAX_PER_OWNER`, `HART_DOMAIN_GC_INTERVAL`, and `HART_DOMAIN_HOOK`.
 
 **Production hardening** — auto-enabled when `HART_PUBLIC` is set (or force with `HART_HARDEN=1`):
 `HART_TRUST_PROXY`, `HART_MAX_BODY_BYTES`, `HART_READ_TIMEOUT_MS`, `HART_ACCESS_LOG`. Opt out
