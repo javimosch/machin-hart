@@ -1526,10 +1526,29 @@ func h_admin_mv(req) (res) {
     if len(ds) > 0 { sqlite_close(db); return response("409 Conflict", "application/json", "{\"ok\":false,\"error\":\"target already exists: " + nnid + " (pick another name or rm it first)\"}") }
     // atomic across both tables — id is the FK from versions.artifact_id. `updated` is left as-is
     // so a move doesn't masquerade as a content edit in recency-ordered listings.
+    // domain cleanup (#19 slice 6): update domain mappings to follow the move. When the owner
+    // stays the same, just update the artifact column. When the owner changes, domains whose
+    // new owner would violate HART_DOMAIN_SUBDOMAIN_OWNER_MATCH or ALLOW/DENY policy are deleted
+    // (with a HART_DOMAIN_HOOK remove) instead of updated — the provisioner tears those down.
+    sowner := ss[0].owner
+    sname := ss[0].name
+    drows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE owner = ? AND artifact = ?", []string{sowner, sname})
+    dds := parse(drows, []DomainRow{})
     sqlite_exec(db, "BEGIN", []string{})
     sqlite_exec(db, "UPDATE artifacts SET id = ?, owner = ?, name = ? WHERE id = ?", []string{nnid, nowner, nname, from})
     sqlite_exec(db, "UPDATE versions SET artifact_id = ? WHERE artifact_id = ?", []string{nnid, from})
     sqlite_exec(db, "UPDATE refresh SET artifact_id = ? WHERE artifact_id = ?", []string{nnid, from})   // self-refresh source follows the move
+    di := 0
+    for di < len(dds) {
+        ddomain := dds[di].domain
+        if domain_policy_ok(ddomain) == 0 || domain_owner_match_ok(ddomain, nowner) == 0 {
+            domain_hook("remove", ddomain, sowner, sname)
+            sqlite_exec(db, "DELETE FROM domains WHERE domain = ?", []string{ddomain})
+        } else {
+            sqlite_exec(db, "UPDATE domains SET owner = ?, artifact = ?, updated = ? WHERE domain = ?", []string{nowner, nname, str(now()), ddomain})
+        }
+        di = di + 1
+    }
     sqlite_exec(db, "COMMIT", []string{})
     audit(db, "admin-mv", nowner, nnid, 0, "from " + from, req)
     sqlite_close(db)
@@ -2001,6 +2020,13 @@ func h_delete(req, id) (res) {
     oa := parse(orows, []ArtRow{})
     if len(oa) == 0 { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"not found\"}") }
     if owner_authorized(db, oa[0].owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + oa[0].owner + "' is claimed — pass the owner key\"}") }
+    // domain cleanup (#19 slice 6): delete all domain mappings for this artifact and fire
+    // HART_DOMAIN_HOOK remove for each so the provisioner tears down the proxy entries.
+    drows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE owner = ? AND artifact = ?", []string{oa[0].owner, oa[0].name})
+    dds := parse(drows, []DomainRow{})
+    di := 0
+    for di < len(dds) { domain_hook("remove", dds[di].domain, dds[di].owner, dds[di].artifact)  di = di + 1 }
+    sqlite_exec(db, "DELETE FROM domains WHERE owner = ? AND artifact = ?", []string{oa[0].owner, oa[0].name})
     sqlite_exec(db, "DELETE FROM versions WHERE artifact_id = ?", []string{id})
     sqlite_exec(db, "DELETE FROM refresh WHERE artifact_id = ?", []string{id})   // no orphan self-refresh source
     audit(db, "rm", oa[0].owner, id, 0, "", req)

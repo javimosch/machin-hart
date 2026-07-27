@@ -341,6 +341,75 @@ kill "$RSRV" 2>/dev/null
 kill "$CSRV" 2>/dev/null
 export HART_DB="$TMP/test.db"
 
+echo "== domain cleanup: rm + admin mv (#19 slice 6) =="
+# hart rm <id> must delete all domain mappings for that artifact and fire HART_DOMAIN_HOOK
+# remove for each. hart admin mv must update domain mappings to follow the move when the
+# new owner still satisfies policy, and delete (with remove hook) domains that would violate
+# HART_DOMAIN_SUBDOMAIN_OWNER_MATCH or ALLOW/DENY policy under the new owner.
+GPORT=$((PORT + 13))
+export HART_DB="$TMP/domaincleanup.db"
+GHOOKLOG="$TMP/cleanup-hook.log"
+rm -f "$GHOOKLOG"
+HART_DOMAIN_HOOK="sh -c 'echo \$0 \$1 \$2 \$3 >> $GHOOKLOG'" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$GPORT" >"$TMP/domaincleanup.log" 2>&1 &
+GSRV=$!
+sleep 1
+kill -0 "$GSRV" 2>/dev/null || { echo "test: domain-cleanup daemon failed to boot"; cat "$TMP/domaincleanup.log"; exit 1; }
+GURL="http://127.0.0.1:$GPORT"
+printf '<h1>cleanup</h1>' > "$TMP/cleanup.html"
+# publish two artifacts under owner acme, map domains to the first
+curl -s -o /dev/null -X POST "$GURL/v1/publish?owner=acme&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/cleanup.html"
+curl -s -o /dev/null -X POST "$GURL/v1/publish?owner=acme&artifact=blog" -H 'content-type: text/html' --data-binary @"$TMP/cleanup.html"
+curl -s -o /dev/null -X POST "$GURL/v1/domain?domain=site.example.com&id=acme/site"
+curl -s -o /dev/null -X POST "$GURL/v1/domain?domain=blog.example.com&id=acme/blog"
+# verify both mappings exist
+has "cleanup: site mapping exists" "$(curl -s "$GURL/v1/domain?domain=site.example.com")" '"id":"acme/site"'
+has "cleanup: blog mapping exists" "$(curl -s "$GURL/v1/domain?domain=blog.example.com")" '"id":"acme/blog"'
+# rm the site artifact -> its domain mapping should be deleted + hook remove fired
+rm -f "$GHOOKLOG"
+curl -s -o /dev/null -X DELETE "$GURL/v1/artifacts/acme/site"
+eq "cleanup: rm deletes domain mapping (404)" "$(curl -s -o /dev/null -w '%{http_code}' "$GURL/v1/domain?domain=site.example.com")" "404"
+has "cleanup: blog mapping still exists after rm site" "$(curl -s "$GURL/v1/domain?domain=blog.example.com")" '"id":"acme/blog"'
+eq "cleanup: rm fires remove hook for site domain" "$(cat "$GHOOKLOG" 2>/dev/null | grep -c 'remove site.example.com acme site')" "1"
+eq "cleanup: rm does NOT fire remove hook for blog domain" "$(cat "$GHOOKLOG" 2>/dev/null | grep -c 'remove blog.example.com acme blog')" "0"
+# admin mv: move blog to acme/blog2 (same owner) -> domain mapping should follow (update artifact)
+rm -f "$GHOOKLOG"
+curl -s -o /dev/null -X POST "$GURL/v1/admin/mv?from=acme/blog&to=acme/blog2" -H "authorization: Bearer $HART_ADMIN_TOKEN"
+has "cleanup: admin mv same-owner updates domain mapping" "$(curl -s "$GURL/v1/domain?domain=blog.example.com")" '"id":"acme/blog2"'
+eq "cleanup: admin mv same-owner does NOT fire remove hook" "$(cat "$GHOOKLOG" 2>/dev/null | grep -c 'remove blog.example.com acme blog')" "0"
+kill "$GSRV" 2>/dev/null
+
+# admin mv with HART_DOMAIN_SUBDOMAIN_OWNER_MATCH: moving to a new owner whose label doesn't
+# match the domain should delete the mapping (with remove hook); moving to a matching owner
+# should keep it (updated).
+MPORT=$((PORT + 14))
+export HART_DB="$TMP/domainmvowner.db"
+MHOOKLOG="$TMP/mvowner-hook.log"
+rm -f "$MHOOKLOG"
+HART_PUBLIC="https://hart.intrane.fr" HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1 HART_DOMAIN_ALLOW="*.hart.intrane.fr" HART_DOMAIN_HOOK="sh -c 'echo \$0 \$1 \$2 \$3 >> $MHOOKLOG'" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$MPORT" >"$TMP/domainmvowner.log" 2>&1 &
+MSRV=$!
+sleep 1
+kill -0 "$MSRV" 2>/dev/null || { echo "test: domain-mv-owner daemon failed to boot"; cat "$TMP/domainmvowner.log"; exit 1; }
+MURL="http://127.0.0.1:$MPORT"
+curl -s -o /dev/null -X POST "$MURL/v1/publish?owner=alice&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/cleanup.html"
+curl -s -o /dev/null -X POST "$MURL/v1/publish?owner=bob&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/cleanup.html"
+# alice maps alice.hart.intrane.fr (owner-match ok for alice)
+curl -s -o /dev/null -X POST "$MURL/v1/domain?domain=alice.hart.intrane.fr&id=alice/site"
+has "cleanup: owner-match mapping exists" "$(curl -s "$MURL/v1/domain?domain=alice.hart.intrane.fr")" '"id":"alice/site"'
+# admin mv alice/site -> bob/site2: new owner bob doesn't match alice.hart.intrane.fr -> mapping deleted + remove hook
+rm -f "$MHOOKLOG"
+curl -s -o /dev/null -X POST "$MURL/v1/admin/mv?from=alice/site&to=bob/site2" -H "authorization: Bearer $HART_ADMIN_TOKEN"
+eq "cleanup: admin mv to non-matching owner deletes mapping (404)" "$(curl -s -o /dev/null -w '%{http_code}' "$MURL/v1/domain?domain=alice.hart.intrane.fr")" "404"
+eq "cleanup: admin mv to non-matching owner fires remove hook" "$(cat "$MHOOKLOG" 2>/dev/null | grep -c 'remove alice.hart.intrane.fr alice site')" "1"
+# admin mv bob/site2 -> bob/site3: same owner, owner-match still ok -> mapping should be created first then follow
+curl -s -o /dev/null -X POST "$MURL/v1/domain?domain=bob.hart.intrane.fr&id=bob/site2"
+has "cleanup: bob mapping exists" "$(curl -s "$MURL/v1/domain?domain=bob.hart.intrane.fr")" '"id":"bob/site2"'
+rm -f "$MHOOKLOG"
+curl -s -o /dev/null -X POST "$MURL/v1/admin/mv?from=bob/site2&to=bob/site3" -H "authorization: Bearer $HART_ADMIN_TOKEN"
+has "cleanup: admin mv same-owner (bob) updates mapping" "$(curl -s "$MURL/v1/domain?domain=bob.hart.intrane.fr")" '"id":"bob/site3"'
+eq "cleanup: admin mv same-owner (bob) no remove hook" "$(cat "$MHOOKLOG" 2>/dev/null | grep -c 'remove bob.hart.intrane.fr bob site2')" "0"
+kill "$MSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"
