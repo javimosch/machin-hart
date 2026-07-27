@@ -1196,6 +1196,25 @@ func h_domain_rm(req) (res) {
     res = ok_json("{\"ok\":true,\"removed\":\"" + jesc(domain) + "\"}")
 }
 
+// POST /v1/domain/check?domain=  — public, rate-limited availability check (#19 slice 5).
+// Lets an external agent probe whether a domain is available for mapping before attempting
+// POST /v1/domain. No token required (public). Returns available=true when the domain is
+// well-formed, passes ALLOW/DENY policy, and is not currently mapped to any artifact.
+// available=false carries a "reason" field: invalid | denied | taken. Rate-limited per IP
+// via the same sliding 60s window as publish (rate_ok / HART_MAX_SUBMITS_PER_MIN).
+func h_domain_check(req) (res) {
+    db := opendb()
+    if rate_ok(db, hart_client_ip(req)) == 0 { sqlite_close(db); return response("429 Too Many Requests", "application/json", "{\"ok\":false,\"error\":\"rate limit\"}") }
+    domain := to_lower(trim(query(req, "domain")))
+    if valid_domain(domain) == 0 { sqlite_close(db); return ok_json("{\"ok\":true,\"domain\":\"" + jesc(domain) + "\",\"available\":false,\"reason\":\"invalid\"}") }
+    if domain_policy_ok(domain) == 0 { sqlite_close(db); return ok_json("{\"ok\":true,\"domain\":\"" + jesc(domain) + "\",\"available\":false,\"reason\":\"denied\"}") }
+    rows := sqlite_query(db, "SELECT domain FROM domains WHERE domain = ?", []string{domain})
+    ds := parse(rows, []DomainRow{})
+    if len(ds) > 0 { sqlite_close(db); return ok_json("{\"ok\":true,\"domain\":\"" + jesc(domain) + "\",\"available\":false,\"reason\":\"taken\"}") }
+    sqlite_close(db)
+    res = ok_json("{\"ok\":true,\"domain\":\"" + jesc(domain) + "\",\"available\":true,\"reason\":\"free\"}")
+}
+
 // ---- daemon ---------------------------------------------------------------
 
 // POST /v1/publish?owner=&artifact=&id=&title=&format=  — raw HTML in the body.
@@ -2774,6 +2793,7 @@ func hart_route(req) (res) {
     if req.method == "POST" && p == "/v1/domain" { return h_domain_set(req) }
     if req.method == "GET" && p == "/v1/domain" { return h_domain_get(req) }
     if req.method == "DELETE" && p == "/v1/domain" { return h_domain_rm(req) }
+    if req.method == "POST" && p == "/v1/domain/check" { return h_domain_check(req) }
     if req.method == "GET" && p == "/v1/license/status" { return h_license_status(req) }
     if req.method == "POST" && p == "/v1/license" { return h_license_set(req) }
     if req.method == "GET" && p == "/v1/audit" { return h_audit(req) }

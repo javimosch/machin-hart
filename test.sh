@@ -286,6 +286,61 @@ kill "$HSRV" 2>/dev/null
 kill "$WSRV" 2>/dev/null
 export HART_DB="$TMP/test.db"
 
+echo "== domain check (POST /v1/domain/check, #19 slice 5) =="
+# Public, rate-limited availability check. No token required. Returns available=true when
+# the domain is well-formed, passes ALLOW/DENY policy, and is not currently mapped. The
+# check endpoint uses a fresh daemon with an allowlist so we can exercise the denied path.
+CPORT=$((PORT + 11))
+export HART_DB="$TMP/domaincheck.db"
+HART_DOMAIN_ALLOW="*.hart.intrane.fr" HART_DOMAIN_DENY="admin.hart.intrane.fr,api.hart.intrane.fr" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$CPORT" >"$TMP/domaincheck.log" 2>&1 &
+CSRV=$!
+sleep 1
+kill -0 "$CSRV" 2>/dev/null || { echo "test: domain-check daemon failed to boot"; cat "$TMP/domaincheck.log"; exit 1; }
+CURL="http://127.0.0.1:$CPORT"
+# publish an artifact + map a domain so we can test the "taken" path
+printf '<h1>check</h1>' > "$TMP/check.html"
+curl -s -o /dev/null -X POST "$CURL/v1/publish?owner=acme&artifact=shop" -H 'content-type: text/html' --data-binary @"$TMP/check.html"
+curl -s -o /dev/null -X POST "$CURL/v1/domain?domain=taken.hart.intrane.fr&id=acme/shop"
+# available domain -> available=true, reason=free
+eq "check: free domain available (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CURL/v1/domain/check?domain=free.hart.intrane.fr")" "200"
+has "check: free domain available=true" "$(curl -s -X POST "$CURL/v1/domain/check?domain=free.hart.intrane.fr")" '"available":true'
+has "check: free domain reason=free" "$(curl -s -X POST "$CURL/v1/domain/check?domain=free.hart.intrane.fr")" '"reason":"free"'
+# taken domain -> available=false, reason=taken
+has "check: taken domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=taken.hart.intrane.fr")" '"available":false'
+has "check: taken domain reason=taken" "$(curl -s -X POST "$CURL/v1/domain/check?domain=taken.hart.intrane.fr")" '"reason":"taken"'
+# denied domain -> available=false, reason=denied
+has "check: denied domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=admin.hart.intrane.fr")" '"available":false'
+has "check: denied domain reason=denied" "$(curl -s -X POST "$CURL/v1/domain/check?domain=admin.hart.intrane.fr")" '"reason":"denied"'
+# non-allowlisted domain -> available=false, reason=denied (policy rejects)
+has "check: non-allowlisted domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=evil.example.com")" '"available":false'
+has "check: non-allowlisted domain reason=denied" "$(curl -s -X POST "$CURL/v1/domain/check?domain=evil.example.com")" '"reason":"denied"'
+# invalid domain -> available=false, reason=invalid
+has "check: invalid domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=not_a_domain")" '"available":false'
+has "check: invalid domain reason=invalid" "$(curl -s -X POST "$CURL/v1/domain/check?domain=not_a_domain")" '"reason":"invalid"'
+# empty domain -> available=false, reason=invalid
+has "check: empty domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=")" '"available":false'
+has "check: empty domain reason=invalid" "$(curl -s -X POST "$CURL/v1/domain/check?domain=")" '"reason":"invalid"'
+# public endpoint: no token required (no HART_ADMIN_TOKEN header sent, no auth)
+eq "check: no token required (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CURL/v1/domain/check?domain=free.hart.intrane.fr")" "200"
+# domain case is normalized (uppercase -> lowercase, still found as taken)
+has "check: case-insensitive domain (taken)" "$(curl -s -X POST "$CURL/v1/domain/check?domain=TAKEN.hart.intrane.fr")" '"reason":"taken"'
+# response includes the (lowercased) domain field
+has "check: response echoes lowercased domain" "$(curl -s -X POST "$CURL/v1/domain/check?domain=FREE.HART.intrane.fr")" '"domain":"free.hart.intrane.fr"'
+# rate-limited: a tight window daemon returns 429 after the limit
+RPORT=$((PORT + 12))
+export HART_DB="$TMP/domaincheckrl.db"
+HART_MAX_SUBMITS_PER_MIN=2 ./hart serve "$RPORT" >"$TMP/domaincheckrl.log" 2>&1 &
+RSRV=$!
+sleep 1
+kill -0 "$RSRV" 2>/dev/null || { echo "test: domain-check-rl daemon failed to boot"; cat "$TMP/domaincheckrl.log"; exit 1; }
+RURL="http://127.0.0.1:$RPORT"
+curl -s -o /dev/null -X POST "$RURL/v1/domain/check?domain=a.example.com"
+curl -s -o /dev/null -X POST "$RURL/v1/domain/check?domain=b.example.com"
+eq "check: rate-limited after 2 submits (429)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$RURL/v1/domain/check?domain=c.example.com")" "429"
+kill "$RSRV" 2>/dev/null
+kill "$CSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"
