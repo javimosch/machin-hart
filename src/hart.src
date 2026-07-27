@@ -1619,6 +1619,14 @@ func h_admin_digest(req) (res) {
     res = ok_json(out)
 }
 
+// POST /v1/admin/domains/prune  — admin-only. Run one domain GC pass manually (same logic as the
+// background domain_gc_loop). Returns the number of pruned mappings. Powers `hart domains --prune`.
+func h_admin_domains_prune(req) (res) {
+    if check_admin(req) == 0 { return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"admin token required — set HART_ADMIN_TOKEN\"}") }
+    pruned := domain_gc_run()
+    res = ok_json("{\"ok\":true,\"pruned\":" + str(pruned) + "}")
+}
+
 // POST /v1/feedback — open (rate-limited, size-capped) feedback submission. Same payload shape as
 // the central relay: {kind,message,context,id,reporter,version}. Idempotent on client id.
 func h_feedback(req) (res) {
@@ -2747,6 +2755,7 @@ func hart_route(req) (res) {
     if req.method == "GET" && p == "/v1/admin/list" { return h_admin_list(req) }
     if req.method == "POST" && p == "/v1/admin/mv" { return h_admin_mv(req) }
     if req.method == "GET" && p == "/v1/admin/digest" { return h_admin_digest(req) }
+    if req.method == "POST" && p == "/v1/admin/domains/prune" { return h_admin_domains_prune(req) }
     if req.method == "POST" && p == "/v1/owner-key" { return h_owner_key(req) }
     if has_prefix(p, "/v1/artifacts/") {
         tail := substr(p, 14, len(p))   // the id (may contain "/") + optional suffix
@@ -3205,6 +3214,55 @@ func refresh_loop() {
     }
 }
 
+// ---- domain GC loop (#19 slice 7) -----------------------------------------
+// Runs in its own goroutine next to refresh_loop. When HART_DOMAIN_GC_INTERVAL is set
+// (e.g. "24h"), the GC scans the domains table at that interval and removes mappings
+// whose artifact is gone, whose owner/name no longer satisfies ALLOW/DENY policy or
+// HART_DOMAIN_SUBDOMAIN_OWNER_MATCH, firing HART_DOMAIN_HOOK remove for each pruned
+// mapping. Unset = no auto-GC (the operator runs `hart domains --prune` manually).
+// Each tick uses its own db handle.
+
+func domain_gc_loop() {
+    for {
+        secs := parse_duration(cfg("HART_DOMAIN_GC_INTERVAL"))
+        if secs <= 0 { sleep(60000); continue }
+        domain_gc_run()
+        sleep(secs * 1000)
+    }
+}
+
+// domain_gc_run — one GC pass. Returns the number of pruned mappings. Called by the
+// loop and by the manual prune endpoint / CLI.
+func domain_gc_run() (pruned) {
+    pruned = 0
+    db := opendb()
+    if db == 0 { return }
+    rows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains", []string{})
+    ds := parse(rows, []DomainRow{})
+    i := 0
+    for i < len(ds) {
+        d := ds[i]
+        id := d.owner + "/" + d.artifact
+        // artifact gone?
+        arows := sqlite_query(db, "SELECT id FROM artifacts WHERE id = ?", []string{id})
+        if len(arows) == 0 {
+            domain_hook("remove", d.domain, d.owner, d.artifact)
+            sqlite_exec(db, "DELETE FROM domains WHERE domain = ?", []string{d.domain})
+            pruned = pruned + 1
+            i = i + 1
+            continue
+        }
+        // policy no longer allows?
+        if domain_policy_ok(d.domain) == 0 || domain_owner_match_ok(d.domain, d.owner) == 0 {
+            domain_hook("remove", d.domain, d.owner, d.artifact)
+            sqlite_exec(db, "DELETE FROM domains WHERE domain = ?", []string{d.domain})
+            pruned = pruned + 1
+        }
+        i = i + 1
+    }
+    sqlite_close(db)
+}
+
 func run_due_refreshes() {
     db := opendb()
     if db == 0 { return }
@@ -3290,6 +3348,7 @@ func cmd_serve(a) {
     if pubbase_over_https() == 1 { set_secure_cookies(1) }
     say("{\"ok\":true,\"serving\":\"hart\",\"port\":" + str(port) + ",\"routes\":[\"POST /v1/publish\",\"GET /a/<id>[/latest|/v<n>]\",\"GET /v1/artifacts\",\"GET /v1/skills/<owner>\"]}")
     go refresh_loop()
+    go domain_gc_loop()
     serve(port, func(req) { return hart_route(req) })
 }
 
