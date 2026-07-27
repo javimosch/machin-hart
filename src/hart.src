@@ -1014,6 +1014,39 @@ func domain_policy_ok(domain) (ok) {
     if matched == 0 { ok = 0 }
 }
 
+// last_segment — the substring after the last '.' in s (or s itself if no dot). Used to pull the
+// owner label off a multi-label domain prefix (e.g. "foo.myagent" -> "myagent").
+func last_segment(s) (seg) {
+    seg = s
+    i := 0
+    last := -1
+    while i < len(s) {
+        if substr(s, i, i + 1) == "." { last = i }
+        i = i + 1
+    }
+    if last >= 0 { seg = substr(s, last + 1, len(s)) }
+}
+
+// domain_owner_match_ok — when HART_DOMAIN_SUBDOMAIN_OWNER_MATCH is set (#19 slice 2), verify
+// that the owner label in the domain matches the artifact owner. The owner label is the label
+// immediately before the instance domain (canonical_host of HART_PUBLIC): for instance
+// hart.intrane.fr, myagent.hart.intrane.fr -> "myagent"; foo.myagent.hart.intrane.fr -> "myagent".
+// Domains not under the instance domain are left to ALLOW/DENY policy. Returns 1 if OK (match,
+// check not enabled, instance domain not pinned, or not an instance subdomain), 0 on mismatch.
+func domain_owner_match_ok(domain, owner) (ok) {
+    ok = 1
+    flag := cfg("HART_DOMAIN_SUBDOMAIN_OWNER_MATCH")
+    if flag == "" || flag == "0" { return }
+    base := canonical_host()
+    if base == "" { return }   // no instance domain pinned -> can't check, leave to ALLOW/DENY
+    suffix := "." + base
+    if has_suffix(domain, suffix) == false { return }   // not an instance subdomain
+    prefix := substr(domain, 0, len(domain) - len(suffix))
+    if prefix == "" { return }   // domain == base (canonical host) -> not a mapping target
+    label := last_segment(prefix)
+    if label != owner { ok = 0 }
+}
+
 func domain_json(d) (j) {
     j = "{\"domain\":\"" + jesc(d.domain) + "\",\"id\":\"" + jesc(d.owner + "/" + d.artifact) + "\",\"owner\":\"" + jesc(d.owner) + "\",\"artifact\":\"" + jesc(d.artifact) + "\",\"version\":" + str(d.version) + ",\"no_chrome\":" + str(d.no_chrome) + ",\"updated\":" + str(d.updated) + "}"
 }
@@ -1046,6 +1079,7 @@ func h_domain_set(req) (res) {
     if oerr != "" { sqlite_close(db); return response("404 Not Found", "application/json", "{\"ok\":false,\"error\":\"artifact not found: " + jesc(id) + "\"}") }
     owner := unq(orow)
     if owner_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + jesc(owner) + "' is claimed — pass the owner key\"}") }
+    if domain_owner_match_ok(domain, owner) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"domain owner label does not match artifact owner (HART_DOMAIN_SUBDOMAIN_OWNER_MATCH)\"}") }
     slash := index(id, "/")
     row_owner := substr(id, 0, slash)
     row_art := substr(id, slash + 1, len(id))

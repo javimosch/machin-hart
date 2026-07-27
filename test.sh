@@ -152,6 +152,41 @@ eq "deny-only: unlisted domain still allowed (200)" "$(curl -s -o /dev/null -w '
 kill "$NSRV" 2>/dev/null
 export HART_DB="$TMP/test.db"
 
+echo "== domain owner-match (HART_DOMAIN_SUBDOMAIN_OWNER_MATCH, #19 slice 2) =="
+# When HART_DOMAIN_SUBDOMAIN_OWNER_MATCH is on, the label immediately before the instance domain
+# (canonical_host of HART_PUBLIC) must equal the artifact owner. myagent.hart.intrane.fr maps to
+# owner "myagent"; foo.myagent.hart.intrane.fr also maps to "myagent" (label right before the
+# instance domain). Domains NOT under the instance domain are left to ALLOW/DENY (not subject to
+# owner-match). HART_PUBLIC is required so canonical_host can resolve the instance domain.
+OPORT=$((PORT + 7))
+export HART_DB="$TMP/domainowner.db"
+HART_PUBLIC="http://hart.intrane.fr" HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1 HART_MAX_SUBMITS_PER_MIN=100000 \
+  ./hart serve "$OPORT" >"$TMP/domainowner.log" 2>&1 &
+OSRV=$!
+sleep 1
+kill -0 "$OSRV" 2>/dev/null || { echo "test: domain-owner-match daemon failed to boot"; cat "$TMP/domainowner.log"; exit 1; }
+OURL="http://127.0.0.1:$OPORT"
+printf '<h1>owner-match</h1>' > "$TMP/own.html"
+curl -s -o /dev/null -X POST "$OURL/v1/publish?owner=myagent&artifact=shop" -H 'content-type: text/html' --data-binary @"$TMP/own.html"
+eq "owner-match: matching label accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$OURL/v1/domain?domain=myagent.hart.intrane.fr&id=myagent/shop")" "200"
+has "owner-match: matching label mapped" "$(curl -s "$OURL/v1/domain?domain=myagent.hart.intrane.fr")" '"id":"myagent/shop"'
+eq "owner-match: deeper subdomain matches (label before instance domain) (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$OURL/v1/domain?domain=foo.myagent.hart.intrane.fr&id=myagent/shop")" "200"
+eq "owner-match: mismatched label rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$OURL/v1/domain?domain=notme.hart.intrane.fr&id=myagent/shop")" "403"
+has "owner-match: mismatch body names the policy" "$(curl -s -X POST "$OURL/v1/domain?domain=notme.hart.intrane.fr&id=myagent/shop")" "HART_DOMAIN_SUBDOMAIN_OWNER_MATCH"
+eq "owner-match: non-instance domain not subject to owner-match (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$OURL/v1/domain?domain=shop.example.com&id=myagent/shop")" "200"
+kill "$OSRV" 2>/dev/null
+# owner-match off (flag=0): mismatched label accepted
+export HART_DB="$TMP/domainowneroff.db"
+HART_PUBLIC="http://hart.intrane.fr" HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=0 HART_MAX_SUBMITS_PER_MIN=100000 \
+  ./hart serve "$OPORT" >"$TMP/domainowneroff.log" 2>&1 &
+OSRV2=$!
+sleep 1
+kill -0 "$OSRV2" 2>/dev/null || { echo "test: domain-owner-match-off daemon failed to boot"; cat "$TMP/domainowneroff.log"; exit 1; }
+curl -s -o /dev/null -X POST "$OURL/v1/publish?owner=myagent&artifact=shop" -H 'content-type: text/html' --data-binary @"$TMP/own.html"
+eq "owner-match off: mismatched label accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$OURL/v1/domain?domain=notme.hart.intrane.fr&id=myagent/shop")" "200"
+kill "$OSRV2" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"
