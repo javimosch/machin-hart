@@ -392,6 +392,22 @@ func owner_authorized(db, owner, req) (ok) {
     if licensed_db(db, "teams") == 1 && member_email(db, owner, req) != "" { return 1 }
 }
 
+// owner_key_matches — verify an explicit owner key against the stored hash for `owner` (#19 slice 4).
+// Returns 1 if the owner is unclaimed (no row, or no key set) or the provided key matches. Used by
+// the overwrite-both-keys flow in h_domain_set to authorize the CURRENT mapped owner separately
+// from the X-Hart-Owner-Key header (which carries the NEW artifact owner's key). The current-owner
+// key arrives via the X-Hart-Owner-Key-Current header or ?current_owner_key= query param.
+func owner_key_matches(db, owner, key) (ok) {
+    ok = 0
+    if owner == "" { return 1 }
+    rows := sqlite_query(db, "SELECT owner, key_hash FROM owners WHERE owner = ?", []string{owner})
+    os := parse(rows, []OwnerRow{})
+    if len(os) == 0 { return 1 }          // owner not claimed — no key to check
+    if os[0].key_hash == "" { return 1 }  // open namespace
+    if key == "" { return }               // claimed with a key but no key provided
+    if to_hex(sha256_bytes(bytes(key))) == os[0].key_hash { ok = 1 }
+}
+
 // cookie_secret — a stable HMAC secret for signed unlock cookies, initialized once at startup
 // (cmd_serve). HART_COOKIE_SECRET pins it across restarts (else unlock cookies invalidate on
 // restart — users just re-enter the password, which is fine).
@@ -1110,10 +1126,28 @@ func h_domain_set(req) (res) {
     slash := index(id, "/")
     row_owner := substr(id, 0, slash)
     row_art := substr(id, slash + 1, len(id))
+    // overwrite-both-keys (#19 slice 4): if a mapping already exists for this domain AND its owner
+    // differs from the new artifact's owner, the caller must also prove ownership of the CURRENT
+    // mapped owner (X-Hart-Owner-Key-Current header or ?current_owner_key=). Prevents owner B from
+    // hijacking owner A's domain mapping by just presenting B's own key. When overwriting a
+    // different artifact, fire HART_DOMAIN_HOOK remove before the add so the provisioner tears down
+    // the old mapping first.
+    existing_rows := sqlite_query(db, "SELECT domain, owner, artifact, version, no_chrome, created, updated FROM domains WHERE domain = ?", []string{domain})
+    eds := parse(existing_rows, []DomainRow{})
+    overwrite_different := 0
+    if len(eds) > 0 {
+        if eds[0].owner != row_owner || eds[0].artifact != row_art { overwrite_different = 1 }
+        if eds[0].owner != owner {
+            cur_key := header(req, "x-hart-owner-key-current")
+            if cur_key == "" { cur_key = query(req, "current_owner_key") }
+            if owner_key_matches(db, eds[0].owner, cur_key) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"domain is mapped to owner '" + jesc(eds[0].owner) + "' — pass that owner's key (X-Hart-Owner-Key-Current) to overwrite\"}") }
+        }
+    }
     ver := parse_int(query(req, "version"))
     nochrome := 1
     if query(req, "chrome") == "1" { nochrome = 0 }
     n := now()
+    if overwrite_different == 1 { domain_hook("remove", domain, eds[0].owner, eds[0].artifact) }
     sqlite_exec(db, "INSERT INTO domains(domain, owner, artifact, version, no_chrome, created, updated) VALUES(?,?,?,?,?,?,?) ON CONFLICT(domain) DO UPDATE SET owner=excluded.owner, artifact=excluded.artifact, version=excluded.version, no_chrome=excluded.no_chrome, updated=excluded.updated", []string{domain, row_owner, row_art, str(ver), str(nochrome), str(n), str(n)})
     audit(db, "domain-set", owner, id, ver, domain, req)
     sqlite_close(db)
@@ -3707,6 +3741,10 @@ func cmd_domain(a) {
     if tok != "" { headers = append(headers, "authorization: Bearer " + tok) }
     ok := owner_key_of(a, o)
     if ok != "" { headers = append(headers, "x-hart-owner-key: " + ok) }
+    // overwrite-both-keys (#19 slice 4): when re-mapping a domain that currently points to a
+    // different owner's artifact, the current mapped owner's key is also required.
+    cok := flagv(a, "--current-owner-key", cfg("HART_OWNER_KEY_CURRENT"))
+    if cok != "" { headers = append(headers, "x-hart-owner-key-current: " + cok) }
     mk := flagv(a, "--member-key", cfg("HART_MEMBER_KEY"))
     if mk != "" { headers = append(headers, "x-hart-member-key: " + mk) }
     status, resp, err := http_request("POST", url, headers, "")

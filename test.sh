@@ -224,6 +224,68 @@ eq "private-pattern: non-matching domain not subject (200)" "$(curl -s -o /dev/n
 kill "$PSRV" 2>/dev/null
 export HART_DB="$TMP/test.db"
 
+echo "== domain overwrite-both-keys (#19 slice 4) =="
+# When a domain is already mapped to owner A's artifact, owner B cannot hijack it by just
+# presenting B's own owner key — B must also present A's owner key (X-Hart-Owner-Key-Current
+# header or ?current_owner_key=). On a legit overwrite (both keys), the HART_DOMAIN_HOOK fires
+# remove for the old mapping before add for the new one. Same-owner re-mapping (version bump)
+# needs no current-owner key.
+WPORT=$((PORT + 9))
+export HART_DB="$TMP/domainover.db"
+HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$WPORT" >"$TMP/domainover.log" 2>&1 &
+WSRV=$!
+sleep 1
+kill -0 "$WSRV" 2>/dev/null || { echo "test: domain-overwrite daemon failed to boot"; cat "$TMP/domainover.log"; exit 1; }
+WURL="http://127.0.0.1:$WPORT"
+printf '<h1>over</h1>' > "$TMP/over.html"
+# owner alice claims her namespace with key ak, bob claims his with bk (owner key via header)
+curl -s -o /dev/null -X POST "$WURL/v1/publish?owner=alice&artifact=site" -H 'content-type: text/html' -H 'x-hart-owner-key: ak' --data-binary @"$TMP/over.html"
+curl -s -o /dev/null -X POST "$WURL/v1/publish?owner=bob&artifact=site" -H 'content-type: text/html' -H 'x-hart-owner-key: bk' --data-binary @"$TMP/over.html"
+# alice maps her domain first
+eq "overwrite: alice maps her domain (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: ak' -X POST "$WURL/v1/domain?domain=shop.example.com&id=alice/site")" "200"
+has "overwrite: alice's mapping recorded" "$(curl -s "$WURL/v1/domain?domain=shop.example.com")" '"id":"alice/site"'
+# bob tries to hijack with ONLY his key -> 403
+eq "overwrite: bob hijack with only his key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: bk' -X POST "$WURL/v1/domain?domain=shop.example.com&id=bob/site")" "403"
+has "overwrite: hijack rejection names the current owner" "$(curl -s -H 'x-hart-owner-key: bk' -X POST "$WURL/v1/domain?domain=shop.example.com&id=bob/site")" "alice"
+# bob tries with his key + WRONG current-owner key -> 403
+eq "overwrite: bob with wrong current key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: bk' -H 'x-hart-owner-key-current: wrong' -X POST "$WURL/v1/domain?domain=shop.example.com&id=bob/site")" "403"
+# bob succeeds with BOTH keys (his + alice's) -> 200, mapping now points to bob
+eq "overwrite: bob with both keys accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: bk' -H 'x-hart-owner-key-current: ak' -X POST "$WURL/v1/domain?domain=shop.example.com&id=bob/site")" "200"
+has "overwrite: mapping now points to bob" "$(curl -s "$WURL/v1/domain?domain=shop.example.com")" '"id":"bob/site"'
+# current_owner_key query param also works (header substitute)
+eq "overwrite: current_owner_key query param accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: ak' -X POST "$WURL/v1/domain?domain=shop.example.com&id=alice/site&current_owner_key=bk")" "200"
+has "overwrite: mapping back to alice via query param" "$(curl -s "$WURL/v1/domain?domain=shop.example.com")" '"id":"alice/site"'
+# same-owner re-map (version bump, no owner change) needs no current-owner key
+eq "overwrite: same-owner re-map needs no current key (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: ak' -X POST "$WURL/v1/domain?domain=shop.example.com&id=alice/site&version=2")" "200"
+# hook fires remove-then-add on a cross-owner overwrite (verify via a shell hook that logs)
+HPORT=$((PORT + 10))
+export HART_DB="$TMP/domainhook.db"
+HOOKLOG="$TMP/hook.log"
+rm -f "$HOOKLOG"
+HART_DOMAIN_HOOK="sh -c 'echo \$0 \$1 \$2 \$3 >> $HOOKLOG'" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$HPORT" >"$TMP/domainhook.log" 2>&1 &
+HSRV=$!
+sleep 1
+kill -0 "$HSRV" 2>/dev/null || { echo "test: domain-hook daemon failed to boot"; cat "$TMP/domainhook.log"; exit 1; }
+HURL="http://127.0.0.1:$HPORT"
+curl -s -o /dev/null -X POST "$HURL/v1/publish?owner=alice&artifact=site" -H 'content-type: text/html' -H 'x-hart-owner-key: ak' --data-binary @"$TMP/over.html"
+curl -s -o /dev/null -X POST "$HURL/v1/publish?owner=bob&artifact=site" -H 'content-type: text/html' -H 'x-hart-owner-key: bk' --data-binary @"$TMP/over.html"
+# initial map -> hook add only
+curl -s -o /dev/null -H 'x-hart-owner-key: ak' -X POST "$HURL/v1/domain?domain=hook.example.com&id=alice/site"
+sleep 0.3
+eq "overwrite: initial map fires add hook" "$(cat "$HOOKLOG" 2>/dev/null | grep -c 'add hook.example.com alice site')" "1"
+# cross-owner overwrite (both keys) -> hook remove then add
+curl -s -o /dev/null -H 'x-hart-owner-key: bk' -H 'x-hart-owner-key-current: ak' -X POST "$HURL/v1/domain?domain=hook.example.com&id=bob/site"
+sleep 0.3
+eq "overwrite: cross-owner overwrite fires remove hook" "$(cat "$HOOKLOG" 2>/dev/null | grep -c 'remove hook.example.com alice site')" "1"
+eq "overwrite: cross-owner overwrite fires add hook for new" "$(cat "$HOOKLOG" 2>/dev/null | grep -c 'add hook.example.com bob site')" "1"
+# same-owner version bump -> NO extra remove hook (just add)
+curl -s -o /dev/null -H 'x-hart-owner-key: bk' -X POST "$HURL/v1/domain?domain=hook.example.com&id=bob/site&version=2"
+sleep 0.3
+eq "overwrite: same-owner re-map fires no remove hook" "$(cat "$HOOKLOG" 2>/dev/null | grep -c 'remove hook.example.com bob site')" "0"
+kill "$HSRV" 2>/dev/null
+kill "$WSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"
