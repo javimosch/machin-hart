@@ -187,6 +187,43 @@ eq "owner-match off: mismatched label accepted (200)" "$(curl -s -o /dev/null -w
 kill "$OSRV2" 2>/dev/null
 export HART_DB="$TMP/test.db"
 
+echo "== domain private patterns (HART_DOMAIN_PRIVATE_PATTERNS, #19 slice 3) =="
+# When a domain matches a HART_DOMAIN_PRIVATE_PATTERNS entry, the mapped artifact must be private
+# AND carry a read key, and the caller must prove read access (valid read_key query param or
+# X-Hart-Read-Key header). Public/unlisted artifacts and private-without-a-key are rejected.
+PPORT=$((PORT + 8))
+export HART_DB="$TMP/domainpriv.db"
+HART_DOMAIN_PRIVATE_PATTERNS="secret.*.example.com,private.example.com" HART_MAX_SUBMITS_PER_MIN=100000 \
+  ./hart serve "$PPORT" >"$TMP/domainpriv.log" 2>&1 &
+PSRV=$!
+sleep 1
+kill -0 "$PSRV" 2>/dev/null || { echo "test: domain-private-patterns daemon failed to boot"; cat "$TMP/domainpriv.log"; exit 1; }
+PURL="http://127.0.0.1:$PPORT"
+printf '<h1>priv</h1>' > "$TMP/priv.html"
+# private artifact WITH a read key
+curl -s -o /dev/null -X POST "$PURL/v1/publish?owner=acme&artifact=secret&visibility=private&read_key=pw123" -H 'content-type: text/html' --data-binary @"$TMP/priv.html"
+# public artifact (same owner)
+curl -s -o /dev/null -X POST "$PURL/v1/publish?owner=acme&artifact=pub&visibility=public" -H 'content-type: text/html' --data-binary @"$TMP/priv.html"
+# private artifact WITHOUT a read key
+curl -s -o /dev/null -X POST "$PURL/v1/publish?owner=acme&artifact=nopass&visibility=private" -H 'content-type: text/html' --data-binary @"$TMP/priv.html"
+# matching private pattern + private artifact + correct read_key -> 200
+eq "private-pattern: private+correct key accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/secret&read_key=pw123")" "200"
+# matching via X-Hart-Read-Key header -> 200
+eq "private-pattern: header read key accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-read-key: pw123' -X POST "$PURL/v1/domain?domain=secret.foo.example.com&id=acme/secret")" "200"
+# matching pattern + private artifact + WRONG read_key -> 403
+eq "private-pattern: wrong read key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/secret&read_key=nope")" "403"
+# matching pattern + private artifact + NO read_key -> 403
+eq "private-pattern: no read key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/secret")" "403"
+# matching pattern + public artifact -> 403 (must be private)
+eq "private-pattern: public artifact rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/pub")" "403"
+# matching pattern + private-without-read-key artifact -> 403 (must have a read key)
+eq "private-pattern: private without key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/nopass")" "403"
+has "private-pattern: rejected body names the policy" "$(curl -s -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/pub")" "HART_DOMAIN_PRIVATE_PATTERNS"
+# non-matching domain -> not subject (200)
+eq "private-pattern: non-matching domain not subject (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=shop.example.com&id=acme/pub")" "200"
+kill "$PSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"

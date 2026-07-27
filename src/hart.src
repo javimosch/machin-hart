@@ -1047,6 +1047,32 @@ func domain_owner_match_ok(domain, owner) (ok) {
     if label != owner { ok = 0 }
 }
 
+// domain_private_ok — when a domain matches a HART_DOMAIN_PRIVATE_PATTERNS entry (#19 slice 3),
+// the mapped artifact must be private AND carry a read key, and the caller must prove read access
+// (valid X-Hart-Read-Key header or ?read_key=<password> matched against the stored hash). Returns
+// 1 if OK (not subject to any private pattern, or all conditions met), 0 if rejected. Uses
+// glob_match (slice 1) for pattern matching and read_authorized for the read-key proof.
+func domain_private_ok(db, domain, id, req) (ok) {
+    ok = 1
+    pats_csv := cfg("HART_DOMAIN_PRIVATE_PATTERNS")
+    if pats_csv == "" { return }
+    pats := split(pats_csv, ",")
+    matched := 0
+    i := 0
+    while i < len(pats) {
+        p := to_lower(trim(pats[i]))
+        if p != "" && glob_match(p, domain) == 1 { matched = 1 }
+        i = i + 1
+    }
+    if matched == 0 { return }   // domain not subject to private patterns
+    rows := sqlite_query(db, "SELECT visibility, read_key_hash FROM artifacts WHERE id = ?", []string{id})
+    ars := parse(rows, []ArtRow{})
+    if len(ars) == 0 { ok = 0  return }   // artifact gone (shouldn't happen — checked earlier)
+    if ars[0].visibility != "private" { ok = 0  return }
+    if ars[0].read_key_hash == "" { ok = 0  return }   // must have a read key set
+    ok = read_authorized(db, id, ars[0].read_key_hash, req)
+}
+
 func domain_json(d) (j) {
     j = "{\"domain\":\"" + jesc(d.domain) + "\",\"id\":\"" + jesc(d.owner + "/" + d.artifact) + "\",\"owner\":\"" + jesc(d.owner) + "\",\"artifact\":\"" + jesc(d.artifact) + "\",\"version\":" + str(d.version) + ",\"no_chrome\":" + str(d.no_chrome) + ",\"updated\":" + str(d.updated) + "}"
 }
@@ -1080,6 +1106,7 @@ func h_domain_set(req) (res) {
     owner := unq(orow)
     if owner_authorized(db, owner, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"owner '" + jesc(owner) + "' is claimed — pass the owner key\"}") }
     if domain_owner_match_ok(domain, owner) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"domain owner label does not match artifact owner (HART_DOMAIN_SUBDOMAIN_OWNER_MATCH)\"}") }
+    if domain_private_ok(db, domain, id, req) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"domain requires a private artifact with a valid read key (HART_DOMAIN_PRIVATE_PATTERNS)\"}") }
     slash := index(id, "/")
     row_owner := substr(id, 0, slash)
     row_art := substr(id, slash + 1, len(id))
