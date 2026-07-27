@@ -174,6 +174,141 @@ hart license status             # tier, features, storage limits
 
 ---
 
+## Self-service custom domains (#19)
+
+Custom-domain mapping (`hart domain <id> <domain>`, `POST /v1/domain`) is open to any agent that
+can write to the owner namespace. On a shared instance like `hart.intrane.fr`, that means an
+external agent can reserve and serve `mything.hart.intrane.fr` **without operator approval**. Four
+daemon env vars gate that flow so self-hosters can keep abusive or off-policy domains out without
+reviewing every mapping by hand. All four are read via the existing `cfg()` layer and default to
+*off* — an unset variable preserves the previous unrestricted behavior, so upgrading is safe.
+
+The gate order inside `h_domain_set` is **allow/deny → owner-match → private patterns**, run after
+`valid_domain` and the owner-key proof, so a rejected mapping never reaches the `domains` table and
+never fires `HART_DOMAIN_HOOK`. Each rejection returns `403` with a JSON body that names the policy
+that blocked it (`"error":"domain not allowed by policy"` and similar), so an agent can tell which
+knob to ask the operator to relax.
+
+### `HART_DOMAIN_ALLOW` / `HART_DOMAIN_DENY`
+
+Comma-separated glob patterns matched case-insensitively against the requested `Host`. `*` is the
+only wildcard (suffix, prefix, contains, or whole-string); no `?` or character classes on purpose.
+
+| Var | Empty | Set |
+|---|---|---|
+| `HART_DOMAIN_ALLOW` | **unrestricted** (current behavior) | the domain must match at least one pattern, else `403` |
+| `HART_DOMAIN_DENY` | no denylist | a match is **always `403`**, even if it also matches `ALLOW` |
+
+Examples:
+
+```sh
+# /etc/hart/env — only *.hart.intrane.fr may be mapped, and never the admin/api hosts
+HART_DOMAIN_ALLOW=*.hart.intrane.fr
+HART_DOMAIN_DENY=admin.hart.intrane.fr,api.hart.intrane.fr
+```
+
+`HART_DOMAIN_DENY` **always wins over `HART_DOMAIN_ALLOW`** — keep the denylist for the small set of
+hostnames you never want served by an agent artifact (`admin.*`, `api.*`, the bare apex, etc.) and
+use `ALLOW` for the broad wildcard you do permit. Patterns like `*.hart.intrane.fr` (suffix),
+`admin.*` (prefix), and `*x*` (contains) are all supported; exact literals work too.
+
+### `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH`
+
+When set to `1`, the **owner label** in the requested domain must equal the artifact's owner. The
+owner label is the label immediately before the instance domain (the canonical host of
+`HART_PUBLIC`). For `HART_PUBLIC=https://hart.intrane.fr`:
+
+- `myagent.hart.intrane.fr` → owner label `myagent`
+- `foo.myagent.hart.intrane.fr` → owner label `myagent` *(the label right before the instance domain)*
+- `shop.example.com` → not under the instance domain → **not subject** to owner-match (left to
+  ALLOW/DENY)
+
+| `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH` | `HART_PUBLIC` | domain under instance? | result |
+|---|---|---|---|
+| empty / `0` | — | — | check disabled (current behavior) |
+| `1` | unset | — | skipped — no instance domain to compare (left to ALLOW/DENY) |
+| `1` | set | yes, label matches owner | accepted |
+| `1` | set | yes, label ≠ owner | **403** |
+| `1` | set | no (e.g. `shop.example.com`) | exempt — left to ALLOW/DENY |
+| `1` | set | domain == instance domain | skipped (canonical host, not a mapping target) |
+
+The check runs **after** the owner-key proof, using the DB-confirmed artifact owner, so a caller
+can't fake the owner label by passing an unverified `--owner`. Pair with
+`HART_DOMAIN_ALLOW=*.hart.intrane.fr` to give every agent a self-service subdomain under your
+instance while keeping them inside their own namespace.
+
+### `HART_DOMAIN_PRIVATE_PATTERNS`
+
+Comma-separated glob patterns (same `glob_match` as ALLOW/DENY). When a requested domain matches a
+pattern, the mapped artifact **must** be `--visibility private`, **must** have a read key set, and
+the caller **must** prove read access (`X-Hart-Read-Key` header or `?read_key=` matched against the
+stored sha256 hash). Use it to force anything served on a sensitive hostname to be gated.
+
+| `HART_DOMAIN_PRIVATE_PATTERNS` | domain matches? | artifact state | caller read key | result |
+|---|---|---|---|---|
+| empty | — | — | — | check disabled (current behavior) |
+| set | no | — | — | not subject (left to ALLOW/DENY + owner-match) |
+| set | yes | private + has read key | valid | accepted |
+| set | yes | private + has read key | wrong/missing | **403** |
+| set | yes | public/unlisted | — | **403** (must be private) |
+| set | yes | private but no read key set | — | **403** (must have a read key) |
+
+```sh
+# Internal-only hostnames must always be private + read-key gated
+HART_DOMAIN_PRIVATE_PATTERNS=internal.hart.intrane.fr,*.internal.hart.intrane.fr
+```
+
+The check runs **after** the owner-match check, so the three gates stack cleanly: ALLOW/DENY →
+owner-match → private patterns. A mapped private artifact still requires its read key on every read
+(the unlock page for browsers, `X-Hart-Read-Key` for agents) — this knob only tightens *mapping*,
+not reads.
+
+### `POST /v1/domain/check` — availability probe
+
+A **public, rate-limited** probe an agent calls before `POST /v1/domain` to ask "is
+`mything.hart.intrane.fr` free to reserve?". No token required — it only reports whether the domain
+is already recorded in the `domains` table, nothing about the mapped artifact.
+
+```sh
+curl -X POST "$HART_URL/v1/domain/check?domain=mything.hart.intrane.fr"
+# → {"ok":true,"domain":"mything.hart.intrane.fr","available":1,"reason":"free"}
+#   {"ok":true,"domain":"…","available":0,"reason":"taken"}   # already mapped
+```
+
+Behavior:
+
+- **Trailing dot is normalized away** — `shop.example.com.` reads as `shop.example.com` (FQDN root
+  form). The echoed `domain` is the normalized bare hostname.
+- **Invalid domains return `400`** with `{"ok":false,"error":"invalid domain — a bare hostname like shop.example.com"}` (same `valid_domain` gate as `POST /v1/domain`).
+- **Rate-limited per IP** via a dedicated `domain_checks` table, independent of the publish rate so
+  a busy publisher can't starve availability probes. Defaults: **10 checks / 60s / IP**.
+  - `HART_MAX_DOMAIN_CHECKS_PER_MIN` — per-IP cap (default `10`).
+  - `HART_DOMAIN_CHECK_WINDOW_S` — sliding window length in seconds (default `60`; shrink for tests).
+  - Over the cap → `429 Too Many Requests` with a body naming the limit. Each IP gets its own
+    bucket; set `HART_TRUST_PROXY=1` behind a reverse proxy so `X-Forwarded-For` distinguishes
+    callers (otherwise every proxied request shares the proxy's IP bucket).
+
+`check` only tells you whether the domain is **currently recorded** — it does **not** run the
+ALLOW/DENY, owner-match, or private-pattern gates. An agent that wants to know whether a mapping
+will *succeed* still has to attempt `POST /v1/domain` and read the `403` body to learn which policy
+blocked it. Use `check` for the cheap "is this name free?" UX, then `POST /v1/domain` for the
+authoritative answer.
+
+### Lifecycle notes
+
+- **Domains never expire by TTL.** A mapping stays until `hart domain-rm <domain>` (or
+  `DELETE /v1/domain?domain=`) removes it.
+- **Overwriting an existing mapping** requires **both** the current mapped owner's key and the new
+  artifact owner's key (see the `POST /v1/domain` flow in `hart guide`).
+- **`HART_DOMAIN_HOOK`** fires `add` / `remove` on every successful mapping change so an external
+  provisioner (e.g. [hart-domain-sync](https://github.com/javimosch/hart-domain-sync)) can reconcile
+  Traefik dynamic config + DNS. Rejected mappings never fire the hook.
+- **Cleanup of orphaned mappings** (when an artifact is `rm`'d, an owner is `admin mv`'d, or policy
+  drifts) is handled by the lifecycle slices of #19 — see `hart domains --prune` and
+  `POST /v1/admin/domains/prune` in `hart guide` once enabled on your instance.
+
+---
+
 ## Security notes
 
 - **Never commit secrets.** Use env files with `0600` permissions or your secret manager.
