@@ -97,6 +97,61 @@ has "domain --emit-traefik prints Traefik block" "$(./hart domain creator/shop s
 has "domain-rm ok" "$(./hart domain-rm shop.test)" '"removed":"shop.test"'
 eq "after rm: Host at / -> landing (not mapped)" "$(curl -s -H 'Host: shop.test' "$HART_URL/" | grep -c 'Funnel page')" "0"
 
+echo "== domain policy (HART_DOMAIN_ALLOW/DENY, #19 slice 1) =="
+# Boot a separate daemon with an allowlist + denylist to verify the policy gate in h_domain_set.
+# DENY always wins; empty ALLOW = unrestricted (covered by the main daemon above). Here ALLOW
+# pins *.hart.intrane.fr and DENY blocks the admin/api subdomains.
+DPORT=$((PORT + 4))
+export HART_DB="$TMP/domainpol.db"
+HART_DOMAIN_ALLOW="*.hart.intrane.fr" HART_DOMAIN_DENY="admin.hart.intrane.fr,api.hart.intrane.fr" HART_MAX_SUBMITS_PER_MIN=100000 \
+  ./hart serve "$DPORT" >"$TMP/domainpol.log" 2>&1 &
+DSRV=$!
+sleep 1
+kill -0 "$DSRV" 2>/dev/null || { echo "test: domain-policy daemon failed to boot"; cat "$TMP/domainpol.log"; exit 1; }
+DURL="http://127.0.0.1:$DPORT"
+printf '<h1>policy</h1>' > "$TMP/pol.html"
+curl -s -o /dev/null -X POST "$DURL/v1/publish?owner=acme&artifact=shop" -H 'content-type: text/html' --data-binary @"$TMP/pol.html"
+eq "policy: allowed subdomain accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$DURL/v1/domain?domain=myagent.hart.intrane.fr&id=acme/shop")" "200"
+has "policy: allowed subdomain mapped" "$(curl -s "$DURL/v1/domain?domain=myagent.hart.intrane.fr")" '"id":"acme/shop"'
+eq "policy: deeper allowed subdomain accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$DURL/v1/domain?domain=foo.myagent.hart.intrane.fr&id=acme/shop")" "200"
+eq "policy: non-allowlisted domain rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$DURL/v1/domain?domain=evil.example.com&id=acme/shop")" "403"
+eq "policy: denied admin subdomain rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$DURL/v1/domain?domain=admin.hart.intrane.fr&id=acme/shop")" "403"
+eq "policy: denied api subdomain rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$DURL/v1/domain?domain=api.hart.intrane.fr&id=acme/shop")" "403"
+has "policy: rejected body names the policy" "$(curl -s -X POST "$DURL/v1/domain?domain=evil.example.com&id=acme/shop")" "HART_DOMAIN_ALLOW"
+# deny wins even when the domain also matches the allow glob
+eq "policy: deny wins over allow (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$DURL/v1/domain?domain=admin.hart.intrane.fr&id=acme/shop")" "403"
+kill "$DSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+# allow-only (no deny): a literal allow entry matches exactly; a non-matching domain is rejected
+APORT=$((PORT + 5))
+export HART_DB="$TMP/domainallow.db"
+HART_DOMAIN_ALLOW="shop.example.com,*.hart.intrane.fr" HART_MAX_SUBMITS_PER_MIN=100000 \
+  ./hart serve "$APORT" >"$TMP/domainallow.log" 2>&1 &
+ASRV=$!
+sleep 1
+kill -0 "$ASRV" 2>/dev/null || { echo "test: domain-allow-only daemon failed to boot"; cat "$TMP/domainallow.log"; exit 1; }
+AURL="http://127.0.0.1:$APORT"
+curl -s -o /dev/null -X POST "$AURL/v1/publish?owner=acme&artifact=shop" -H 'content-type: text/html' --data-binary @"$TMP/pol.html"
+eq "allow-only: literal allow entry accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$AURL/v1/domain?domain=shop.example.com&id=acme/shop")" "200"
+eq "allow-only: wildcard allow entry accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$AURL/v1/domain?domain=x.hart.intrane.fr&id=acme/shop")" "200"
+eq "allow-only: non-listed domain rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$AURL/v1/domain?domain=other.example.com&id=acme/shop")" "403"
+kill "$ASRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+# deny-only (no allow): deny blocks listed domains, everything else is unrestricted
+NPORT=$((PORT + 6))
+export HART_DB="$TMP/domaindeny.db"
+HART_DOMAIN_DENY="bad.example.com" HART_MAX_SUBMITS_PER_MIN=100000 \
+  ./hart serve "$NPORT" >"$TMP/domaindeny.log" 2>&1 &
+NSRV=$!
+sleep 1
+kill -0 "$NSRV" 2>/dev/null || { echo "test: domain-deny-only daemon failed to boot"; cat "$TMP/domaindeny.log"; exit 1; }
+NURL="http://127.0.0.1:$NPORT"
+curl -s -o /dev/null -X POST "$NURL/v1/publish?owner=acme&artifact=shop" -H 'content-type: text/html' --data-binary @"$TMP/pol.html"
+eq "deny-only: denied domain rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$NURL/v1/domain?domain=bad.example.com&id=acme/shop")" "403"
+eq "deny-only: unlisted domain still allowed (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$NURL/v1/domain?domain=free.example.com&id=acme/shop")" "200"
+kill "$NSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"

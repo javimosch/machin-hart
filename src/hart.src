@@ -966,6 +966,54 @@ func valid_domain(d) (ok) {
     ok = 1
 }
 
+// glob_match — minimal wildcard match for HART_DOMAIN_ALLOW/DENY patterns. '*' matches any run
+// of characters. Supports the common forms: '*.hart.intrane.fr' (suffix), 'admin.*' (prefix),
+// '*admin*' (contains), and exact literals. No '?' / char classes. Returns 1 on match, else 0.
+func glob_match(pat, s) (ok) {
+    ok = 0
+    if pat == s { ok = 1  return }
+    star := index(pat, "*")
+    if star < 0 { return }   // literal already failed the equality check above
+    head := substr(pat, 0, star)
+    tail := substr(pat, star + 1, len(pat))
+    if head == "" && tail == "" { ok = 1  return }   // '*' alone matches anything
+    if head != "" && has_prefix(s, head) == false { return }
+    if tail != "" && has_suffix(s, tail) == false { return }
+    if head != "" && tail != "" {
+        if len(s) < len(head) + len(tail) { return }   // head+tail can't both fit
+    }
+    ok = 1
+}
+
+// domain_policy_ok — checks a domain against HART_DOMAIN_ALLOW / HART_DOMAIN_DENY (#19 slice 1).
+// DENY always wins. Empty ALLOW = unrestricted (current behavior). Patterns are comma-separated
+// globs ('*' wildcard), matched case-insensitively. Returns 1 if the domain is permitted, 0 if
+// rejected. Called from h_domain_set after valid_domain, before the owner-key check.
+func domain_policy_ok(domain) (ok) {
+    ok = 1
+    deny := cfg("HART_DOMAIN_DENY")
+    if deny != "" {
+        pats := split(deny, ",")
+        i := 0
+        while i < len(pats) {
+            p := to_lower(trim(pats[i]))
+            if p != "" && glob_match(p, domain) == 1 { return 0 }
+            i = i + 1
+        }
+    }
+    allow := cfg("HART_DOMAIN_ALLOW")
+    if allow == "" { return }   // unrestricted — preserves the pre-policy behavior
+    pats := split(allow, ",")
+    i := 0
+    matched := 0
+    while i < len(pats) {
+        p := to_lower(trim(pats[i]))
+        if p != "" && glob_match(p, domain) == 1 { matched = 1 }
+        i = i + 1
+    }
+    if matched == 0 { ok = 0 }
+}
+
 func domain_json(d) (j) {
     j = "{\"domain\":\"" + jesc(d.domain) + "\",\"id\":\"" + jesc(d.owner + "/" + d.artifact) + "\",\"owner\":\"" + jesc(d.owner) + "\",\"artifact\":\"" + jesc(d.artifact) + "\",\"version\":" + str(d.version) + ",\"no_chrome\":" + str(d.no_chrome) + ",\"updated\":" + str(d.updated) + "}"
 }
@@ -987,6 +1035,7 @@ func h_domain_set(req) (res) {
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
     domain := to_lower(trim(query(req, "domain")))
     if valid_domain(domain) == 0 { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid domain — a bare hostname like shop.example.com\"}") }
+    if domain_policy_ok(domain) == 0 { sqlite_close(db); return response("403 Forbidden", "application/json", "{\"ok\":false,\"error\":\"domain not allowed by HART_DOMAIN_ALLOW/DENY policy\"}") }
     id := query(req, "id")
     o := query(req, "owner")
     art := query(req, "artifact")
