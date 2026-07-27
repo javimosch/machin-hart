@@ -299,6 +299,7 @@ func opendb() (db) {
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN read_key_hash TEXT DEFAULT ''", []string{})   // sha256 of the read password (private mode)
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS versions(artifact_id TEXT, version INTEGER, title TEXT, format TEXT, html TEXT, hash TEXT, created INTEGER, PRIMARY KEY(artifact_id, version))", []string{})
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS hits(ip TEXT, ts INTEGER)", []string{})   // per-IP submit rate window
+    sqlite_exec(db, "CREATE TABLE IF NOT EXISTS domain_checks(ip TEXT, ts INTEGER)", []string{})   // per-IP /v1/domain/check rate window (#19)
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS owners(owner TEXT PRIMARY KEY, key_hash TEXT DEFAULT '', created INTEGER)", []string{})   // namespace claim keys
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN data_updated INTEGER DEFAULT 0", []string{})   // last `hart data` push (living-deliverable freshness)
     sqlite_exec(db, "ALTER TABLE artifacts ADD COLUMN fresh_ttl INTEGER DEFAULT 0", []string{})   // freshness SLA in seconds (0 = not a monitored living deliverable) -> `hart stale`
@@ -757,6 +758,32 @@ func rate_ok(db, ip) (ok) {
     ok = 1
 }
 
+// max_domain_checks_per_min — per-IP cap for POST /v1/domain/check (#19). Independent of the
+// publish rate so a busy publisher doesn't starve domain-availability probes. Default 10.
+func max_domain_checks_per_min() (n) {
+    n = parse_int(cfg("HART_MAX_DOMAIN_CHECKS_PER_MIN"))
+    if cfg("HART_MAX_DOMAIN_CHECKS_PER_MIN") == "" { n = 10 }
+}
+
+// domain_check_window_s — sliding window length for /v1/domain/check (#19). Default 60s; operators
+// may shrink it for tests. Kept separate from the publish window so the two policies are tunable.
+func domain_check_window_s() (s) {
+    s = parse_int(cfg("HART_DOMAIN_CHECK_WINDOW_S"))
+    if cfg("HART_DOMAIN_CHECK_WINDOW_S") == "" { s = 60 }
+}
+
+// domain_check_ok — sliding per-IP window for /v1/domain/check using the domain_checks table.
+func domain_check_ok(db, ip) (ok) {
+    win := domain_check_window_s()
+    cut := now() - win
+    sqlite_exec(db, "DELETE FROM domain_checks WHERE ts < ?", []string{str(cut)})
+    crows := sqlite_query(db, "SELECT COUNT(*) AS n FROM domain_checks WHERE ip = ? AND ts >= ?", []string{ip, str(cut)})
+    cs := parse(crows, []CntRow{})
+    if len(cs) > 0 && cs[0].n >= max_domain_checks_per_min() { return 0 }
+    sqlite_exec(db, "INSERT INTO domain_checks(ip, ts) VALUES(?,?)", []string{ip, str(now())})
+    ok = 1
+}
+
 // ---- peage overage (optional) ----------------------------------------------
 // A caller past the free rate limit can pay per call by resending with an
 // X-Peage-Wallet header: the charge goes through the peage rail
@@ -1150,6 +1177,37 @@ func h_domain_rm(req) (res) {
     sqlite_close(db)
     domain_hook("remove", domain, ds[0].owner, ds[0].artifact)
     res = ok_json("{\"ok\":true,\"removed\":\"" + jesc(domain) + "\"}")
+}
+
+// POST /v1/domain/check?domain=  — probe whether a custom domain is available to map (i.e. not
+// currently recorded in the domains table). Self-service (#19): an external agent can ask "can I
+// reserve mything.hart.intrane.fr?" before issuing POST /v1/domain. Open by default (no token); a
+// bare trailing dot is normalized away so "shop.example.com." reads as "shop.example.com". Rate-
+// limited per IP via domain_checks (HART_MAX_DOMAIN_CHECKS_PER_MIN / HART_DOMAIN_CHECK_WINDOW_S)
+// so a noisy scanner can't hammer the table; each IP gets its own bucket (set HART_TRUST_PROXY=1
+// behind a proxy so X-Forwarded-For distinguishes callers).
+func h_domain_check(req) (res) {
+    db := opendb()
+    ip := hart_client_ip(req)
+    if domain_check_ok(db, ip) == 0 {
+        sqlite_close(db)
+        return response("429 Too Many Requests", "application/json", "{\"ok\":false,\"error\":\"rate limit: max " + str(max_domain_checks_per_min()) + " domain checks per " + str(domain_check_window_s()) + "s per IP — slow down\"}")
+    }
+    raw := trim(query(req, "domain"))
+    // normalize a single trailing dot (FQDN root form) -> bare hostname
+    if raw != "" && has_suffix(raw, ".") { raw = substr(raw, 0, len(raw) - 1) }
+    domain := to_lower(trim(raw))
+    if valid_domain(domain) == 0 {
+        sqlite_close(db)
+        return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"invalid domain — a bare hostname like shop.example.com\"}")
+    }
+    rows := sqlite_query(db, "SELECT domain FROM domains WHERE domain = ?", []string{domain})
+    sqlite_close(db)
+    ds := parse(rows, []DomainRow{})
+    avail := 1
+    reason := "free"
+    if len(ds) > 0 { avail = 0; reason = "taken" }
+    res = ok_json("{\"ok\":true,\"domain\":\"" + jesc(domain) + "\",\"available\":" + str(avail) + ",\"reason\":\"" + reason + "\"}")
 }
 
 // ---- daemon ---------------------------------------------------------------
@@ -2726,6 +2784,7 @@ func hart_route(req) (res) {
     if req.method == "GET" && p == "/v1/refresh" { return h_refresh_get(req) }
     if req.method == "POST" && p == "/v1/live" { return h_live(req) }
     if req.method == "POST" && p == "/v1/domain" { return h_domain_set(req) }
+    if req.method == "POST" && p == "/v1/domain/check" { return h_domain_check(req) }
     if req.method == "GET" && p == "/v1/domain" { return h_domain_get(req) }
     if req.method == "DELETE" && p == "/v1/domain" { return h_domain_rm(req) }
     if req.method == "GET" && p == "/v1/license/status" { return h_license_status(req) }

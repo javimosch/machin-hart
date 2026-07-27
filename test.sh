@@ -97,6 +97,50 @@ has "domain --emit-traefik prints Traefik block" "$(./hart domain creator/shop s
 has "domain-rm ok" "$(./hart domain-rm shop.test)" '"removed":"shop.test"'
 eq "after rm: Host at / -> landing (not mapped)" "$(curl -s -H 'Host: shop.test' "$HART_URL/" | grep -c 'Funnel page')" "0"
 
+echo "== POST /v1/domain/check edge cases (#19) =="
+# (1) trailing dot is normalized to the bare hostname and reads as available (free domain).
+has "check: trailing dot normalized -> available" "$(curl -s -X POST "$HART_URL/v1/domain/check?domain=free.example.com.")" '"available":1'
+has "check: trailing dot normalized domain echoed" "$(curl -s -X POST "$HART_URL/v1/domain/check?domain=free.example.com.")" '"domain":"free.example.com"'
+# (2) special chars are rejected by valid_domain -> 400 with the invalid-domain error body.
+eq "check: special chars -> 400" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/domain/check?domain=sho%3Btest.example.com")" "400"
+has "check: special chars error body" "$(curl -s -X POST "$HART_URL/v1/domain/check?domain=sho%3Btest.example.com")" "invalid domain"
+# A mapped domain reports taken; after domain-rm it reports available again (5).
+./hart domain creator/shop taken.example.com >/dev/null
+has "check: mapped domain -> taken" "$(curl -s -X POST "$HART_URL/v1/domain/check?domain=taken.example.com")" '"available":0'
+has "check: taken reason echoed" "$(curl -s -X POST "$HART_URL/v1/domain/check?domain=taken.example.com")" '"reason":"taken"'
+./hart domain-rm taken.example.com >/dev/null
+has "check: after rm -> available" "$(curl -s -X POST "$HART_URL/v1/domain/check?domain=taken.example.com")" '"available":1'
+
+# (3)+(4) rate limit + per-IP buckets: boot a second daemon with a tiny window and proxy trust so
+# X-Forwarded-For distinguishes callers. HART_MAX_DOMAIN_CHECKS_PER_MIN=2 / window=1s lets us
+# exercise 429, recovery after the window, and concurrent checks from different IPs without slowing
+# the suite by 60 real seconds.
+RPORT=8761
+RTMP="$(mktemp -d)"
+export HART_DB="$RTMP/r.db"
+export HART_TRUST_PROXY=1
+export HART_MAX_DOMAIN_CHECKS_PER_MIN=2
+export HART_DOMAIN_CHECK_WINDOW_S=1
+./hart serve "$RPORT" >"$RTMP/serve.log" 2>&1 &
+RSRV=$!
+sleep 1
+kill -0 "$RSRV" 2>/dev/null || { echo "test: rate-limit daemon failed to boot"; cat "$RTMP/serve.log"; bad "rate-limit daemon boot"; }
+RURL="http://127.0.0.1:$RPORT"
+# Two checks from IP-A succeed, the third (still inside the 1s window) is throttled.
+eq "check rl: IP-A 1st ok" "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 10.0.0.1' -X POST "$RURL/v1/domain/check?domain=a.test")" "200"
+eq "check rl: IP-A 2nd ok" "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 10.0.0.1' -X POST "$RURL/v1/domain/check?domain=a.test")" "200"
+eq "check rl: IP-A 3rd -> 429" "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 10.0.0.1' -X POST "$RURL/v1/domain/check?domain=a.test")" "429"
+# (4) a different IP has its own bucket and is NOT throttled by IP-A's activity.
+eq "check rl: IP-B concurrent ok" "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 10.0.0.2' -X POST "$RURL/v1/domain/check?domain=b.test")" "200"
+# (3) after the 1s window elapses, IP-A recovers.
+sleep 2
+eq "check rl: IP-A recovers after window" "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Forwarded-For: 10.0.0.1' -X POST "$RURL/v1/domain/check?domain=a.test")" "200"
+kill "$RSRV" 2>/dev/null
+rm -rf "$RTMP"
+# restore the main suite's env (the rate-limit block reused HART_DB + set proxy/rate knobs)
+export HART_DB="$TMP/test.db"
+unset HART_TRUST_PROXY HART_MAX_DOMAIN_CHECKS_PER_MIN HART_DOMAIN_CHECK_WINDOW_S
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"
