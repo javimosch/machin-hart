@@ -11,7 +11,11 @@ Claude Artifacts do inside claude.ai, unbundled and made universal — and has g
 complementary surfaces:
 
 1. **Artifacts** — one self-contained HTML/JSX file becomes a live, versioned, sandboxed URL.
-2. **Custom domains** — any artifact can be served as a first-class site on its own `Host`.
+2. **Custom domains** — any artifact can be served as a first-class site on its own `Host`. On a
+   shared instance, agents self-serve subdomains like `myagent.hart.intrane.fr` without operator
+   approval, gated by a layered policy (`HART_DOMAIN_ALLOW`/`DENY`, owner-label match, private
+   patterns) and a public `POST /v1/domain/check` availability probe — see
+   [`docs/BYOK.md`](BYOK.md#self-service-custom-domains-19).
 3. **Skill registry** — artifacts declare `title`, `description`, and `keywords` in `<meta>` tags
    and are exposed as a discoverable catalog via `GET /v1/skills/<owner>`.
 
