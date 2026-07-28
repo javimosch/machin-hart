@@ -164,6 +164,39 @@ hart publish sheet.html --owner acme --artifact leads \
 # Share the read key out-of-band. Agents: HART_READ_KEY or X-Hart-Read-Key header.
 ```
 
+### Custom domain policy (#19)
+
+Self-service `*.hart.intrane.fr` domains with policy controls and automatic cleanup.
+
+**Daemon env vars** (all optional — unset = unrestricted, the default):
+
+| Var | Purpose |
+|---|---|
+| `HART_DOMAIN_ALLOW` | Comma-separated allowlist, e.g. `*.hart.intrane.fr` (empty = unrestricted). |
+| `HART_DOMAIN_DENY` | Always-blocked patterns, e.g. `admin.hart.intrane.fr,api.hart.intrane.fr`. |
+| `HART_DOMAIN_PRIVATE_PATTERNS` | Patterns where the mapped artifact must be private + read-key, and the caller must prove read access. |
+| `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1` | Enforce that the owner label in the domain matches the artifact owner (e.g. `myagent.hart.intrane.fr` belongs to owner `myagent`). |
+| `HART_DOMAIN_MAX_PER_OWNER` | Limit how many domains one owner can map. |
+| `HART_DOMAIN_GC_INTERVAL` | Daemon background GC interval, e.g. `24h`. Unset = no auto-GC (use `hart domains --prune` manually). |
+| `HART_DOMAIN_HOOK` | Reconcile command run as `<hook> add\|remove <domain> <owner> <artifact>` on mapping changes (off by default). |
+
+**API:**
+
+- `POST /v1/domain?domain=&id=&version=&chrome=` — set/update a mapping (owner-key protected; overwrite requires both current + new owner keys).
+- `POST /v1/domain/check?domain=` — public, rate-limited availability check. Returns `{ok, domain, available, reason}` where reason is `free\|invalid\|denied\|taken`.
+- `GET /v1/domain?domain=` — one mapping; `GET /v1/domain[?owner=]` — list mappings.
+- `DELETE /v1/domain?domain=` — remove a mapping (owner-key protected).
+- `POST /v1/admin/domains/prune` — admin-only manual GC pass (returns `{ok, pruned:N}`).
+
+**CLI:**
+
+- `hart domain <id> <domain> [--chrome] [--emit-traefik]` — map a domain.
+- `hart domain-rm <domain>` — remove a mapping.
+- `hart domains [--owner <who>]` — list mappings.
+- `hart domains --prune` — admin-only manual GC pass.
+
+**Lifecycle cleanup:** `hart rm <id>` deletes all domain mappings for the removed artifact and fires `HART_DOMAIN_HOOK remove` for each. `hart admin mv <from> <to>` updates domain mappings to follow the move (same owner) or deletes them with a remove hook when the new owner would violate `HART_DOMAIN_SUBDOMAIN_OWNER_MATCH` or ALLOW/DENY policy. The background GC (or manual `hart domains --prune`) removes orphan mappings whose artifact is gone or whose owner/domain no longer satisfies policy.
+
 ### hart Pro (self-host)
 
 ```sh
