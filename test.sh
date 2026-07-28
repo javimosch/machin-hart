@@ -187,6 +187,294 @@ eq "owner-match off: mismatched label accepted (200)" "$(curl -s -o /dev/null -w
 kill "$OSRV2" 2>/dev/null
 export HART_DB="$TMP/test.db"
 
+echo "== domain private patterns (HART_DOMAIN_PRIVATE_PATTERNS, #19 slice 3) =="
+# When a domain matches a HART_DOMAIN_PRIVATE_PATTERNS entry, the mapped artifact must be private
+# AND carry a read key, and the caller must prove read access (valid read_key query param or
+# X-Hart-Read-Key header). Public/unlisted artifacts and private-without-a-key are rejected.
+PPORT=$((PORT + 8))
+export HART_DB="$TMP/domainpriv.db"
+HART_DOMAIN_PRIVATE_PATTERNS="secret.*.example.com,private.example.com" HART_MAX_SUBMITS_PER_MIN=100000 \
+  ./hart serve "$PPORT" >"$TMP/domainpriv.log" 2>&1 &
+PSRV=$!
+sleep 1
+kill -0 "$PSRV" 2>/dev/null || { echo "test: domain-private-patterns daemon failed to boot"; cat "$TMP/domainpriv.log"; exit 1; }
+PURL="http://127.0.0.1:$PPORT"
+printf '<h1>priv</h1>' > "$TMP/priv.html"
+# private artifact WITH a read key
+curl -s -o /dev/null -X POST "$PURL/v1/publish?owner=acme&artifact=secret&visibility=private&read_key=pw123" -H 'content-type: text/html' --data-binary @"$TMP/priv.html"
+# public artifact (same owner)
+curl -s -o /dev/null -X POST "$PURL/v1/publish?owner=acme&artifact=pub&visibility=public" -H 'content-type: text/html' --data-binary @"$TMP/priv.html"
+# private artifact WITHOUT a read key
+curl -s -o /dev/null -X POST "$PURL/v1/publish?owner=acme&artifact=nopass&visibility=private" -H 'content-type: text/html' --data-binary @"$TMP/priv.html"
+# matching private pattern + private artifact + correct read_key -> 200
+eq "private-pattern: private+correct key accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/secret&read_key=pw123")" "200"
+# matching via X-Hart-Read-Key header -> 200
+eq "private-pattern: header read key accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-read-key: pw123' -X POST "$PURL/v1/domain?domain=secret.foo.example.com&id=acme/secret")" "200"
+# matching pattern + private artifact + WRONG read_key -> 403
+eq "private-pattern: wrong read key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/secret&read_key=nope")" "403"
+# matching pattern + private artifact + NO read_key -> 403
+eq "private-pattern: no read key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/secret")" "403"
+# matching pattern + public artifact -> 403 (must be private)
+eq "private-pattern: public artifact rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/pub")" "403"
+# matching pattern + private-without-read-key artifact -> 403 (must have a read key)
+eq "private-pattern: private without key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/nopass")" "403"
+has "private-pattern: rejected body names the policy" "$(curl -s -X POST "$PURL/v1/domain?domain=private.example.com&id=acme/pub")" "HART_DOMAIN_PRIVATE_PATTERNS"
+# non-matching domain -> not subject (200)
+eq "private-pattern: non-matching domain not subject (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PURL/v1/domain?domain=shop.example.com&id=acme/pub")" "200"
+kill "$PSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
+echo "== domain overwrite-both-keys (#19 slice 4) =="
+# When a domain is already mapped to owner A's artifact, owner B cannot hijack it by just
+# presenting B's own owner key — B must also present A's owner key (X-Hart-Owner-Key-Current
+# header or ?current_owner_key=). On a legit overwrite (both keys), the HART_DOMAIN_HOOK fires
+# remove for the old mapping before add for the new one. Same-owner re-mapping (version bump)
+# needs no current-owner key.
+WPORT=$((PORT + 9))
+export HART_DB="$TMP/domainover.db"
+HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$WPORT" >"$TMP/domainover.log" 2>&1 &
+WSRV=$!
+sleep 1
+kill -0 "$WSRV" 2>/dev/null || { echo "test: domain-overwrite daemon failed to boot"; cat "$TMP/domainover.log"; exit 1; }
+WURL="http://127.0.0.1:$WPORT"
+printf '<h1>over</h1>' > "$TMP/over.html"
+# owner alice claims her namespace with key ak, bob claims his with bk (owner key via header)
+curl -s -o /dev/null -X POST "$WURL/v1/publish?owner=alice&artifact=site" -H 'content-type: text/html' -H 'x-hart-owner-key: ak' --data-binary @"$TMP/over.html"
+curl -s -o /dev/null -X POST "$WURL/v1/publish?owner=bob&artifact=site" -H 'content-type: text/html' -H 'x-hart-owner-key: bk' --data-binary @"$TMP/over.html"
+# alice maps her domain first
+eq "overwrite: alice maps her domain (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: ak' -X POST "$WURL/v1/domain?domain=shop.example.com&id=alice/site")" "200"
+has "overwrite: alice's mapping recorded" "$(curl -s "$WURL/v1/domain?domain=shop.example.com")" '"id":"alice/site"'
+# bob tries to hijack with ONLY his key -> 403
+eq "overwrite: bob hijack with only his key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: bk' -X POST "$WURL/v1/domain?domain=shop.example.com&id=bob/site")" "403"
+has "overwrite: hijack rejection names the current owner" "$(curl -s -H 'x-hart-owner-key: bk' -X POST "$WURL/v1/domain?domain=shop.example.com&id=bob/site")" "alice"
+# bob tries with his key + WRONG current-owner key -> 403
+eq "overwrite: bob with wrong current key rejected (403)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: bk' -H 'x-hart-owner-key-current: wrong' -X POST "$WURL/v1/domain?domain=shop.example.com&id=bob/site")" "403"
+# bob succeeds with BOTH keys (his + alice's) -> 200, mapping now points to bob
+eq "overwrite: bob with both keys accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: bk' -H 'x-hart-owner-key-current: ak' -X POST "$WURL/v1/domain?domain=shop.example.com&id=bob/site")" "200"
+has "overwrite: mapping now points to bob" "$(curl -s "$WURL/v1/domain?domain=shop.example.com")" '"id":"bob/site"'
+# current_owner_key query param also works (header substitute)
+eq "overwrite: current_owner_key query param accepted (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: ak' -X POST "$WURL/v1/domain?domain=shop.example.com&id=alice/site&current_owner_key=bk")" "200"
+has "overwrite: mapping back to alice via query param" "$(curl -s "$WURL/v1/domain?domain=shop.example.com")" '"id":"alice/site"'
+# same-owner re-map (version bump, no owner change) needs no current-owner key
+eq "overwrite: same-owner re-map needs no current key (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: ak' -X POST "$WURL/v1/domain?domain=shop.example.com&id=alice/site&version=2")" "200"
+# hook fires remove-then-add on a cross-owner overwrite (verify via a shell hook that logs)
+HPORT=$((PORT + 10))
+export HART_DB="$TMP/domainhook.db"
+HOOKLOG="$TMP/hook.log"
+rm -f "$HOOKLOG"
+HART_DOMAIN_HOOK="sh -c 'echo \$0 \$1 \$2 \$3 >> $HOOKLOG'" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$HPORT" >"$TMP/domainhook.log" 2>&1 &
+HSRV=$!
+sleep 1
+kill -0 "$HSRV" 2>/dev/null || { echo "test: domain-hook daemon failed to boot"; cat "$TMP/domainhook.log"; exit 1; }
+HURL="http://127.0.0.1:$HPORT"
+curl -s -o /dev/null -X POST "$HURL/v1/publish?owner=alice&artifact=site" -H 'content-type: text/html' -H 'x-hart-owner-key: ak' --data-binary @"$TMP/over.html"
+curl -s -o /dev/null -X POST "$HURL/v1/publish?owner=bob&artifact=site" -H 'content-type: text/html' -H 'x-hart-owner-key: bk' --data-binary @"$TMP/over.html"
+# initial map -> hook add only
+curl -s -o /dev/null -H 'x-hart-owner-key: ak' -X POST "$HURL/v1/domain?domain=hook.example.com&id=alice/site"
+sleep 0.3
+eq "overwrite: initial map fires add hook" "$(cat "$HOOKLOG" 2>/dev/null | grep -c 'add hook.example.com alice site')" "1"
+# cross-owner overwrite (both keys) -> hook remove then add
+curl -s -o /dev/null -H 'x-hart-owner-key: bk' -H 'x-hart-owner-key-current: ak' -X POST "$HURL/v1/domain?domain=hook.example.com&id=bob/site"
+sleep 0.3
+eq "overwrite: cross-owner overwrite fires remove hook" "$(cat "$HOOKLOG" 2>/dev/null | grep -c 'remove hook.example.com alice site')" "1"
+eq "overwrite: cross-owner overwrite fires add hook for new" "$(cat "$HOOKLOG" 2>/dev/null | grep -c 'add hook.example.com bob site')" "1"
+# same-owner version bump -> NO extra remove hook (just add)
+curl -s -o /dev/null -H 'x-hart-owner-key: bk' -X POST "$HURL/v1/domain?domain=hook.example.com&id=bob/site&version=2"
+sleep 0.3
+eq "overwrite: same-owner re-map fires no remove hook" "$(cat "$HOOKLOG" 2>/dev/null | grep -c 'remove hook.example.com bob site')" "0"
+kill "$HSRV" 2>/dev/null
+kill "$WSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
+echo "== domain check (POST /v1/domain/check, #19 slice 5) =="
+# Public, rate-limited availability check. No token required. Returns available=true when
+# the domain is well-formed, passes ALLOW/DENY policy, and is not currently mapped. The
+# check endpoint uses a fresh daemon with an allowlist so we can exercise the denied path.
+CPORT=$((PORT + 11))
+export HART_DB="$TMP/domaincheck.db"
+HART_DOMAIN_ALLOW="*.hart.intrane.fr" HART_DOMAIN_DENY="admin.hart.intrane.fr,api.hart.intrane.fr" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$CPORT" >"$TMP/domaincheck.log" 2>&1 &
+CSRV=$!
+sleep 1
+kill -0 "$CSRV" 2>/dev/null || { echo "test: domain-check daemon failed to boot"; cat "$TMP/domaincheck.log"; exit 1; }
+CURL="http://127.0.0.1:$CPORT"
+# publish an artifact + map a domain so we can test the "taken" path
+printf '<h1>check</h1>' > "$TMP/check.html"
+curl -s -o /dev/null -X POST "$CURL/v1/publish?owner=acme&artifact=shop" -H 'content-type: text/html' --data-binary @"$TMP/check.html"
+curl -s -o /dev/null -X POST "$CURL/v1/domain?domain=taken.hart.intrane.fr&id=acme/shop"
+# available domain -> available=true, reason=free
+eq "check: free domain available (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CURL/v1/domain/check?domain=free.hart.intrane.fr")" "200"
+has "check: free domain available=true" "$(curl -s -X POST "$CURL/v1/domain/check?domain=free.hart.intrane.fr")" '"available":true'
+has "check: free domain reason=free" "$(curl -s -X POST "$CURL/v1/domain/check?domain=free.hart.intrane.fr")" '"reason":"free"'
+# taken domain -> available=false, reason=taken
+has "check: taken domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=taken.hart.intrane.fr")" '"available":false'
+has "check: taken domain reason=taken" "$(curl -s -X POST "$CURL/v1/domain/check?domain=taken.hart.intrane.fr")" '"reason":"taken"'
+# denied domain -> available=false, reason=denied
+has "check: denied domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=admin.hart.intrane.fr")" '"available":false'
+has "check: denied domain reason=denied" "$(curl -s -X POST "$CURL/v1/domain/check?domain=admin.hart.intrane.fr")" '"reason":"denied"'
+# non-allowlisted domain -> available=false, reason=denied (policy rejects)
+has "check: non-allowlisted domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=evil.example.com")" '"available":false'
+has "check: non-allowlisted domain reason=denied" "$(curl -s -X POST "$CURL/v1/domain/check?domain=evil.example.com")" '"reason":"denied"'
+# invalid domain -> available=false, reason=invalid
+has "check: invalid domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=not_a_domain")" '"available":false'
+has "check: invalid domain reason=invalid" "$(curl -s -X POST "$CURL/v1/domain/check?domain=not_a_domain")" '"reason":"invalid"'
+# empty domain -> available=false, reason=invalid
+has "check: empty domain available=false" "$(curl -s -X POST "$CURL/v1/domain/check?domain=")" '"available":false'
+has "check: empty domain reason=invalid" "$(curl -s -X POST "$CURL/v1/domain/check?domain=")" '"reason":"invalid"'
+# public endpoint: no token required (no HART_ADMIN_TOKEN header sent, no auth)
+eq "check: no token required (200)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$CURL/v1/domain/check?domain=free.hart.intrane.fr")" "200"
+# domain case is normalized (uppercase -> lowercase, still found as taken)
+has "check: case-insensitive domain (taken)" "$(curl -s -X POST "$CURL/v1/domain/check?domain=TAKEN.hart.intrane.fr")" '"reason":"taken"'
+# response includes the (lowercased) domain field
+has "check: response echoes lowercased domain" "$(curl -s -X POST "$CURL/v1/domain/check?domain=FREE.HART.intrane.fr")" '"domain":"free.hart.intrane.fr"'
+# rate-limited: a tight window daemon returns 429 after the limit
+RPORT=$((PORT + 12))
+export HART_DB="$TMP/domaincheckrl.db"
+HART_MAX_SUBMITS_PER_MIN=2 ./hart serve "$RPORT" >"$TMP/domaincheckrl.log" 2>&1 &
+RSRV=$!
+sleep 1
+kill -0 "$RSRV" 2>/dev/null || { echo "test: domain-check-rl daemon failed to boot"; cat "$TMP/domaincheckrl.log"; exit 1; }
+RURL="http://127.0.0.1:$RPORT"
+curl -s -o /dev/null -X POST "$RURL/v1/domain/check?domain=a.example.com"
+curl -s -o /dev/null -X POST "$RURL/v1/domain/check?domain=b.example.com"
+eq "check: rate-limited after 2 submits (429)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$RURL/v1/domain/check?domain=c.example.com")" "429"
+kill "$RSRV" 2>/dev/null
+kill "$CSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
+echo "== domain cleanup: rm + admin mv (#19 slice 6) =="
+# hart rm <id> must delete all domain mappings for that artifact and fire HART_DOMAIN_HOOK
+# remove for each. hart admin mv must update domain mappings to follow the move when the
+# new owner still satisfies policy, and delete (with remove hook) domains that would violate
+# HART_DOMAIN_SUBDOMAIN_OWNER_MATCH or ALLOW/DENY policy under the new owner.
+GPORT=$((PORT + 13))
+export HART_DB="$TMP/domaincleanup.db"
+GHOOKLOG="$TMP/cleanup-hook.log"
+rm -f "$GHOOKLOG"
+HART_DOMAIN_HOOK="sh -c 'echo \$0 \$1 \$2 \$3 >> $GHOOKLOG'" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$GPORT" >"$TMP/domaincleanup.log" 2>&1 &
+GSRV=$!
+sleep 1
+kill -0 "$GSRV" 2>/dev/null || { echo "test: domain-cleanup daemon failed to boot"; cat "$TMP/domaincleanup.log"; exit 1; }
+GURL="http://127.0.0.1:$GPORT"
+printf '<h1>cleanup</h1>' > "$TMP/cleanup.html"
+# publish two artifacts under owner acme, map domains to the first
+curl -s -o /dev/null -X POST "$GURL/v1/publish?owner=acme&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/cleanup.html"
+curl -s -o /dev/null -X POST "$GURL/v1/publish?owner=acme&artifact=blog" -H 'content-type: text/html' --data-binary @"$TMP/cleanup.html"
+curl -s -o /dev/null -X POST "$GURL/v1/domain?domain=site.example.com&id=acme/site"
+curl -s -o /dev/null -X POST "$GURL/v1/domain?domain=blog.example.com&id=acme/blog"
+# verify both mappings exist
+has "cleanup: site mapping exists" "$(curl -s "$GURL/v1/domain?domain=site.example.com")" '"id":"acme/site"'
+has "cleanup: blog mapping exists" "$(curl -s "$GURL/v1/domain?domain=blog.example.com")" '"id":"acme/blog"'
+# rm the site artifact -> its domain mapping should be deleted + hook remove fired
+rm -f "$GHOOKLOG"
+curl -s -o /dev/null -X DELETE "$GURL/v1/artifacts/acme/site"
+eq "cleanup: rm deletes domain mapping (404)" "$(curl -s -o /dev/null -w '%{http_code}' "$GURL/v1/domain?domain=site.example.com")" "404"
+has "cleanup: blog mapping still exists after rm site" "$(curl -s "$GURL/v1/domain?domain=blog.example.com")" '"id":"acme/blog"'
+eq "cleanup: rm fires remove hook for site domain" "$(cat "$GHOOKLOG" 2>/dev/null | grep -c 'remove site.example.com acme site')" "1"
+eq "cleanup: rm does NOT fire remove hook for blog domain" "$(cat "$GHOOKLOG" 2>/dev/null | grep -c 'remove blog.example.com acme blog')" "0"
+# admin mv: move blog to acme/blog2 (same owner) -> domain mapping should follow (update artifact)
+rm -f "$GHOOKLOG"
+curl -s -o /dev/null -X POST "$GURL/v1/admin/mv?from=acme/blog&to=acme/blog2" -H "authorization: Bearer $HART_ADMIN_TOKEN"
+has "cleanup: admin mv same-owner updates domain mapping" "$(curl -s "$GURL/v1/domain?domain=blog.example.com")" '"id":"acme/blog2"'
+eq "cleanup: admin mv same-owner does NOT fire remove hook" "$(cat "$GHOOKLOG" 2>/dev/null | grep -c 'remove blog.example.com acme blog')" "0"
+kill "$GSRV" 2>/dev/null
+
+# admin mv with HART_DOMAIN_SUBDOMAIN_OWNER_MATCH: moving to a new owner whose label doesn't
+# match the domain should delete the mapping (with remove hook); moving to a matching owner
+# should keep it (updated).
+MPORT=$((PORT + 14))
+export HART_DB="$TMP/domainmvowner.db"
+MHOOKLOG="$TMP/mvowner-hook.log"
+rm -f "$MHOOKLOG"
+HART_PUBLIC="https://hart.intrane.fr" HART_DOMAIN_SUBDOMAIN_OWNER_MATCH=1 HART_DOMAIN_ALLOW="*.hart.intrane.fr" HART_DOMAIN_HOOK="sh -c 'echo \$0 \$1 \$2 \$3 >> $MHOOKLOG'" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$MPORT" >"$TMP/domainmvowner.log" 2>&1 &
+MSRV=$!
+sleep 1
+kill -0 "$MSRV" 2>/dev/null || { echo "test: domain-mv-owner daemon failed to boot"; cat "$TMP/domainmvowner.log"; exit 1; }
+MURL="http://127.0.0.1:$MPORT"
+curl -s -o /dev/null -X POST "$MURL/v1/publish?owner=alice&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/cleanup.html"
+curl -s -o /dev/null -X POST "$MURL/v1/publish?owner=bob&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/cleanup.html"
+# alice maps alice.hart.intrane.fr (owner-match ok for alice)
+curl -s -o /dev/null -X POST "$MURL/v1/domain?domain=alice.hart.intrane.fr&id=alice/site"
+has "cleanup: owner-match mapping exists" "$(curl -s "$MURL/v1/domain?domain=alice.hart.intrane.fr")" '"id":"alice/site"'
+# admin mv alice/site -> bob/site2: new owner bob doesn't match alice.hart.intrane.fr -> mapping deleted + remove hook
+rm -f "$MHOOKLOG"
+curl -s -o /dev/null -X POST "$MURL/v1/admin/mv?from=alice/site&to=bob/site2" -H "authorization: Bearer $HART_ADMIN_TOKEN"
+eq "cleanup: admin mv to non-matching owner deletes mapping (404)" "$(curl -s -o /dev/null -w '%{http_code}' "$MURL/v1/domain?domain=alice.hart.intrane.fr")" "404"
+eq "cleanup: admin mv to non-matching owner fires remove hook" "$(cat "$MHOOKLOG" 2>/dev/null | grep -c 'remove alice.hart.intrane.fr alice site')" "1"
+# admin mv bob/site2 -> bob/site3: same owner, owner-match still ok -> mapping should be created first then follow
+curl -s -o /dev/null -X POST "$MURL/v1/domain?domain=bob.hart.intrane.fr&id=bob/site2"
+has "cleanup: bob mapping exists" "$(curl -s "$MURL/v1/domain?domain=bob.hart.intrane.fr")" '"id":"bob/site2"'
+rm -f "$MHOOKLOG"
+curl -s -o /dev/null -X POST "$MURL/v1/admin/mv?from=bob/site2&to=bob/site3" -H "authorization: Bearer $HART_ADMIN_TOKEN"
+has "cleanup: admin mv same-owner (bob) updates mapping" "$(curl -s "$MURL/v1/domain?domain=bob.hart.intrane.fr")" '"id":"bob/site3"'
+eq "cleanup: admin mv same-owner (bob) no remove hook" "$(cat "$MHOOKLOG" 2>/dev/null | grep -c 'remove bob.hart.intrane.fr bob site2')" "0"
+kill "$MSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
+echo "== domain GC + admin prune (#19 slice 7) =="
+# The background GC (HART_DOMAIN_GC_INTERVAL) and the manual admin prune endpoint both call
+# domain_gc_run, which removes domain mappings whose artifact is gone or whose owner/domain
+# no longer satisfies ALLOW/DENY policy or HART_DOMAIN_SUBDOMAIN_OWNER_MATCH. We test the
+# manual prune endpoint (instant) rather than waiting for the background interval.
+GAPORT=$((PORT + 15))
+export HART_DB="$TMP/domaingc.db"
+GAHOOKLOG="$TMP/gc-hook.log"
+rm -f "$GAHOOKLOG"
+HART_DOMAIN_HOOK="sh -c 'echo \$0 \$1 \$2 \$3 >> $GAHOOKLOG'" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$GAPORT" >"$TMP/domaingc.log" 2>&1 &
+GASRV=$!
+sleep 1
+kill -0 "$GASRV" 2>/dev/null || { echo "test: domain-gc daemon failed to boot"; cat "$TMP/domaingc.log"; exit 1; }
+GAURL="http://127.0.0.1:$GAPORT"
+printf '<h1>gc</h1>' > "$TMP/gc.html"
+# publish + map a domain
+curl -s -o /dev/null -X POST "$GAURL/v1/publish?owner=acme&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/gc.html"
+curl -s -o /dev/null -X POST "$GAURL/v1/domain?domain=site.example.com&id=acme/site"
+has "gc: mapping exists before prune" "$(curl -s "$GAURL/v1/domain?domain=site.example.com")" '"id":"acme/site"'
+# prune with no orphans -> pruned=0
+eq "gc: prune with no orphans returns pruned=0" "$(curl -s -X POST "$GAURL/v1/admin/domains/prune" -H "authorization: Bearer $HART_ADMIN_TOKEN" | jget pruned)" "0"
+has "gc: mapping still exists after no-op prune" "$(curl -s "$GAURL/v1/domain?domain=site.example.com")" '"id":"acme/site"'
+# rm the artifact (slice 6 cleans domains on rm) -> no orphan left for GC
+curl -s -o /dev/null -X POST "$GAURL/v1/publish?owner=acme&artifact=blog" -H 'content-type: text/html' --data-binary @"$TMP/gc.html"
+curl -s -o /dev/null -X POST "$GAURL/v1/domain?domain=blog.example.com&id=acme/blog"
+curl -s -o /dev/null -X DELETE "$GAURL/v1/artifacts/acme/blog"
+eq "gc: rm cleaned domain (404)" "$(curl -s -o /dev/null -w '%{http_code}' "$GAURL/v1/domain?domain=blog.example.com")" "404"
+eq "gc: prune after rm returns pruned=0" "$(curl -s -X POST "$GAURL/v1/admin/domains/prune" -H "authorization: Bearer $HART_ADMIN_TOKEN" | jget pruned)" "0"
+# admin prune requires admin token
+eq "gc: prune without admin token -> 403" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$GAURL/v1/admin/domains/prune")" "403"
+kill "$GASRV" 2>/dev/null
+
+# GC with policy: a mapping under an allowlist that still allows it -> prune returns 0.
+GBPORT=$((PORT + 16))
+export HART_DB="$TMP/domaingc2.db"
+HART_DOMAIN_ALLOW="*.hart.intrane.fr" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$GBPORT" >"$TMP/domaingc2.log" 2>&1 &
+GBSRV=$!
+sleep 1
+kill -0 "$GBSRV" 2>/dev/null || { echo "test: domain-gc2 daemon failed to boot"; cat "$TMP/domaingc2.log"; exit 1; }
+GBURL="http://127.0.0.1:$GBPORT"
+curl -s -o /dev/null -X POST "$GBURL/v1/publish?owner=acme&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/gc.html"
+curl -s -o /dev/null -X POST "$GBURL/v1/domain?domain=ok.hart.intrane.fr&id=acme/site"
+has "gc2: mapping exists under allowlist" "$(curl -s "$GBURL/v1/domain?domain=ok.hart.intrane.fr")" '"id":"acme/site"'
+eq "gc2: prune returns 0 when policy ok" "$(curl -s -X POST "$GBURL/v1/admin/domains/prune" -H "authorization: Bearer $HART_ADMIN_TOKEN" | jget pruned)" "0"
+has "gc2: mapping still exists after ok prune" "$(curl -s "$GBURL/v1/domain?domain=ok.hart.intrane.fr")" '"id":"acme/site"'
+kill "$GBSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
+echo "== CLI: hart domains --prune (#19 slice 8) =="
+# The CLI `hart domains --prune` calls POST /v1/admin/domains/prune and returns {ok,pruned}.
+# Test against the gc2 daemon's DB (still has ok.hart.intrane.fr mapped to acme/site, policy ok).
+export HART_DB="$TMP/domaingc2.db"
+HART_DOMAIN_ALLOW="*.hart.intrane.fr" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$GBPORT" >"$TMP/domaingc2b.log" 2>&1 &
+GBSRV2=$!
+sleep 1
+kill -0 "$GBSRV2" 2>/dev/null || { echo "test: domain-gc2b daemon failed to boot"; cat "$TMP/domaingc2b.log"; exit 1; }
+export HART_URL="http://127.0.0.1:$GBPORT"
+has "cli prune: returns pruned count" "$(HART_ADMIN_TOKEN="$HART_ADMIN_TOKEN" ./hart domains --prune 2>/dev/null)" '"pruned"'
+eq "cli prune: pruned=0 when no orphans" "$(HART_ADMIN_TOKEN="$HART_ADMIN_TOKEN" ./hart domains --prune 2>/dev/null | jget pruned)" "0"
+# without admin token -> exit 90 (domains --prune failed 403)
+eq "cli prune: no admin token -> exit 90" "$(env -u HART_ADMIN_TOKEN ./hart domains --prune >/dev/null 2>&1; echo $?)" "90"
+kill "$GBSRV2" 2>/dev/null
+export HART_DB="$TMP/test.db"
+export HART_URL="http://127.0.0.1:$PORT"
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"
