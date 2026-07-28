@@ -410,6 +410,71 @@ eq "cleanup: admin mv same-owner (bob) no remove hook" "$(cat "$MHOOKLOG" 2>/dev
 kill "$MSRV" 2>/dev/null
 export HART_DB="$TMP/test.db"
 
+echo "== domain GC + admin prune (#19 slice 7) =="
+# The background GC (HART_DOMAIN_GC_INTERVAL) and the manual admin prune endpoint both call
+# domain_gc_run, which removes domain mappings whose artifact is gone or whose owner/domain
+# no longer satisfies ALLOW/DENY policy or HART_DOMAIN_SUBDOMAIN_OWNER_MATCH. We test the
+# manual prune endpoint (instant) rather than waiting for the background interval.
+GAPORT=$((PORT + 15))
+export HART_DB="$TMP/domaingc.db"
+GAHOOKLOG="$TMP/gc-hook.log"
+rm -f "$GAHOOKLOG"
+HART_DOMAIN_HOOK="sh -c 'echo \$0 \$1 \$2 \$3 >> $GAHOOKLOG'" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$GAPORT" >"$TMP/domaingc.log" 2>&1 &
+GASRV=$!
+sleep 1
+kill -0 "$GASRV" 2>/dev/null || { echo "test: domain-gc daemon failed to boot"; cat "$TMP/domaingc.log"; exit 1; }
+GAURL="http://127.0.0.1:$GAPORT"
+printf '<h1>gc</h1>' > "$TMP/gc.html"
+# publish + map a domain
+curl -s -o /dev/null -X POST "$GAURL/v1/publish?owner=acme&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/gc.html"
+curl -s -o /dev/null -X POST "$GAURL/v1/domain?domain=site.example.com&id=acme/site"
+has "gc: mapping exists before prune" "$(curl -s "$GAURL/v1/domain?domain=site.example.com")" '"id":"acme/site"'
+# prune with no orphans -> pruned=0
+eq "gc: prune with no orphans returns pruned=0" "$(curl -s -X POST "$GAURL/v1/admin/domains/prune" -H "authorization: Bearer $HART_ADMIN_TOKEN" | jget pruned)" "0"
+has "gc: mapping still exists after no-op prune" "$(curl -s "$GAURL/v1/domain?domain=site.example.com")" '"id":"acme/site"'
+# rm the artifact (slice 6 cleans domains on rm) -> no orphan left for GC
+curl -s -o /dev/null -X POST "$GAURL/v1/publish?owner=acme&artifact=blog" -H 'content-type: text/html' --data-binary @"$TMP/gc.html"
+curl -s -o /dev/null -X POST "$GAURL/v1/domain?domain=blog.example.com&id=acme/blog"
+curl -s -o /dev/null -X DELETE "$GAURL/v1/artifacts/acme/blog"
+eq "gc: rm cleaned domain (404)" "$(curl -s -o /dev/null -w '%{http_code}' "$GAURL/v1/domain?domain=blog.example.com")" "404"
+eq "gc: prune after rm returns pruned=0" "$(curl -s -X POST "$GAURL/v1/admin/domains/prune" -H "authorization: Bearer $HART_ADMIN_TOKEN" | jget pruned)" "0"
+# admin prune requires admin token
+eq "gc: prune without admin token -> 403" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$GAURL/v1/admin/domains/prune")" "403"
+kill "$GASRV" 2>/dev/null
+
+# GC with policy: a mapping under an allowlist that still allows it -> prune returns 0.
+GBPORT=$((PORT + 16))
+export HART_DB="$TMP/domaingc2.db"
+HART_DOMAIN_ALLOW="*.hart.intrane.fr" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$GBPORT" >"$TMP/domaingc2.log" 2>&1 &
+GBSRV=$!
+sleep 1
+kill -0 "$GBSRV" 2>/dev/null || { echo "test: domain-gc2 daemon failed to boot"; cat "$TMP/domaingc2.log"; exit 1; }
+GBURL="http://127.0.0.1:$GBPORT"
+curl -s -o /dev/null -X POST "$GBURL/v1/publish?owner=acme&artifact=site" -H 'content-type: text/html' --data-binary @"$TMP/gc.html"
+curl -s -o /dev/null -X POST "$GBURL/v1/domain?domain=ok.hart.intrane.fr&id=acme/site"
+has "gc2: mapping exists under allowlist" "$(curl -s "$GBURL/v1/domain?domain=ok.hart.intrane.fr")" '"id":"acme/site"'
+eq "gc2: prune returns 0 when policy ok" "$(curl -s -X POST "$GBURL/v1/admin/domains/prune" -H "authorization: Bearer $HART_ADMIN_TOKEN" | jget pruned)" "0"
+has "gc2: mapping still exists after ok prune" "$(curl -s "$GBURL/v1/domain?domain=ok.hart.intrane.fr")" '"id":"acme/site"'
+kill "$GBSRV" 2>/dev/null
+export HART_DB="$TMP/test.db"
+
+echo "== CLI: hart domains --prune (#19 slice 8) =="
+# The CLI `hart domains --prune` calls POST /v1/admin/domains/prune and returns {ok,pruned}.
+# Test against the gc2 daemon's DB (still has ok.hart.intrane.fr mapped to acme/site, policy ok).
+export HART_DB="$TMP/domaingc2.db"
+HART_DOMAIN_ALLOW="*.hart.intrane.fr" HART_MAX_SUBMITS_PER_MIN=100000 ./hart serve "$GBPORT" >"$TMP/domaingc2b.log" 2>&1 &
+GBSRV2=$!
+sleep 1
+kill -0 "$GBSRV2" 2>/dev/null || { echo "test: domain-gc2b daemon failed to boot"; cat "$TMP/domaingc2b.log"; exit 1; }
+export HART_URL="http://127.0.0.1:$GBPORT"
+has "cli prune: returns pruned count" "$(HART_ADMIN_TOKEN="$HART_ADMIN_TOKEN" ./hart domains --prune 2>/dev/null)" '"pruned"'
+eq "cli prune: pruned=0 when no orphans" "$(HART_ADMIN_TOKEN="$HART_ADMIN_TOKEN" ./hart domains --prune 2>/dev/null | jget pruned)" "0"
+# without admin token -> exit 90 (domains --prune failed 403)
+eq "cli prune: no admin token -> exit 90" "$(env -u HART_ADMIN_TOKEN ./hart domains --prune >/dev/null 2>&1; echo $?)" "90"
+kill "$GBSRV2" 2>/dev/null
+export HART_DB="$TMP/test.db"
+export HART_URL="http://127.0.0.1:$PORT"
+
 echo "== owner-claim keys =="
 ./hart publish "$P" --owner locked --artifact a --owner-key sekret >/dev/null
 eq "claimed owner: wrong/no key -> 403" "$(printf '<h1>x</h1>' > "$TMP/x.html"; ./hart publish "$TMP/x.html" --owner locked --artifact b >/dev/null 2>&1; echo $?)" "80"
