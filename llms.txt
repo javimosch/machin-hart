@@ -21,7 +21,7 @@ The examples below use the public demo instance at `https://hart.intrane.fr`; re
 - Markdown -> HTML: `pandoc --embed-resources --standalone --css style.css -f markdown-yaml_metadata_block` avoids YAML parse errors when frontmatter contains colons.
 - Re-publishing same owner/artifact updates `latest`; delete/move with `curl -X DELETE https://hart.intrane.fr/v1/artifacts/<owner>/<artifact>`.
 - Update without re-uploading: `hart data you/name '<json>'` -> the page reads `window.HART_DATA` and/or `{{key}}`.
-- Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`).
+- Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`); failed read attempts are rate-limited per IP to block brute force.
 - Custom domains: `hart domain you/name shop.example.com` (served chromeless by `Host`); self-service `*.hart.intrane.fr` subdomains are policy-controlled (`HART_DOMAIN_ALLOW/DENY/PRIVATE_PATTERNS/SUBDOMAIN_OWNER_MATCH/MAX_PER_OWNER/GC_INTERVAL`); availability check `POST https://hart.intrane.fr/v1/domain/check?domain=foo.example.com`.
 - Owner slugs: lowercase letters, digits, hyphens — no leading/trailing hyphen (`acme`, `q3-report`).
 

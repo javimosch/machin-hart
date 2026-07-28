@@ -501,6 +501,27 @@ curl -s -o /dev/null -X POST "http://127.0.0.1:$RPORT/v1/publish?owner=rl&artifa
 curl -s -o /dev/null -X POST "http://127.0.0.1:$RPORT/v1/publish?owner=rl&artifact=b" -H 'content-type: text/html' --data-binary @"$RB" >/dev/null
 eq "rate limit: third submit in window -> 429" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$RPORT/v1/publish?owner=rl&artifact=c" -H 'content-type: text/html' --data-binary @"$RB")" "429"
 kill "$RSRV" 2>/dev/null
+
+# read-attempt rate limit smoke: private artifact brute-force guard
+RRPORT=$((PORT + 4))
+export HART_DB="$TMP/rateread.db"
+HART_MAX_SUBMITS_PER_MIN=100000 HART_MAX_READ_ATTEMPTS_PER_MIN=2 HART_MAX_READ_ATTEMPTS_PER_ID_PER_MIN=2 \
+  ./hart serve "$RRPORT" >"$TMP/rateread.log" 2>&1 &
+RRSRV=$!
+sleep 1
+kill -0 "$RRSRV" 2>/dev/null || { echo "test: read-rate daemon failed to boot"; cat "$TMP/rateread.log"; exit 1; }
+RRB="$TMP/rateread.html"; printf '<h1>secret</h1>' > "$RRB"
+curl -s -o /dev/null -X POST "http://127.0.0.1:$RRPORT/v1/publish?owner=rr&artifact=secret&visibility=private&read_key=abc" -H 'content-type: text/html' --data-binary @"$RRB"
+# two failed reads stay under the 2-attempt ceiling
+curl -s -o /dev/null "http://127.0.0.1:$RRPORT/a/rr/secret"
+curl -s -o /dev/null -H 'x-hart-read-key: wrong' "http://127.0.0.1:$RRPORT/a/rr/secret"
+# the third failed read is rate-limited
+eq "read rate limit: third failed attempt -> 429" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$RRPORT/a/rr/secret")" "429"
+# same ceiling applies to the raw html endpoint
+eq "read rate limit: html endpoint also throttled" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-read-key: wrong' "http://127.0.0.1:$RRPORT/v1/artifacts/rr/secret/html")" "429"
+# correct key is still blocked while the window is hot
+eq "read rate limit: correct key still blocked during cooldown" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-read-key: abc' "http://127.0.0.1:$RRPORT/a/rr/secret")" "429"
+kill "$RRSRV" 2>/dev/null
 export HART_DB="$TMP/test.db"
 
 echo "== served endpoints =="
@@ -528,6 +549,40 @@ eq "/_fleet owner list pagination shows page info" "$(curl -s -b "$TMP/cj" "$HAR
 has "/_fleet owner list has public page link" "$(curl -s -b "$TMP/cj" "$HART_URL/_fleet?own_q=acme")" "/o/acme"
 has "/_fleet is anti-clickjacking (X-Frame-Options DENY)" "$(curl -s -D - -o /dev/null -b "$TMP/cj" "$HART_URL/_fleet")" "X-Frame-Options: DENY"
 has "admin cookie is SameSite=Strict" "$(curl -s -D - -o /dev/null -X POST -d "token=$HART_ADMIN_TOKEN" "$HART_URL/_fleet/login")" "SameSite=Strict"
+
+# ---- per-artifact chrome (deliverables) ------------------------------------------------
+# The chrome is right for a hart page and wrong for a deliverable: a report published on
+# someone's behalf carries their client's name, and the chrome invites that reader off it —
+# "More from <owner>", "Explore public", "hart home". Opt-in, so the default must not move.
+printf '<h1>Acme Lettings</h1><p>CGT 11280</p>' > "$TMP/deliverable.html"
+
+./hart publish "$TMP/deliverable.html" --owner chrometest --artifact withchrome >/dev/null 2>&1
+has "chrome ON by default (unchanged)" "$(curl -s "$HART_URL/a/chrometest/withchrome")" "More from"
+
+./hart publish "$TMP/deliverable.html" --owner chrometest --artifact plain --no-chrome >/dev/null 2>&1
+NOCH="$(curl -s "$HART_URL/a/chrometest/plain")"
+case "$NOCH" in *"More from"*) bad "--no-chrome drops the owner link";; *) ok "--no-chrome drops the owner link";; esac
+case "$NOCH" in *hartc-wrap*) bad "--no-chrome drops the chrome markup";; *) ok "--no-chrome drops the chrome markup";; esac
+has "--no-chrome keeps the body" "$NOCH" "Acme Lettings"
+eq "get reports no_chrome" "$(./hart get chrometest/plain | jget no_chrome)" "1"
+
+# A plain republish must NOT silently restore the chrome — that is how a deliverable would
+# quietly start advertising its host again.
+./hart publish "$TMP/deliverable.html" --owner chrometest --artifact plain --title v2 >/dev/null 2>&1
+case "$(curl -s "$HART_URL/a/chrometest/plain")" in
+  *"More from"*) bad "republish without the flag keeps it chromeless";;
+  *) ok "republish without the flag keeps it chromeless";;
+esac
+
+# flip an EXISTING artifact both ways without republishing
+./hart chrome chrometest/withchrome off >/dev/null 2>&1
+case "$(curl -s "$HART_URL/a/chrometest/withchrome")" in
+  *"More from"*) bad "chrome off on an existing artifact";;
+  *) ok "chrome off on an existing artifact";;
+esac
+./hart chrome chrometest/withchrome on >/dev/null 2>&1
+has "chrome on restores it" "$(curl -s "$HART_URL/a/chrometest/withchrome")" "More from"
+has "chrome rejects a bad mode" "$(./hart chrome chrometest/plain sideways 2>&1)" "on|off"
 
 echo
 echo "== $((PASS+FAIL)) checks: $PASS passed, $FAIL failed =="
