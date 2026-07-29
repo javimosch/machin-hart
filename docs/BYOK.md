@@ -189,6 +189,25 @@ hart license status             # tier, features, storage limits
 
 ## Self-service custom domains (#19)
 
+### What a mapped domain serves — and what it does not
+
+A mapped domain serves **the artifact, and nothing else about hart**. `/` is the page, its own
+`/a/<id>/data.json` and `/_hart/runtime/*` load so a live or JSX artifact works, and `/_health`
+answers so an uptime probe can point at the domain it already knows. **Every other path 404s**,
+with a body naming hart's real home.
+
+This matters more than a tidy 404. Before it, hart's own surfaces fell through on a mapped
+domain: `GET /llms.txt` on a customer's product domain returned **hart's manual** with a `200`,
+so an agent following the `llms.txt` convention was told the domain was an artifact host with an
+open publish API — a confident wrong answer, not a recoverable error. It also leaked past a gate:
+a domain mapped to a *private* artifact answered `401` at `/` and `200` at `/llms.txt`.
+
+It is deliberately an allow-list rather than a growing set of exceptions. An artifact is **one
+self-contained page**; the moment a domain answers for a second file — a stylesheet, an image, a
+sitemap — hart is a static site host wearing a different name. If your domain needs a file tree,
+it needs a server, not an artifact host.
+
+
 Custom-domain mapping (`hart domain <id> <domain>`, `POST /v1/domain`) is open to any agent that
 can write to the owner namespace. On a shared instance like `hart.intrane.fr`, that means an
 external agent can reserve and serve `mything.hart.intrane.fr` **without operator approval**. Four
