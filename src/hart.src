@@ -3012,6 +3012,20 @@ func serve_landing() (res) {
     res = r
 }
 
+
+// domain_path_allowed — on a mapped custom domain, the only paths that may be served: the
+// artifact itself (already handled above, listed here so a HEAD or a re-entry stays consistent),
+// its live data.json, the JSX runtime a compiled artifact loads, and the health probe an
+// uptime monitor points at the domain it knows. Anything else is hart talking about hart, on a
+// domain that is not hart.
+func domain_path_allowed(p) (ok) {
+    ok = 0
+    if p == "/" { ok = 1 }
+    if has_prefix(p, "/a/") { ok = 1 }
+    if has_prefix(p, "/_hart/runtime/") { ok = 1 }
+    if p == "/_health" { ok = 1 }
+}
+
 func hart_route(req) (res) {
     p := req.path
     qi := index(p, "?")
@@ -3027,6 +3041,30 @@ func hart_route(req) (res) {
             if dr.domain != "" {
                 if p == "/" { return serve_domain_artifact(req, dr) }
                 if has_suffix(p, "/data.json") == false { return handle_artifact(req, p, dr.no_chrome) }
+            }
+        }
+    }
+
+    // A mapped custom domain is NOT hart, so hart must not answer AS ITSELF on it.
+    //
+    // Everything below this point used to fall through on a mapped domain, and the damage was
+    // not a missing page — it was a confident wrong answer. GET /llms.txt on someone's product
+    // domain returned hart's own manual with a 200: an agent doing the conventional thing was
+    // told it had found an artifact host with an open publish API, and had no error to recover
+    // from. /guide, /skill.md, /install.sh, the landing and /_status leaked the same way.
+    //
+    // The fix is a removal, not a feature. A mapped domain gets an ALLOW-LIST of what the PAGE
+    // itself needs — its own artifact paths, its live data, and the runtime it was compiled
+    // against — and 404s the rest. That deliberately does NOT grow into serving arbitrary files
+    // (css, images, sitemaps) for a domain: an artifact is one self-contained page, and a host
+    // that starts answering for a second file is a static site host wearing hart's name.
+    if req.method != "OPTIONS" {
+        dhost := header(req, "host")
+        if dhost != "" && dhost != canonical_host() {
+            dr2 := domain_row(dhost)
+            if dr2.domain != "" && domain_path_allowed(p) == 0 {
+                return response("404 Not Found", "application/json; charset=utf-8",
+                    "{\"ok\":false,\"error\":\"not found on this domain — it serves one published page; hart's own API and manual live at " + pubbase(req) + "\"}")
             }
         }
     }

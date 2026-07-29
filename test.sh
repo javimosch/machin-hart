@@ -100,6 +100,21 @@ has "custom domain: landing CSP header" "$(curl -sD - -o /dev/null -H 'Host: sho
 eq "unmapped Host at / -> landing 200" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: nope.test' "$HART_URL/")" "200"
 eq "mapped Host: data.json not hijacked (200)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: shop.test' "$HART_URL/a/creator/shop/data.json")" "200"
 has "GET /v1/domain?domain=" "$(curl -s "$HART_URL/v1/domain?domain=shop.test")" '"id":"creator/shop"'
+# A mapped domain is not hart. Before this, every one of these returned hart's OWN page with a
+# 200 — /llms.txt in particular handed an agent hart's manual on someone else's product domain,
+# which is a confidently wrong answer rather than a recoverable 404.
+eq "mapped Host: /llms.txt does NOT serve hart's manual" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: shop.test' "$HART_URL/llms.txt")" "404"
+eq "mapped Host: /guide 404s" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: shop.test' "$HART_URL/guide")" "404"
+eq "mapped Host: /skill.md 404s" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: shop.test' "$HART_URL/skill.md")" "404"
+eq "mapped Host: /install.sh 404s" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: shop.test' "$HART_URL/install.sh")" "404"
+eq "mapped Host: /_status 404s" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: shop.test' "$HART_URL/_status")" "404"
+has "mapped Host: the 404 points at hart's real home" "$(curl -s -H 'Host: shop.test' "$HART_URL/llms.txt")" "hart.test"
+# ...while everything the PAGE itself needs still works.
+eq "mapped Host: the artifact still serves at /" "$(curl -s -H 'Host: shop.test' "$HART_URL/" | grep -c 'Funnel page')" "1"
+eq "mapped Host: /_health still answers (uptime probes point at the domain)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: shop.test' "$HART_URL/_health")" "200"
+# and hart's own host is untouched — this scopes an identity, it does not remove a feature.
+eq "canonical host: /llms.txt still serves hart's manual" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: hart.test' "$HART_URL/llms.txt")" "200"
+eq "UNmapped host: /llms.txt still serves (only MAPPED domains are scoped)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'Host: nope.test' "$HART_URL/llms.txt")" "200"
 has "domain --emit-traefik prints Traefik block" "$(./hart domain creator/shop shop.test --emit-traefik --service-url http://hart:8799 2>/dev/null)" "Host(\`shop.test\`)"
 has "domain-rm ok" "$(./hart domain-rm shop.test)" '"removed":"shop.test"'
 eq "after rm: Host at / -> landing (not mapped)" "$(curl -s -H 'Host: shop.test' "$HART_URL/" | grep -c 'Funnel page')" "0"
