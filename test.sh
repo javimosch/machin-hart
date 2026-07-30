@@ -31,6 +31,18 @@ eq()   { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2' want '$3')"; f
 has()  { case "$2" in *"$3"*) ok "$1";; *) bad "$1 (missing '$3')";; esac; }
 jget() { python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get(sys.argv[1],""))' "$1"; }
 
+# ephemeral Pro-license keypair (no committed secret) — lets the suite exercise licensed features
+# (team visibility, #33). The daemon must know the pubkey at boot; the token is minted + activated later.
+python3 - "$TMP" <<'PY'
+import sys
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat, PrivateFormat, NoEncryption
+sk = Ed25519PrivateKey.generate()
+open(sys.argv[1] + "/lic_seed", "wb").write(sk.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption()))
+open(sys.argv[1] + "/lic_pub", "w").write(sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex())
+PY
+export HART_LICENSE_PUBKEY="$(cat "$TMP/lic_pub")"
+
 # boot the daemon
 ./hart serve "$PORT" >"$TMP/serve.log" 2>&1 &
 SRV=$!
@@ -321,6 +333,8 @@ eq "upgrade errors cleanly if hart-cloud down" "$(HART_CLOUD_URL=http://127.0.0.
 # teams SSO (join) gated to Pro; team invite gated to Pro
 has "join gated to Pro" "$(./hart join acme 2>&1)" "hart Pro feature"
 has "team invite gated to Pro" "$(./hart team invite acme x@y.co 2>&1)" "hart Pro feature"
+# team visibility (#33) is a Pro feature: setting it is rejected while unlicensed
+has "team visibility gated to Pro (publish)" "$(./hart publish "$P" --owner acme --artifact tv --visibility team 2>&1)" "Pro"
 
 echo "== hardening (input validation + production defaults) =="
 eq "invalid owner rejected (400)" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish?owner=!!!&artifact=x" -H 'content-type: text/html' --data-binary '<h1>x</h1>')" "400"
@@ -598,6 +612,46 @@ esac
 ./hart chrome chrometest/withchrome on >/dev/null 2>&1
 has "chrome on restores it" "$(curl -s "$HART_URL/a/chrometest/withchrome")" "More from"
 has "chrome rejects a bad mode" "$(./hart chrome chrometest/plain sideways 2>&1)" "on|off"
+
+echo "== team visibility tier (#33) =="
+# activate the ephemeral Pro license (matches HART_LICENSE_PUBKEY set before boot)
+TOKEN=$(python3 - "$TMP" <<'PY'
+import sys, base64, json
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+sk = Ed25519PrivateKey.from_private_bytes(open(sys.argv[1] + "/lic_seed", "rb").read())
+b64 = lambda x: base64.urlsafe_b64encode(x).decode().rstrip("=")
+pb = b64(json.dumps({"email": "t@x", "plan": "pro", "features": ["teams", "audit-log", "limits"], "iat": 0, "exp": 9999999999999, "kid": "t"}, separators=(",", ":")).encode())
+print("hart_pro." + pb + "." + b64(sk.sign(b"hart_pro." + pb.encode())))
+PY
+)
+./hart license "$TOKEN" >/dev/null 2>&1
+has "license active after issue" "$(./hart license status)" '"licensed":true'
+# alice is claimed with akey (HART_OWNER_KEY_alice=akey); admin token also manages the team
+MK_W=$(./hart team add alice writer@x --role writer | jget member_key)
+MK_R=$(./hart team add alice reader@x --role reader | jget member_key)
+has "publish --visibility team ok when licensed" "$(./hart publish "$P" --owner alice --artifact board --title teamonlymarker --visibility team | jget visibility)" "team"
+eq "team read: no key -> 401" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/alice/board")" "401"
+has "team 401 names X-Hart-Member-Key" "$(curl -s "$HART_URL/a/alice/board")" "X-Hart-Member-Key"
+eq "team read: writer member key -> 200" "$(curl -s -o /dev/null -w '%{http_code}' -H "x-hart-member-key: $MK_W" "$HART_URL/a/alice/board")" "200"
+eq "team read: reader member key -> 200" "$(curl -s -o /dev/null -w '%{http_code}' -H "x-hart-member-key: $MK_R" "$HART_URL/a/alice/board")" "200"
+eq "team read: owner-key -> 200 (owner always)" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-owner-key: akey' "$HART_URL/a/alice/board")" "200"
+eq "team read: bogus member key -> 401" "$(curl -s -o /dev/null -w '%{http_code}' -H 'x-hart-member-key: mk_bogus' "$HART_URL/a/alice/board")" "401"
+eq "team /html: no key -> 401" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/v1/artifacts/alice/board/html")" "401"
+has "team /html: member key -> ok" "$(curl -s -H "x-hart-member-key: $MK_W" "$HART_URL/v1/artifacts/alice/board/html")" '"ok":true'
+eq "team data.json: no key -> 401" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/alice/board/data.json")" "401"
+eq "team data.json: member -> 200" "$(curl -s -o /dev/null -w '%{http_code}' -H "x-hart-member-key: $MK_W" "$HART_URL/a/alice/board/data.json")" "200"
+# read scope != write scope (#33 must-fix): reader reads but can NEVER write to the claimed owner
+eq "reader member key CANNOT write" "$(env -u HART_OWNER_KEY_alice ./hart publish "$P" --owner alice --artifact rboard --member-key "$MK_R" >/dev/null 2>&1; echo $?)" "80"
+eq "writer member key CAN write" "$(env -u HART_OWNER_KEY_alice ./hart publish "$P" --owner alice --artifact wboard --visibility team --member-key "$MK_W" | jget ok)" "True"
+# team artifacts are not leaked via search to anon, but ARE visible to a member
+has "team artifact excluded from anon search" "$(curl -s "$HART_URL/v1/search?q=teamonlymarker")" '"count":0'
+has "team artifact visible to member in search" "$(curl -s -H "x-hart-member-key: $MK_W" "$HART_URL/v1/search?q=teamonlymarker")" '"count":1'
+# list --visibility team filter (#33 follow-up)
+./hart publish "$P" --owner alice --artifact apub --visibility public >/dev/null
+has "list --visibility team includes team artifact" "$(./hart list --owner alice --visibility team)" "alice/board"
+eq "list --visibility team excludes non-team" "$(./hart list --owner alice --visibility team | grep -c 'alice/apub')" "0"
+# browser SSO sign-in endpoint (#33 slice 2): gracefully reports when SSO isn't configured
+has "/team/signin reports SSO not configured" "$(curl -s "$HART_URL/team/signin?owner=alice")" "SSO is not configured"
 
 echo
 echo "== $((PASS+FAIL)) checks: $PASS passed, $FAIL failed =="

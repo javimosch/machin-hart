@@ -201,6 +201,13 @@ key, no owner/admin token) to re-serve it or deliver a gated download.
   (per-owner); `hart explore [query]` is the JSON feed
 - **private** — **gated read**: browsers get a password **unlock page** (→ signed cookie); agents
   send an **`X-Hart-Read-Key`** header (`HART_READ_KEY`)
+- **team** *(hart Pro)* — **gated read by team membership**, not a password: any member of the owner
+  reads it with their **`X-Hart-Member-Key`** (issued by `hart team invite` / `hart join <owner>` SSO).
+  No shared secret. A `reader`-role member reads team artifacts but can never write; the owner-key/admin
+  always read (also the failsafe if the license lapses). In a **browser**, a member clicks *Sign in
+  with your team* on the artifact (OIDC via `/team/signin`) for a read-scoped session cookie — no
+  header needed. Group harts within a team with `--tag`; list them with
+  `hart list --owner <owner> --visibility team`.
 
 Set with `--visibility` / `--read-key` at publish, or change later with `hart visibility <id>
 <mode>` (no new version).
@@ -221,7 +228,7 @@ Non-interactive and idempotent. `hart guide` prints the full manual.
 |---|---|
 | `publish <file> [--owner --artifact --title --format html\|jsx --visibility --read-key --unguessable --dry-run --force]` | upload → `{id,url,version}` |
 | `data <id> '<json>'` | update the live data — template re-renders |
-| `visibility <id> <unlisted\|public\|private> [--read-key --clear-read-key]` | change visibility |
+| `visibility <id> <unlisted\|public\|private\|team> [--read-key --clear-read-key]` | change visibility |
 | `versions <id>` / `rollback <id> <v>` | history / instant revert |
 | `list [--owner <who>]` / `get <id> [--html --read-key]` / `rm <id>` | manage artifacts (`get --html` = raw stored body) |
 | `domain <id> <domain> [--chrome --emit-traefik --read-key <pw>]` / `domain-rm <domain>` / `domains [--prune]` | map a custom domain to an artifact (served by `Host`; `--prune` removes orphan mappings) |
@@ -321,6 +328,6 @@ call from HTML to URL, custom domain, or catalog entry. See [VISION.md](docs/VIS
 ## Status & license
 
 **Live and shipped:** publish (HTML/JSX) · versioning + rollback · CSP sandbox + linter · template
-+ data · visibility (unlisted/public/private, gated read) · discovery (`/explore`, `/o/<owner>`) ·
++ data · visibility (unlisted/public/private/team, gated read) · discovery (`/explore`, `/o/<owner>`) ·
 owner-claim keys · rate limits · `hart guide` / `/llms.txt`. Open-source, self-hosted — not a
 hosted service. License: TBD at first tagged release (MIT/Apache-2.0).
