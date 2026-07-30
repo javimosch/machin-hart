@@ -41,6 +41,18 @@
 
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-indigo-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">👥</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Team-only artifacts (<code>--visibility team</code>)</h3>
+              <p class="text-white/40 leading-relaxed">Share a group of internal harts with your team behind <b>membership, not a password</b>. Publish with <code>--visibility team</code> and any member of the owner reads it via their <code>X-Hart-Member-Key</code> — issued by <code>hart team invite</code> or <code>hart join</code> SSO — including from a browser, where a member clicks <b>Sign in with your team</b> for a read-scoped session cookie (OIDC, no header). Reuses hart Pro Teams/SSO: no shared secret, no new URL grammar; group harts with <code>--tag</code> and list them with <code>hart list --visibility team</code>. Read and write are <b>separate scopes</b> — a <code>reader</code>-role member reads team artifacts but can never write, so a leaked reader key can't mutate and is revocable on its own. If the Pro license lapses, team artifacts fall back to owner/admin-only reads — never public, never locked out.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
             <div class="w-12 h-12 rounded-lg bg-fuchsia-500/10 flex items-center justify-center flex-shrink-0">
               <span class="text-2xl">🌐</span>
             </div>
@@ -230,6 +242,16 @@
             <span>🚀</span> Features
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[31/07]</span>feat: `team` visibility tier — group reads gated by member identity (#33) (#34)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[28/07]</span>feat: per-artifact chrome opt-out — for deliverables, not hart pages</li>
+            <li><span class="text-slate-500 text-sm mr-3">[26/07]</span>feat(fleet): scroll to artifacts list when clicking an owner name</li>
+            <li><span class="text-slate-500 text-sm mr-3">[26/07]</span>feat(fleet): paginated/filtered owners list with last-updated and public-page links</li>
+            <li><span class="text-slate-500 text-sm mr-3">[26/07]</span>feat(fleet): remember-creds flag, owner filter, and login persistence</li>
+            <li><span class="text-slate-500 text-sm mr-3">[26/07]</span>feat(chrome): add owner gallery link to artifact hart pill</li>
+            <li><span class="text-slate-500 text-sm mr-3">[26/07]</span>feat(fleet): pagination, per-page limit, and filters for operator dashboard</li>
+            <li><span class="text-slate-500 text-sm mr-3">[26/07]</span>feat(fleet): render linked custom domains per artifact in operator dashboard</li>
+            <li><span class="text-slate-500 text-sm mr-3">[26/07]</span>feat(domains): self-service custom domain policy, GC, anti-hijack, and availability check</li>
+            <li><span class="text-slate-500 text-sm mr-3">[26/07]</span>feat(skill catalog): extract HTML <meta> tags at publish and expose /v1/skills/<owner></li>
             <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>feat: custom-domain routing — serve artifacts by Host (#16 slice 1)</li>
             <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>feat: server-side read-key fetch of raw artifact body (#16 slice 3)</li>
             <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>feat: CSP presets for multi-tenant landings/funnels (#16 slice 2)</li>
@@ -278,6 +300,8 @@
             <span>🐛</span> Bug Fixes
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[29/07]</span>fix: a mapped custom domain must not answer as hart</li>
+            <li><span class="text-slate-500 text-sm mr-3">[27/07]</span>fix(#17): fallback to HTML meta tags for skill metadata when frontmatter missing (#20)</li>
             <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>fix(site): correct GitHub links (machin-hart) + readable code chips in dark mode</li>
             <li><span class="text-slate-500 text-sm mr-3">[18/07]</span>fix: rm/admin-mv now maintain the refresh table (no orphan self-refresh sources)</li>
             <li><span class="text-slate-500 text-sm mr-3">[17/07]</span>fix(digest): use timezone-aware UTC (drop utcnow deprecation warning)</li>
@@ -291,6 +315,11 @@
             <span>📚</span> Documentation
           </h2>
           <ul class="space-y-2 text-slate-300">
+            <li><span class="text-slate-500 text-sm mr-3">[29/07]</span>docs(domains): what a mapped domain serves, and why it is an allow-list</li>
+            <li><span class="text-slate-500 text-sm mr-3">[28/07]</span>docs(domains): document self-service domain policy + lifecycle (#19) (#26)</li>
+            <li><span class="text-slate-500 text-sm mr-3">[26/07]</span>docs(vision): hart as artifact host + custom domains + skill registry</li>
+            <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>docs(readme): link the hart-domain-sync reference reconciler in the custom-domains section</li>
+            <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>docs: changelog + docs-site card for multi-tenant custom domains (#16 slice 4)</li>
             <li><span class="text-slate-500 text-sm mr-3">[24/07]</span>docs: wire custom domains + CSP presets + read-key fetch into all doc surfaces (#16 slice 4)</li>
             <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>docs: update July changelog with memory layer, draggable chrome, per-owner keys.</li>
             <li><span class="text-slate-500 text-sm mr-3">[23/07]</span>docs: update skill.md and agent skill files for memory layer; tweak chrome pill.</li>

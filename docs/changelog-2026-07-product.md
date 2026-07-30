@@ -1,6 +1,18 @@
 
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-indigo-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">👥</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Team-only artifacts (<code>--visibility team</code>)</h3>
+              <p class="text-white/40 leading-relaxed">Share a group of internal harts with your team behind <b>membership, not a password</b>. Publish with <code>--visibility team</code> and any member of the owner reads it via their <code>X-Hart-Member-Key</code> — issued by <code>hart team invite</code> or <code>hart join</code> SSO — including from a browser, where a member clicks <b>Sign in with your team</b> for a read-scoped session cookie (OIDC, no header). Reuses hart Pro Teams/SSO: no shared secret, no new URL grammar; group harts with <code>--tag</code> and list them with <code>hart list --visibility team</code>. Read and write are <b>separate scopes</b> — a <code>reader</code>-role member reads team artifacts but can never write, so a leaked reader key can't mutate and is revocable on its own. If the Pro license lapses, team artifacts fall back to owner/admin-only reads — never public, never locked out.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
             <div class="w-12 h-12 rounded-lg bg-fuchsia-500/10 flex items-center justify-center flex-shrink-0">
               <span class="text-2xl">🌐</span>
             </div>
