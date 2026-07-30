@@ -204,7 +204,10 @@ key, no owner/admin token) to re-serve it or deliver a gated download.
 - **team** *(hart Pro)* — **gated read by team membership**, not a password: any member of the owner
   reads it with their **`X-Hart-Member-Key`** (issued by `hart team invite` / `hart join <owner>` SSO).
   No shared secret. A `reader`-role member reads team artifacts but can never write; the owner-key/admin
-  always read (also the failsafe if the license lapses). Group harts within a team with `--tag`.
+  always read (also the failsafe if the license lapses). In a **browser**, a member clicks *Sign in
+  with your team* on the artifact (OIDC via `/team/signin`) for a read-scoped session cookie — no
+  header needed. Group harts within a team with `--tag`; list them with
+  `hart list --owner <owner> --visibility team`.
 
 Set with `--visibility` / `--read-key` at publish, or change later with `hart visibility <id>
 <mode>` (no new version).

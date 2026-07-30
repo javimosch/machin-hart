@@ -646,6 +646,12 @@ eq "writer member key CAN write" "$(env -u HART_OWNER_KEY_alice ./hart publish "
 # team artifacts are not leaked via search to anon, but ARE visible to a member
 has "team artifact excluded from anon search" "$(curl -s "$HART_URL/v1/search?q=teamonlymarker")" '"count":0'
 has "team artifact visible to member in search" "$(curl -s -H "x-hart-member-key: $MK_W" "$HART_URL/v1/search?q=teamonlymarker")" '"count":1'
+# list --visibility team filter (#33 follow-up)
+./hart publish "$P" --owner alice --artifact apub --visibility public >/dev/null
+has "list --visibility team includes team artifact" "$(./hart list --owner alice --visibility team)" "alice/board"
+eq "list --visibility team excludes non-team" "$(./hart list --owner alice --visibility team | grep -c 'alice/apub')" "0"
+# browser SSO sign-in endpoint (#33 slice 2): gracefully reports when SSO isn't configured
+has "/team/signin reports SSO not configured" "$(curl -s "$HART_URL/team/signin?owner=alice")" "SSO is not configured"
 
 echo
 echo "== $((PASS+FAIL)) checks: $PASS passed, $FAIL failed =="

@@ -20,7 +20,7 @@ type StatRow struct { total int  last_view int }
 type RefRow struct { host string  count int }
 type StaleRow struct { id string  owner string  updated int  data_updated int  fresh_ttl int }
 type RefreshRow struct { artifact_id string  kind string  source string  header string  every int  next int  last int  last_status string  enabled int }
-type JoinRow struct { token string  owner string  status string  email string  member_key string  created int }
+type JoinRow struct { token string  owner string  status string  email string  member_key string  mode string  next string  created int }
 type TopRow struct { id string  owner string  views int }
 type RecRow struct { id string  owner string  created int }
 type FbRow struct { id string  kind string  message string  context string  reporter string  version string  created int }
@@ -344,6 +344,8 @@ func opendb() (db) {
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, action TEXT, owner TEXT DEFAULT '', artifact_id TEXT DEFAULT '', version INTEGER DEFAULT 0, actor TEXT DEFAULT '', detail TEXT DEFAULT '')", []string{})   // M3 slice 1: pro audit log
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS members(owner TEXT, email TEXT, key_hash TEXT, role TEXT DEFAULT 'writer', created INTEGER, PRIMARY KEY(owner, email))", []string{})   // M3 slice 1: pro teams (per-member keys)
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS joins(token TEXT PRIMARY KEY, owner TEXT, status TEXT DEFAULT 'pending', email TEXT DEFAULT '', member_key TEXT DEFAULT '', created INTEGER)", []string{})   // teams SSO: pending `hart join` self-onboarding flows
+    sqlite_exec(db, "ALTER TABLE joins ADD COLUMN mode TEXT DEFAULT 'cli'", []string{})   // #33 slice 2: 'cli' (poll for key) | 'browser' (set a read cookie)
+    sqlite_exec(db, "ALTER TABLE joins ADD COLUMN next TEXT DEFAULT ''", []string{})       // browser flow: same-origin path to return to after sign-in
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS oidc_meta(issuer TEXT PRIMARY KEY, authz TEXT, token TEXT, userinfo TEXT, fetched INTEGER)", []string{})   // cached OIDC discovery per issuer
     sqlite_exec(db, "CREATE TABLE IF NOT EXISTS domains(domain TEXT PRIMARY KEY, owner TEXT, artifact TEXT, version INTEGER DEFAULT 0, no_chrome INTEGER DEFAULT 1, created INTEGER, updated INTEGER)", []string{})   // multi-tenant (#16 slice 1): custom domain -> artifact mapping (serve by Host)
 }
@@ -448,7 +450,27 @@ func read_authorized(db, id, kh, req) (ok) {
 func team_read_ok(db, owner, req) (ok) {
     ok = 0
     if owner_key_only(db, owner, req) == 1 { return 1 }
-    if licensed_db(db, "teams") == 1 { if member_email(db, owner, req) != "" { return 1 } }
+    if licensed_db(db, "teams") == 1 {
+        if member_email(db, owner, req) != "" { return 1 }        // agent/curl: X-Hart-Member-Key
+        if member_cookie_ok(db, owner, req) == 1 { return 1 }     // browser: signed member cookie (SSO)
+    }
+}
+
+// member_cookie_name — the per-owner signed READ cookie set after a browser SSO sign-in (#33 slice 2).
+func member_cookie_name(owner) (n) { n = "hm_" + substr(to_hex(sha256_bytes(bytes(owner))), 0, 16) }
+
+// member_cookie_ok — a valid, signed member cookie whose email is STILL a member of `owner` (so
+// `hart team rm` revokes browser access on the next request). Read scope only: no write path ever
+// consults this cookie (owner_authorized checks the X-Hart-Member-Key header + role), so a stolen
+// cookie can read but never mutate.
+func member_cookie_ok(db, owner, req) (ok) {
+    ok = 0
+    email, vok := get_session(req, cookie_secret(), member_cookie_name(owner))
+    if vok == 0 { return }
+    if email == "" { return }
+    rows := sqlite_query(db, "SELECT email FROM members WHERE owner = ? AND email = ?", []string{owner, email})
+    _, e := json_get(rows, "[0].email")
+    if e == "" { ok = 1 }
 }
 
 // member_role — the role bound to the presented member key for `owner` ("" if none/invalid).
@@ -483,7 +505,12 @@ func team_hint_json(owner, id, base) (j) {
 func team_signin_page(owner, id) (res) {
     body := "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Team only · hart</title>"
     body = body + "<style>body{margin:0;background:#0e1216;color:#e8edf2;font:15px system-ui;min-height:100vh;display:grid;place-items:center}.b{width:min(90vw,420px);text-align:center}.lock{font-size:34px}h1{font-size:19px;font-weight:600;margin:14px 0 6px}p{color:#8b97a4;font-size:13px;margin:0 0 8px}code{color:#3ad0c4;font:12px ui-monospace,monospace}</style></head>"
-    body = body + "<body><div class=\"b\"><div class=\"lock\">👥</div><h1>This artifact is team-only</h1><p>Readable by members of <b>" + html_escape(owner) + "</b>.</p><p>Agents/operators: send your member key as <code>X-Hart-Member-Key</code>.</p><p>Members: run <code>hart join " + html_escape(owner) + "</code> to get your key.</p></div></body></html>"
+    body = body + "<body><div class=\"b\"><div class=\"lock\">👥</div><h1>This artifact is team-only</h1><p>Readable by members of <b>" + html_escape(owner) + "</b>.</p>"
+    if sso_configured() == 1 {
+        signin := "/team/signin?owner=" + url_encode(owner) + "&next=" + url_encode("/a/" + id)
+        body = body + "<p><a href=\"" + signin + "\" style=\"display:inline-block;margin:6px 0;background:#3ad0c4;color:#062023;border-radius:8px;padding:10px 18px;font-weight:600;text-decoration:none\">Sign in with your team →</a></p>"
+    }
+    body = body + "<p>Agents/operators: send your member key as <code>X-Hart-Member-Key</code>.</p><p>Members: run <code>hart join " + html_escape(owner) + "</code> to get your key.</p></div></body></html>"
     r := response("401 Unauthorized", "text/html; charset=utf-8", body)
     r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
     r = with_header(r, "Cache-Control", "no-store")
@@ -1679,7 +1706,13 @@ func h_list(req) (res) {
     if owner != "" {
         // owner-scoped list: gated by the instance publish token, as before.
         if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"token required\"}") }
-        rows := sqlite_query(db, "SELECT id, owner, name, title, latest, updated FROM artifacts WHERE owner = ? ORDER BY updated DESC LIMIT 500", []string{owner})
+        vis := query(req, "visibility")   // optional filter, e.g. ?visibility=team (#33)
+        rows := ""
+        if vis != "" {
+            rows = sqlite_query(db, "SELECT id, owner, name, title, latest, visibility, updated FROM artifacts WHERE owner = ? AND visibility = ? ORDER BY updated DESC LIMIT 500", []string{owner, vis})
+        } else {
+            rows = sqlite_query(db, "SELECT id, owner, name, title, latest, updated FROM artifacts WHERE owner = ? ORDER BY updated DESC LIMIT 500", []string{owner})
+        }
         sqlite_close(db)
         return ok_json("{\"ok\":true,\"artifacts\":" + rows + "}")
     }
@@ -2921,7 +2954,7 @@ func guide_md(base, authline) (g) {
     g = g + "## The publish contract (important)\n\nhart hosts **self-contained** pages — inline ALL CSS/JS, embed images/fonts as `data:` URIs. The daemon wraps your body in a doctype skeleton and serves it under a strict CSP: **no external scripts/styles/fonts, no network** (`fetch`/XHR/WebSocket are blocked). A publish-time linter rejects external refs + network calls (HTTP 422) unless you pass `--force`. Use `--dry-run` to lint without storing.\n\n**Landing pages / sales funnels** that legitimately need Stripe, analytics, web fonts, or YouTube/Loom embeds: publish with `--csp-mode landing` (relaxes the CSP to allow those sources and skips the self-contained linter for that artifact), or `--csp-mode custom --csp-policy '<CSP>'` to serve an exact policy you supply. Default stays `strict` (the full lockdown).\n\n"
     g = g + "## Versioning\n\nRe-publishing the same `--owner/--artifact` appends a version; `latest` tracks newest, old versions are immutably pinned.\n- `" + base + "/a/<owner>/<artifact>` or `/latest` -> newest\n- `.../v<n>` -> a pinned version\n- `hart rollback <id> <v>` re-points latest (non-destructive)\n\n"
     g = g + "## Template + data (update without re-uploading)\n\nPublish a template once, then push just the data — it re-renders. Two mechanisms:\n- `{{key}}` placeholders in the markup\n- `window.HART_DATA` — a JS global your script/JSX reads\n\n```sh\nhart publish chart.html --owner you --artifact sales\nhart data you/sales '{\"points\":[3,1,4,1,5]}'   # re-renders, same URL\n```\n\n"
-    g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n- **team** (hart Pro) — gated read by **team membership**, not a password: any member of the owner reads it with their `X-Hart-Member-Key` (from `hart team invite` / `hart join <owner>`). No shared secret. Owner-key/admin always read (also the failsafe if the license lapses). Add members with `hart team invite <owner> <email> --role reader|writer` — a `reader` can read team artifacts but never write. Group harts within a team with `--tag`.\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
+    g = g + "## Visibility\n\n- **unlisted** (default) — public read, not listed\n- **public** — public read + listed at `/explore` and `/o/<owner>` (`hart explore [q]`)\n- **private** — gated read: browsers get an unlock page (password -> signed cookie); agents send `X-Hart-Read-Key` (`HART_READ_KEY`).\n- **team** (hart Pro) — gated read by **team membership**, not a password: any member of the owner reads it with their `X-Hart-Member-Key` (from `hart team invite` / `hart join <owner>`). No shared secret. Owner-key/admin always read (also the failsafe if the license lapses). Add members with `hart team invite <owner> <email> --role reader|writer` — a `reader` can read team artifacts but never write. Group harts within a team with `--tag`, and list them with `hart list --owner <owner> --visibility team`. In a browser, a member visits the artifact and clicks **Sign in with your team** (OIDC via `/team/signin`) to get a read-scoped session cookie — no header needed.\n\nSet with `--visibility` / `--read-key` at publish, or `hart visibility <id> <mode>` later.\n\n"
     g = g + "## Ownership (write protection)\n\nOn a free instance, the first write to a new `--owner` claims it. Pass `--owner-key <secret>` (or `HART_OWNER_KEY`) to claim a namespace; then all writes to that owner require the key (else 403). To retrofit a key on an existing open namespace (or rotate a keyed one), use `hart owner-key <owner> <new-key>` (admin or current owner key required). Anonymous (no-owner) artifacts get a random id.\n\n## Memory layer (provenance, search, lineage)\n\nArtifacts can carry provenance so agents can trace, find, and relate their work. At publish: `--agent <name> --run <id> --parent <id> --tags a,b --meta \'{...}\'`. `hart get` and `hart versions` return this metadata.\n\n- `hart search [query] [--owner --tag --agent --run --limit]` searches title, name, data, tags, meta, agent, run_id, owner, and parent_id. Visibility is respected.\n- `hart meta <id> [json]` reads or overwrites an artifact\'s structured meta JSON.\n- `hart lineage <id>` walks the `parent_id` chain up to 20 hops.\n- `hart diff <id> <v1> <v2>` reports changed/lines_added/lines_removed/size_delta.\n- `hart checkpoint <id>[@v] --name <label>` labels a version; `hart labels <id>` lists them.\n- `hart link <from> <to> --rel derived|depends|related|supersedes` relates two artifacts; `hart related <id>` follows those links.\n\n"
     g = g + "## JSX\n\n`hart publish app.jsx --format jsx` — author React/JSX; the daemon serves a same-origin React+Babel runtime and transpiles in-browser. No build step, no CDN. `React`/`ReactDOM` are globals; render into `#root`.\n\n"
     g = g + "## Deliverables: chrome off, per artifact\n\nThe hart chrome (the badge, `More from <owner>`, `Explore public`, `Copy curl`) is right for a page that IS a hart page. It is wrong for a **deliverable** — a report you publish on a client's behalf, carrying their name, which they may forward. The chrome invites its reader off that document and back to your other work, and if an artifact is ever published `public` by mistake, the chrome is what turns that one-word slip into a browsable index of everyone else's reports. `unlisted` alone is one word from being wrong; removing the invitation is the durable fix.\n\n```sh\nhart publish report.html --owner you --artifact acme-q3 --no-chrome   # publish as a deliverable\nhart chrome you/acme-q3 off                                          # or flip an existing one\nhart chrome you/acme-q3 on                                           # restore\nhart get you/acme-q3            # -> \\\"no_chrome\\\":1\n```\nOpt-in: the default is chrome ON, so nothing already published changes. A **plain republish keeps the setting** — you cannot silently re-attach the chrome to a deliverable by pushing a new version. Pass `--chrome` to deliberately put it back. Custom-domain mappings are chromeless already; this covers the `/a/<id>` URL, which is the one you actually hand to a client.\n\n"
@@ -3252,6 +3285,7 @@ func hart_route(req) (res) {
     if req.method == "GET" && p == "/v1/team" { return h_team_list(req) }
     if req.method == "POST" && p == "/v1/join/start" { return h_join_start(req) }
     if req.method == "GET" && p == "/v1/join/poll" { return h_join_poll(req) }
+    if req.method == "GET" && p == "/team/signin" { return h_team_signin(req) }
     if req.method == "GET" && p == "/team/callback" { return h_team_callback(req) }
     if req.method == "GET" && p == "/v1/stale" { return h_stale(req) }
     if req.method == "GET" && p == "/v1/public" { return h_public(req) }
@@ -3556,14 +3590,39 @@ func h_join_poll(req) (res) {
     res = ok_json("{\"ok\":true,\"status\":\"done\",\"email\":\"" + jesc(js[0].email) + "\",\"member_key\":\"" + jesc(js[0].member_key) + "\"}")
 }
 
-// GET /team/callback?code=&state= — portier redirect target. Exchange code -> email; the email must
-// be a member of the join's owner; mint (rotate) their member key; resolve the join.
+// GET /team/signin?owner=&next= — BROWSER sign-in start (#33 slice 2). Redirects the browser to the
+// IdP; on return the callback sets a read-scoped member cookie (no key minting) and sends them to
+// `next` (a same-origin path, e.g. the team artifact). This is the human counterpart to `hart join`.
+func h_team_signin(req) (res) {
+    raw_owner := query(req, "owner")
+    if reject_bad_slug(raw_owner) == 1 { return sso_page("Invalid owner.", 0) }
+    owner := slugify(raw_owner)
+    if owner == "" { return sso_page("Missing owner.", 0) }
+    nxt := query(req, "next")
+    if has_prefix(nxt, "/") == false { nxt = "/o/" + owner }   // same-origin only (no open redirect)
+    db := opendb()
+    if licensed_db(db, "teams") == 0 { sqlite_close(db); return sso_page("Teams is a hart Pro feature.", 0) }
+    if sso_configured() == 0 { sqlite_close(db); return sso_page("SSO is not configured on this instance.", 0) }
+    authz, _, _, dok := oidc_endpoints(db)
+    if dok == 0 { sqlite_close(db); return sso_page("OIDC discovery failed.", 0) }
+    token := to_hex(rand_bytes(18))
+    sqlite_exec(db, "INSERT INTO joins(token, owner, status, mode, next, created) VALUES(?,?,'pending','browser',?,?)", []string{token, owner, nxt, str(now())})
+    sqlite_close(db)
+    login := authz + "?response_type=code&client_id=" + url_encode(cfg("HART_OIDC_CLIENT_ID")) + "&redirect_uri=" + url_encode(pubbase(req) + "/team/callback") + "&scope=" + url_encode(oidc_scopes()) + "&state=" + token
+    r := response("302 Found", "text/html; charset=utf-8", "<a href=\"" + jesc(login) + "\">Sign in</a>")
+    r = with_header(r, "Location", login)
+    res = r
+}
+
+// GET /team/callback?code=&state= — IdP redirect target. Exchange code -> email; the email must be a
+// member of the join's owner. CLI flow: mint (rotate) the member key for the poller. Browser flow
+// (#33 slice 2): set a read-scoped member cookie (no key minting) and redirect to `next`.
 func h_team_callback(req) (res) {
     code := query(req, "code")
     state := query(req, "state")
     if code == "" || state == "" { return sso_page("Missing code or state.", 0) }
     db := opendb()
-    rows := sqlite_query(db, "SELECT token, owner, status, email, member_key, created FROM joins WHERE token = ?", []string{state})
+    rows := sqlite_query(db, "SELECT token, owner, status, email, member_key, mode, next, created FROM joins WHERE token = ?", []string{state})
     js := parse(rows, []JoinRow{})
     if len(js) == 0 { sqlite_close(db); return sso_page("Unknown or expired sign-in.", 0) }
     owner := js[0].owner
@@ -3586,6 +3645,20 @@ func h_team_callback(req) (res) {
     mrows := sqlite_query(db, "SELECT email FROM members WHERE owner = ? AND email = ?", []string{owner, email})
     _, merr := json_get(mrows, "[0].email")
     if merr != "" { sqlite_close(db); return sso_page(email + " is not a member of team '" + owner + "'. Ask an admin: hart team invite " + owner + " " + email, 0) }
+    // BROWSER flow (#33 slice 2): set a read-scoped member cookie, no key minting/rotation, and send
+    // the browser to `next`. The cookie only grants reads — no write path consults it.
+    if js[0].mode == "browser" {
+        nxt := js[0].next
+        if has_prefix(nxt, "/") == false { nxt = "/o/" + owner }
+        sqlite_exec(db, "DELETE FROM joins WHERE token = ?", []string{state})
+        audit(db, "team-signin", owner, "", 0, email, req)
+        sqlite_close(db)
+        r := response("302 Found", "text/html; charset=utf-8", "<a href=\"" + jesc(nxt) + "\">Continue</a>")
+        r = with_header(r, "Location", nxt)
+        r = set_session(r, cookie_secret(), member_cookie_name(owner), email)
+        return r
+    }
+    // CLI flow: mint (rotate) the member key; the CLI polls for it.
     mk := "mk_" + to_hex(rand_bytes(18))
     sqlite_exec(db, "UPDATE members SET key_hash = ? WHERE owner = ? AND email = ?", []string{to_hex(sha256_bytes(bytes(mk))), owner, email})
     sqlite_exec(db, "UPDATE joins SET status = 'done', email = ?, member_key = ? WHERE token = ?", []string{email, mk, state})
@@ -4594,13 +4667,17 @@ func cmd_admin(a) {
 func cmd_list(a) {
     owner := flagv(a, "--owner", "")
     format := flagv(a, "--format", "")
+    vis := flagv(a, "--visibility", "")
     url := hart_url() + "/v1/artifacts"
     if owner != "" { owner = require_owner_slug(owner, "owner") }
     if format == "skills" {
         if owner == "" { die(80, "usage: hart list --owner <who> --format skills") }
         url = hart_url() + "/v1/skills/" + url_encode(owner)
     } else {
-        if owner != "" { url = url + "?owner=" + url_encode(owner) }
+        if owner != "" {
+            url = url + "?owner=" + url_encode(owner)
+            if vis != "" { url = url + "&visibility=" + url_encode(vis) }
+        }
     }
     status, resp, err := http_request("GET", url, auth_headers(owner), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
@@ -4840,7 +4917,7 @@ func cmd_mcp(a) {
 }
 
 func cmd_help() {
-    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private|team --read-key <pw> --csp-mode strict|landing|custom --csp-policy '<CSP>' --no-chrome --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"meta\":\"meta <id> [json] (read or overwrite artifact meta JSON)\",\"search\":\"search [query] [--owner <who>] [--tag <t>] [--agent <name>] [--run <id>] [--limit <n>] (memory-layer search)\",\"diff\":\"diff <id> <v1> <v2> (line-delta diff between versions)\",\"lineage\":\"lineage <id> (walk the parent chain)\",\"checkpoint\":\"checkpoint <id>[@<version>] --name <label> (label a version)\",\"labels\":\"labels <id> (list checkpoint labels)\",\"link\":\"link <from> <to> --rel derived|depends|related|supersedes (relate two artifacts)\",\"related\":\"related <id> (artifacts linked to/from this id)\",\"visibility\":\"visibility <id> <unlisted|public|private|team> [--read-key <pw> --clear-read-key]\",\"chrome\":\"chrome <id> <on|off> (per-artifact hart chrome; off for client-facing deliverables so the page carries no host badge or links back to your other artifacts)\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id> [--html [--read-key <pw>] [--version <n>]] (default: metadata + versions; --html fetches the raw stored body — public/unlisted need no key, private needs the read key, no owner/admin token)\",\"list\":\"list [--owner <who>]\",\"owner-key\":\"owner-key <owner> <new-key> [--owner-key <current-key>] (set/rotate the owner key for a namespace)\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"domain\":\"domain <id> <domain> [--version <n>] [--chrome] [--emit-traefik [--service-url <url>]] (map a custom domain to an artifact — served by Host, chromeless by default; --emit-traefik prints a ready Traefik router block)\",\"domain-rm\":\"domain-rm <domain> [--owner-key <k>] (remove a custom-domain mapping)\",\"domains\":\"domains [--owner <who>] (list custom-domain mappings)\",\"stats\":\"stats <id> (views, last view, freshness, top referrers; server-side, CSP-safe)\",\"feedback\":\"feedback <message> [--kind bug|idea|praise] [--context <c>] (dual-writes to this instance + the central relay; best-effort)\",\"fresh\":\"fresh <id> <30s|15m|2h|1d|off> (set/clear a freshness SLA)\",\"stale\":\"stale [--owner <who>] [--older-than <dur>] (living deliverables that went quiet; JSON signal, you alert)\",\"refresh\":\"refresh <id> [--url <URL>|--cmd '<sh>'] --every <dur> [--header 'H: v']|--off|--now (daemon self-refreshes the artifact's data on a schedule; cmd sources admin-only)\",\"live\":\"live <id> <on|off> (page polls its own data.json and repaints live; opt-in connect-src 'self')\",\"upgrade\":\"upgrade [--plan pro] (mint a hart Pro checkout link to hand the human; HART_CLOUD_URL)\",\"license\":\"license <key> | license status (set/inspect the hart Pro license)\",\"audit\":\"audit [--owner --action --since --limit] (who changed what; hart Pro)\",\"team\":\"team <add|invite|list|rm> <owner> [<email>] [--role reader|writer|admin] (per-member keys for a shared namespace; hart Pro)\",\"join\":\"join <owner> (SSO self-onboarding via OpenID Connect; receive your member key; hart Pro)\",\"mcp\":\"mcp (run as a stdio MCP server — native tools for MCP-capable agents; wraps the HTTP API)\",\"skill\":\"skill (print a drop-in agent SKILL.md; self-install: hart skill > ~/.claude/skills/hart/SKILL.md)\",\"guide\":\"guide (print the full manual; also GET /guide.md)\",\"admin\":\"admin <owners|list [--owner <who>]|digest [--days N]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\",\"team\":\"gated read by TEAM MEMBERSHIP (hart Pro) — any member of the owner reads it via X-Hart-Member-Key or after 'hart join <owner>'; no shared password. Owner-key/admin always read (also the failsafe if the license lapses)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\",\"HART_LICENSE_KEY\":\"hart Pro license key (or set via hart license <key>)\",\"HART_LICENSE_PUBKEY\":\"override the license signing pubkey (run your own hart-cloud issuer)\",\"HART_MEMBER_KEY\":\"a team member's per-member write key (teams; sent as X-Hart-Member-Key)\",\"HART_OIDC_ISSUER\":\"teams SSO: your OpenID Connect issuer (discovery-based)\",\"HART_OIDC_CLIENT_ID\":\"teams SSO: OIDC client id\",\"HART_OIDC_CLIENT_SECRET\":\"teams SSO: OIDC client secret\",\"HART_OIDC_SCOPES\":\"teams SSO: OIDC scopes (default 'openid email')\",\"HART_MAX_OWNER_MB\":\"per-owner storage cap; raising it above HART_FREE_MAX_OWNER_MB needs hart Pro (0=unlimited)\",\"HART_FREE_MAX_OWNER_MB\":\"free-tier per-owner storage ceiling (default 30)\",\"HART_CLOUD_URL\":\"hart-cloud billing base for hart upgrade (default https://hart-cloud.intrane.fr)\",\"HART_DOMAIN_HOOK\":\"custom domains: optional reconcile command run as '<hook> add|remove <domain> <owner> <artifact>' on mapping changes (off by default; provisioning stays in Traefik)\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
+    say("{\"ok\":true,\"name\":\"hart\",\"tagline\":\"agent-first artifact host — publish self-contained HTML or JSX, get a versioned sandboxed URL\",\"commands\":{\"serve\":\"serve [port] (daemon; HART_DB, HART_RUNTIME_DIR, HART_PUBLIC, HART_EXPLORE=0 to disable /explore; HART_TOKEN gates publishing)\",\"login\":\"login <token>\",\"publish\":\"publish <file> [--owner --artifact --title --format html|jsx --visibility unlisted|public|private|team --read-key <pw> --csp-mode strict|landing|custom --csp-policy '<CSP>' --no-chrome --unguessable --dry-run --force]\",\"data\":\"data <id> '<json>' (update the live data; template re-renders)\",\"meta\":\"meta <id> [json] (read or overwrite artifact meta JSON)\",\"search\":\"search [query] [--owner <who>] [--tag <t>] [--agent <name>] [--run <id>] [--limit <n>] (memory-layer search)\",\"diff\":\"diff <id> <v1> <v2> (line-delta diff between versions)\",\"lineage\":\"lineage <id> (walk the parent chain)\",\"checkpoint\":\"checkpoint <id>[@<version>] --name <label> (label a version)\",\"labels\":\"labels <id> (list checkpoint labels)\",\"link\":\"link <from> <to> --rel derived|depends|related|supersedes (relate two artifacts)\",\"related\":\"related <id> (artifacts linked to/from this id)\",\"visibility\":\"visibility <id> <unlisted|public|private|team> [--read-key <pw> --clear-read-key]\",\"chrome\":\"chrome <id> <on|off> (per-artifact hart chrome; off for client-facing deliverables so the page carries no host badge or links back to your other artifacts)\",\"explore\":\"explore [query] (public discovery feed, JSON)\",\"get\":\"get <id> [--html [--read-key <pw>] [--version <n>]] (default: metadata + versions; --html fetches the raw stored body — public/unlisted need no key, private needs the read key, no owner/admin token)\",\"list\":\"list [--owner <who>] [--visibility team|public|private|unlisted] (owner-scoped list; optional visibility filter, e.g. --visibility team)\",\"owner-key\":\"owner-key <owner> <new-key> [--owner-key <current-key>] (set/rotate the owner key for a namespace)\",\"versions\":\"versions <id>\",\"rollback\":\"rollback <id> <version>\",\"rm\":\"rm <id>\",\"domain\":\"domain <id> <domain> [--version <n>] [--chrome] [--emit-traefik [--service-url <url>]] (map a custom domain to an artifact — served by Host, chromeless by default; --emit-traefik prints a ready Traefik router block)\",\"domain-rm\":\"domain-rm <domain> [--owner-key <k>] (remove a custom-domain mapping)\",\"domains\":\"domains [--owner <who>] (list custom-domain mappings)\",\"stats\":\"stats <id> (views, last view, freshness, top referrers; server-side, CSP-safe)\",\"feedback\":\"feedback <message> [--kind bug|idea|praise] [--context <c>] (dual-writes to this instance + the central relay; best-effort)\",\"fresh\":\"fresh <id> <30s|15m|2h|1d|off> (set/clear a freshness SLA)\",\"stale\":\"stale [--owner <who>] [--older-than <dur>] (living deliverables that went quiet; JSON signal, you alert)\",\"refresh\":\"refresh <id> [--url <URL>|--cmd '<sh>'] --every <dur> [--header 'H: v']|--off|--now (daemon self-refreshes the artifact's data on a schedule; cmd sources admin-only)\",\"live\":\"live <id> <on|off> (page polls its own data.json and repaints live; opt-in connect-src 'self')\",\"upgrade\":\"upgrade [--plan pro] (mint a hart Pro checkout link to hand the human; HART_CLOUD_URL)\",\"license\":\"license <key> | license status (set/inspect the hart Pro license)\",\"audit\":\"audit [--owner --action --since --limit] (who changed what; hart Pro)\",\"team\":\"team <add|invite|list|rm> <owner> [<email>] [--role reader|writer|admin] (per-member keys for a shared namespace; hart Pro)\",\"join\":\"join <owner> (SSO self-onboarding via OpenID Connect; receive your member key; hart Pro)\",\"mcp\":\"mcp (run as a stdio MCP server — native tools for MCP-capable agents; wraps the HTTP API)\",\"skill\":\"skill (print a drop-in agent SKILL.md; self-install: hart skill > ~/.claude/skills/hart/SKILL.md)\",\"guide\":\"guide (print the full manual; also GET /guide.md)\",\"admin\":\"admin <owners|list [--owner <who>]|digest [--days N]|mv <old-id> <new-owner/new-name>|login <token>> (operator god-mode over an instance you host; needs HART_ADMIN_TOKEN)\"},\"visibility\":{\"unlisted\":\"default — public read, not listed\",\"public\":\"public read, listed at /explore and /o/<owner>\",\"private\":\"gated read — password (browser: unlock page) or X-Hart-Read-Key header (agents)\",\"team\":\"gated read by TEAM MEMBERSHIP (hart Pro) — any member of the owner reads it via X-Hart-Member-Key or after 'hart join <owner>'; no shared password. Owner-key/admin always read (also the failsafe if the license lapses)\"},\"env\":{\"HART_URL\":\"daemon\",\"HART_TOKEN\":\"instance publish token\",\"HART_OWNER_KEY\":\"namespace write key\",\"HART_READ_KEY\":\"read key for a private artifact (sent as X-Hart-Read-Key)\",\"HART_ADMIN_TOKEN\":\"operator god-token for the admin API (cross-owner list); separate from HART_TOKEN, unset = admin API off\",\"HART_LICENSE_KEY\":\"hart Pro license key (or set via hart license <key>)\",\"HART_LICENSE_PUBKEY\":\"override the license signing pubkey (run your own hart-cloud issuer)\",\"HART_MEMBER_KEY\":\"a team member's per-member write key (teams; sent as X-Hart-Member-Key)\",\"HART_OIDC_ISSUER\":\"teams SSO: your OpenID Connect issuer (discovery-based)\",\"HART_OIDC_CLIENT_ID\":\"teams SSO: OIDC client id\",\"HART_OIDC_CLIENT_SECRET\":\"teams SSO: OIDC client secret\",\"HART_OIDC_SCOPES\":\"teams SSO: OIDC scopes (default 'openid email')\",\"HART_MAX_OWNER_MB\":\"per-owner storage cap; raising it above HART_FREE_MAX_OWNER_MB needs hart Pro (0=unlimited)\",\"HART_FREE_MAX_OWNER_MB\":\"free-tier per-owner storage ceiling (default 30)\",\"HART_CLOUD_URL\":\"hart-cloud billing base for hart upgrade (default https://hart-cloud.intrane.fr)\",\"HART_DOMAIN_HOOK\":\"custom domains: optional reconcile command run as '<hook> add|remove <domain> <owner> <artifact>' on mapping changes (off by default; provisioning stays in Traefik)\"},\"discovery\":{\"global\":\"/explore\",\"owner\":\"/o/<owner>\"}}")
 }
 
 func main() {
