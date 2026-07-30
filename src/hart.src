@@ -955,7 +955,7 @@ func owner_bytes(db, owner) (n) {
 func nid() (s) { s = to_hex(rand_bytes(6)) }
 
 // hart_version — single source of truth for the version reported to clients (MCP serverInfo).
-func hart_version() (s) { s = "0.8.0" }
+func hart_version() (s) { s = "0.8.1" }
 
 func unq(s) (o) {
     o = s
@@ -3919,7 +3919,7 @@ func cmd_visibility(a) {
     rk := flagv(a, "--read-key", "")
     if rk != "" { url = url + "&read_key=" + url_encode(rk) }
     if has_flag(a, "--clear-read-key") == 1 { url = url + "&clear_read_key=1" }
-    status, resp, err := http_request("POST", url, auth_headers(a[2]), "")
+    status, resp, err := http_request("POST", url, auth_headers_cli(a, a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
     say(resp)
@@ -3932,7 +3932,7 @@ func cmd_chrome(a) {
     require_valid_id(a[2])
     if a[3] != "on" && a[3] != "off" { die(80, "usage: hart chrome <id> <on|off>") }
     url := hart_url() + "/v1/chrome?id=" + url_encode(a[2]) + "&chrome=" + url_encode(a[3])
-    status, resp, err := http_request("POST", url, auth_headers(a[2]), "")
+    status, resp, err := http_request("POST", url, auth_headers_cli(a, a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
     say(resp)
@@ -4220,7 +4220,7 @@ func cmd_fresh(a) {
     require_valid_id(a[2])
     ttl := parse_duration(a[3])
     url := hart_url() + "/v1/fresh?id=" + url_encode(a[2]) + "&ttl=" + str(ttl)
-    status, resp, err := http_request("POST", url, auth_headers(a[2]), "")
+    status, resp, err := http_request("POST", url, auth_headers_cli(a, a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
     say(resp)
@@ -4255,7 +4255,7 @@ func cmd_get(a) {
         url := hart_url() + "/v1/artifacts/" + a[2] + "/html"
         ver := flagv(a, "--version", "")
         if ver != "" { url = url + "?version=" + url_encode(ver) }
-        headers := auth_headers(a[2])
+        headers := auth_headers_cli(a, a[2])
         rk := flagv(a, "--read-key", "")
         if rk != "" { headers = append(headers, "x-hart-read-key: " + rk) }
         status, resp, err := http_request("GET", url, headers, "")
@@ -4263,7 +4263,7 @@ func cmd_get(a) {
         if status != 200 { write(2, resp + "\n"); exit(90) }
         say(resp)
     } else {
-        status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers(a[2]), "")
+        status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers_cli(a, a[2]), "")
         if err != "" { die(100, "cannot reach hart daemon: " + err) }
         if status != 200 { die(90, "not found (" + str(status) + ")") }
         say(resp)
@@ -4271,9 +4271,9 @@ func cmd_get(a) {
 }
 
 func cmd_rm(a) {
-    if len(a) < 3 { die(80, "usage: hart rm <id>") }
+    if len(a) < 3 { die(80, "usage: hart rm <id> [--owner-key <k>] [--member-key <k>]") }
     require_valid_id(a[2])
-    status, resp, err := http_request("DELETE", hart_url() + "/v1/artifacts/" + a[2], auth_headers(a[2]), "")
+    status, resp, err := http_request("DELETE", hart_url() + "/v1/artifacts/" + a[2], auth_headers_cli(a, a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "delete failed (" + str(status) + "): " + resp) }
     say(resp)
@@ -4415,14 +4415,14 @@ func cmd_meta(a) {
     id := cli_resolve_id(a, 2)
     require_valid_id(id)
     if len(a) == 3 {
-        status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/meta", auth_headers(id), "")
+        status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/meta", auth_headers_cli(a, id), "")
         if err != "" { die(100, "cannot reach hart daemon: " + err) }
         if status != 200 { die(90, "meta failed (" + str(status) + "): " + resp) }
         say(resp)
         return
     }
     json := a[len(a) - 1]
-    status, resp, err := http_request("POST", hart_url() + "/v1/artifacts/" + id + "/meta", auth_headers(id), json)
+    status, resp, err := http_request("POST", hart_url() + "/v1/artifacts/" + id + "/meta", auth_headers_cli(a, id), json)
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
     say(resp)
@@ -4462,7 +4462,7 @@ func cmd_diff(a) {
     if len(a) < 5 { die(80, "usage: hart diff <id> <v1> <v2>") }
     id := cli_resolve_id(a, 2)
     require_valid_id(id)
-    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/diff?v1=" + url_encode(a[len(a)-2]) + "&v2=" + url_encode(a[len(a)-1]), auth_headers(id), "")
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/diff?v1=" + url_encode(a[len(a)-2]) + "&v2=" + url_encode(a[len(a)-1]), auth_headers_cli(a, id), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "diff failed (" + str(status) + "): " + resp) }
     say(resp)
@@ -4473,7 +4473,7 @@ func cmd_lineage(a) {
     if len(a) < 3 { die(80, "usage: hart lineage <id>") }
     id := cli_resolve_id(a, 2)
     require_valid_id(id)
-    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/lineage", auth_headers(id), "")
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/lineage", auth_headers_cli(a, id), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "lineage failed (" + str(status) + "): " + resp) }
     say(resp)
@@ -4491,7 +4491,7 @@ func cmd_checkpoint(a) {
     label := flagv(a, "--name", "checkpoint")
     url := hart_url() + "/v1/checkpoint?id=" + url_encode(id) + "&label=" + url_encode(label)
     if ver != "" { url = url + "&version=" + url_encode(ver) }
-    status, resp, err := http_request("POST", url, auth_headers(id), "")
+    status, resp, err := http_request("POST", url, auth_headers_cli(a, id), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
     say(resp)
@@ -4502,7 +4502,7 @@ func cmd_labels(a) {
     if len(a) < 3 { die(80, "usage: hart labels <id>") }
     id := cli_resolve_id(a, 2)
     require_valid_id(id)
-    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/labels", auth_headers(id), "")
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/labels", auth_headers_cli(a, id), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "labels failed (" + str(status) + "): " + resp) }
     say(resp)
@@ -4526,7 +4526,7 @@ func cmd_link(a) {
     require_valid_id(from)
     require_valid_id(to)
     url := hart_url() + "/v1/link?from=" + url_encode(from) + "&to=" + url_encode(to) + "&rel=" + url_encode(rel)
-    status, resp, err := http_request("POST", url, auth_headers(from), "")
+    status, resp, err := http_request("POST", url, auth_headers_cli(a, from), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { write(2, resp + "\n"); exit(80) }
     say(resp)
@@ -4537,7 +4537,7 @@ func cmd_related(a) {
     if len(a) < 3 { die(80, "usage: hart related <id>") }
     id := cli_resolve_id(a, 2)
     require_valid_id(id)
-    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/related", auth_headers(id), "")
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + id + "/related", auth_headers_cli(a, id), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "related failed (" + str(status) + "): " + resp) }
     say(resp)
@@ -4546,7 +4546,7 @@ func cmd_related(a) {
 func cmd_rollback(a) {
     if len(a) < 4 { die(80, "usage: hart rollback <id> <version>  (re-point latest at an older version)") }
     require_valid_id(a[2])
-    status, resp, err := http_request("POST", hart_url() + "/v1/artifacts/" + a[2] + "/rollback?to=" + a[3], auth_headers(a[2]), "")
+    status, resp, err := http_request("POST", hart_url() + "/v1/artifacts/" + a[2] + "/rollback?to=" + a[3], auth_headers_cli(a, a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "rollback failed (" + str(status) + "): " + resp) }
     say(resp)
@@ -4590,6 +4590,28 @@ func auth_headers(ctx) (h) {
     rk := read_key_for(ctx)
     if rk != "" { h = append(h, "x-hart-read-key: " + rk) }
     mk := cfg("HART_MEMBER_KEY")
+    if mk != "" { h = append(h, "x-hart-member-key: " + mk) }
+}
+
+// auth_headers_cli — like auth_headers, but CLI flags take precedence over env/config:
+// --owner-key / --member-key / --read-key on the command override HART_OWNER_KEY[_owner] etc.
+// Use this from CLI command handlers (they have `a`) so an operator can pass a key explicitly,
+// matching cmd_publish. (auth_headers stays for the MCP paths, which have no CLI flags.) #35
+func auth_headers_cli(a, ctx) (h) {
+    h = []string{}
+    tok := client_token()
+    if tok != "" { h = append(h, "authorization: Bearer " + tok) }
+    owner := ""
+    if valid_id(ctx) == 1 {
+        owner = substr(ctx, 0, index(ctx, "/"))
+    } else {
+        if valid_slug_seg(ctx) == 1 { owner = ctx }
+    }
+    ok := owner_key_of(a, owner)   // --owner-key flag first, then HART_OWNER_KEY[_<owner>]
+    if ok != "" { h = append(h, "x-hart-owner-key: " + ok) }
+    rk := flagv(a, "--read-key", read_key_for(ctx))
+    if rk != "" { h = append(h, "x-hart-read-key: " + rk) }
+    mk := flagv(a, "--member-key", cfg("HART_MEMBER_KEY"))
     if mk != "" { h = append(h, "x-hart-member-key: " + mk) }
 }
 
@@ -4679,7 +4701,7 @@ func cmd_list(a) {
             if vis != "" { url = url + "&visibility=" + url_encode(vis) }
         }
     }
-    status, resp, err := http_request("GET", url, auth_headers(owner), "")
+    status, resp, err := http_request("GET", url, auth_headers_cli(a, owner), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status == 401 { die(80, "not authenticated — hart login <token>") }
     if status == 403 { write(2, resp + "\n"); exit(80) }   // e.g. cross-owner list is admin-only
@@ -4690,7 +4712,7 @@ func cmd_list(a) {
 func cmd_versions(a) {
     if len(a) < 3 { die(80, "usage: hart versions <id>") }
     require_valid_id(a[2])
-    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers(a[2]), "")
+    status, resp, err := http_request("GET", hart_url() + "/v1/artifacts/" + a[2] + "/versions", auth_headers_cli(a, a[2]), "")
     if err != "" { die(100, "cannot reach hart daemon: " + err) }
     if status != 200 { die(90, "versions failed (" + str(status) + ")") }
     say(resp)

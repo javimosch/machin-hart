@@ -185,6 +185,10 @@ eq "owner-key: right key -> ok" "$(./hart publish "$TMP/x.html" --owner openns -
 eq "owner-key: rotate with old key" "$(env -u HART_ADMIN_TOKEN HART_OWNER_KEY=key2 ./hart owner-key openns key3 | jget ok)" "True"
 eq "owner-key: old key fails after rotate" "$(./hart publish "$TMP/x.html" --owner openns --artifact c --owner-key key2 >/dev/null 2>&1; echo $?)" "80"
 eq "owner-key: new key works after rotate" "$(./hart publish "$TMP/x.html" --owner openns --artifact c --owner-key key3 | jget ok)" "True"
+# #35: rm (and other id commands) must honor the --owner-key FLAG, not only env/config
+./hart publish "$P" --owner rmk --artifact doomed --owner-key rk1 >/dev/null 2>&1
+eq "rm without owner-key -> denied (90)" "$(./hart rm rmk/doomed >/dev/null 2>&1; echo $?)" "90"
+eq "rm honors --owner-key flag (#35)" "$(./hart rm rmk/doomed --owner-key rk1 | jget ok)" "True"
 
 echo "== config files (.hart.env + ~/.hart/config) =="
 mkdir -p "$TMP/cfg"
