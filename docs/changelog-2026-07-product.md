@@ -1,6 +1,42 @@
 
         <div class="feature-card rounded-xl p-6">
           <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🔒</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Self-service custom domains, with a hard isolation fix</h3>
+              <p class="text-white/40 leading-relaxed">Mapping a domain no longer needs an operator: <code>POST /v1/domain</code> enforces an allow/deny policy, matches the domain's owner label, caps mappings per owner, and requires the original key (two-key anti-hijack) to overwrite an existing one. <code>POST /v1/domain/check</code> tells an agent up front whether a domain is available. Orphaned mappings are cleaned up automatically — on <code>hart rm</code>, on <code>admin mv</code>, and by a background GC (<code>hart domains --prune</code> / <code>HART_DOMAIN_GC_INTERVAL</code>). Alongside it, a real isolation gap was closed: a domain mapped to a customer's product was answering hart's own <code>/llms.txt</code>, <code>/guide</code>, and <code>/install.sh</code> with a 200 — leaking that the box behind it was a hart instance, even past a private artifact's 401. A mapped domain now serves only what its page needs and 404s everything else, pointing back at hart's real home.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-sky-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">🗂️</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Skill catalog — discover what an owner has published</h3>
+              <p class="text-white/40 leading-relaxed">hart now extracts <code>&lt;meta name="title|description|keywords"&gt;</code> from a published HTML/JSX body and stores it as artifact metadata, so re-publishing a template keeps its catalog entry current without a separate <code>--meta</code> push. <code>GET /v1/skills/&lt;owner&gt;</code> (and <code>hart list --owner --format skills</code>, plus an MCP <code>hart_list</code> mode) returns a compact, agent-consumable catalog — id, title, description, keywords, visibility, url — of everything an owner has published, filtered through the same read-authorization every other endpoint uses.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
+            <div class="w-12 h-12 rounded-lg bg-rose-500/10 flex items-center justify-center flex-shrink-0">
+              <span class="text-2xl">📄</span>
+            </div>
+            <div>
+              <h3 class="text-xl font-semibold text-white mb-2">Chrome opt-out for client deliverables</h3>
+              <p class="text-white/40 leading-relaxed">The hart chrome — the badge, "More from &lt;owner&gt;", "Explore public" — belongs on a hart page, not on a report published on a client's behalf and forwarded under their name. It also turns one wrong <code>--visibility public</code> into a browsable index of every other client's work. <code>hart publish report.html --owner you --artifact acme-q3 --no-chrome</code> drops it at publish time; <code>hart chrome &lt;id&gt; on|off</code> flips an existing artifact without a republish. Custom-domain mappings were already chromeless — this closes the same gap on the plain <code>/a/&lt;id&gt;</code> URL, which is exactly the one you hand a client.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="feature-card rounded-xl p-6">
+          <div class="flex items-start gap-4">
             <div class="w-12 h-12 rounded-lg bg-indigo-500/10 flex items-center justify-center flex-shrink-0">
               <span class="text-2xl">👥</span>
             </div>
