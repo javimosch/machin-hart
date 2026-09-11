@@ -545,6 +545,24 @@ func serve(port, handler) {
     }
 }
 
+// serve_on runs the HTTP server bound to a SPECIFIC host (loopback by default).
+// listen_on binds to the given address instead of INADDR_ANY (which listen(port)
+// hardcodes), so a server told to serve 127.0.0.1 is not reachable from the
+// whole network. Exits 100 if the bind fails.
+func serve_on(host, port, handler) {
+    server := listen_on(host, port)
+    if server < 0 {
+        write(2, "{\"event\":\"bind_failed\",\"host\":\"" + host + "\",\"port\":" + str(port) + "}\n")
+        exit(100)
+    }
+    println("machweb on http://" + host + ":" + str(port))
+    flush()
+    for {
+        conn := accept(server)
+        go machweb_handle(conn, handler)
+    }
+}
+
 // ---- native TLS termination (no reverse proxy) ----
 //
 // serve_tls is `serve`, but the process terminates HTTPS itself via tls_server_ctx
