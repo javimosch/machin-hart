@@ -3802,7 +3802,15 @@ func h_live(req) (res) {
 
 func refresh_loop() {
     for {
-        run_due_refreshes()
+        // A goroutine's arena is reclaimed when the goroutine RETURNS, and this
+        // one never does — so every temporary each tick allocates (query rows,
+        // parsed structs, fetched bodies) stayed resident for the life of the
+        // process. Scoping the body hands each tick's garbage back at the brace.
+        // Nothing escapes: run_due_refreshes opens and closes its own db handle
+        // and writes no global (machin#667 / the essaim arena pattern).
+        arena {
+            run_due_refreshes()
+        }
         sleep(5000)
     }
 }
@@ -3811,11 +3819,17 @@ func refresh_loop() {
 // HART_DOMAIN_GC_INTERVAL (parsed as a duration). Off when unset or zero.
 func domain_gc_loop() {
     for {
+        // Same reasoning as refresh_loop. cfg() reads g_cfg, which is populated
+        // once at startup on the MAIN arena, so the string it returns outlives
+        // this block; the sleep stays outside so the arena is not held open
+        // across it.
         interval_s := parse_duration(cfg("HART_DOMAIN_GC_INTERVAL"))
         if interval_s > 0 {
             sleep(interval_s * 1000)
-            db := opendb()
-            if db != 0 { run_domain_gc(db); sqlite_close(db) }
+            arena {
+                db := opendb()
+                if db != 0 { run_domain_gc(db); sqlite_close(db) }
+            }
         } else {
             sleep(60000)   // check again in a minute in case the operator enables it
         }
