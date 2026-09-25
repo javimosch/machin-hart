@@ -305,6 +305,10 @@ func serve_fleet(req) (res) {
     }
     fbrows := sqlite_query(db, "SELECT id, kind, message, context, reporter, version, created FROM feedback ORDER BY created DESC LIMIT 8", []string{})
     fbs := parse(fbrows, []FbRow{})
+    // hot artifacts — version churn over the last 7d (scripted re-publishes); shows total
+    // versions, stored bytes across ALL versions, and whether retention (keep_versions) is set.
+    hotrows := sqlite_query(db, "SELECT a.id AS id, a.title AS title, a.latest AS latest, a.keep_versions AS keep, (SELECT COUNT(*) FROM versions v WHERE v.artifact_id = a.id AND v.created > ?) AS recent, (SELECT COALESCE(SUM(LENGTH(v2.html)),0) FROM versions v2 WHERE v2.artifact_id = a.id) AS bytes FROM artifacts a WHERE (SELECT COUNT(*) FROM versions v3 WHERE v3.artifact_id = a.id AND v3.created > ?) >= 2 ORDER BY recent DESC LIMIT 8", []string{cut7, cut7})
+    hots := parse(hotrows, []HotRow{})
     sqlite_close(db)
 
     // header
@@ -387,6 +391,25 @@ func serve_fleet(req) (res) {
             orows = append(orows, ui_tr(cells))
         }
         h = h + ui_card("Owners", own_filter_html + ui_table([]string{"owner", "artifacts", "stored", "updated", "namespace", "public page"}, orows) + own_pager)
+    }
+
+    // hot artifacts — churning scripted re-publishes (#36); surfaces candidates for
+    // `hart retain <id> <N>` or the data.json flow. Only shown when churn exists.
+    if len(hots) > 0 {
+        hrows := []string{}
+        for _, t := range hots {
+            lbl := t.id
+            if t.title != "" { lbl = t.title + " (" + t.id + ")" }
+            cells := ui_td("<a class=\"text-accent hover:underline\" href=\"" + base + "/a/" + t.id + "\">" + ui_esc(lbl) + "</a>")
+            cells = cells + ui_td("<span class=\"text-ink\">" + str(t.recent) + "</span>")
+            cells = cells + ui_td("<span class=\"text-muted\">v" + str(t.latest) + "</span>")
+            cells = cells + ui_td("<span class=\"text-muted\">" + dash_hsize(t.bytes) + "</span>")
+            kb := ui_badge("no retain", "yellow")
+            if t.keep > 0 { kb = ui_badge("keep " + str(t.keep), "green") }
+            cells = cells + ui_td(kb)
+            hrows = append(hrows, ui_tr(cells))
+        }
+        h = h + ui_card("Hot artifacts (versions in the last 7 days)", ui_table([]string{"artifact", "new v/7d", "latest", "stored", "retention"}, hrows))
     }
 
     // all artifacts

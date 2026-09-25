@@ -21,7 +21,7 @@ The examples below use the public demo instance at `https://hart.intrane.fr`; re
 - Pages must be SELF-CONTAINED: inline all CSS/JS, `data:` URIs for assets. No external refs, no network (fetch/XHR blocked by CSP). External refs are rejected at publish (pass `--force` to override).
 - JSX: add `--format jsx` (transpiled in-browser, no build step).
 - Markdown -> HTML: `pandoc --embed-resources --standalone --css style.css -f markdown-yaml_metadata_block` avoids YAML parse errors when frontmatter contains colons.
-- Re-publishing same owner/artifact updates `latest`; delete/move with `curl -X DELETE https://hart.intrane.fr/v1/artifacts/<owner>/<artifact>`.
+- Re-publishing same owner/artifact updates `latest`; delete/move with `curl -X DELETE https://hart.intrane.fr/v1/artifacts/<owner>/<artifact>`. A byte-identical re-publish mints no version (response: `"deduped":true`) — `--force` overrides. Artifacts exceeding ~10 versions/24h get an advisory `hint` in the publish response pointing at `hart data` (re-render without versions) and `hart retain` (cap history).
 - Update without re-uploading: `hart data you/name '<json>'` -> the page reads `window.HART_DATA` and/or `{{key}}`.
 - Visibility: `--visibility unlisted|public|private` (private = read-gated via password / `X-Hart-Read-Key`); failed read attempts are rate-limited per IP to block brute force.
 - Custom domains: `hart domain you/name shop.example.com` (served chromeless by `Host`); self-service `*.hart.intrane.fr` subdomains are policy-controlled (`HART_DOMAIN_ALLOW/DENY/PRIVATE_PATTERNS/SUBDOMAIN_OWNER_MATCH/MAX_PER_OWNER/GC_INTERVAL`); availability check `POST https://hart.intrane.fr/v1/domain/check?domain=foo.example.com`.

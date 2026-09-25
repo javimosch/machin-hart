@@ -24,6 +24,7 @@ type StaleRow struct { id string  owner string  updated int  data_updated int  f
 type RefreshRow struct { artifact_id string  kind string  source string  header string  every int  next int  last int  last_status string  enabled int }
 type JoinRow struct { token string  owner string  status string  email string  member_key string  mode string  next string  created int }
 type TopRow struct { id string  owner string  views int }
+type HotRow struct { id string  title string  latest int  keep int  recent int  bytes int }
 type RecRow struct { id string  owner string  created int }
 type FbRow struct { id string  kind string  message string  context string  reporter string  version string  created int }
 type LinkRow struct { from_id string  to_id string  rel string  created int }
@@ -1692,11 +1693,24 @@ func h_publish(req) (res) {
         if ext_desc != "" { p_meta = meta_upsert_string(p_meta, "description", ext_desc) }
         if ext_kw != "[]" { p_meta = meta_upsert_json(p_meta, "keywords", ext_kw) }
     }
+    hash := to_hex(sha256_bytes(bytes(body)))
+    // Dedup: a scripted re-publish whose body is byte-identical to what `latest` currently
+    // points at mints no new version — bump `updated`, audit it, report deduped. Compares to
+    // the version `latest` points at (post-rollback that may be an older body). force=1 bypasses
+    // — the caller explicitly wants a new version row.
+    deduped := 0
+    if len(ars) > 0 && query(req, "force") != "1" {
+        hrows := sqlite_query(db, "SELECT hash FROM versions WHERE artifact_id = ? AND version = ?", []string{id, str(ars[0].latest)})
+        hraw, _ := json_get(hrows, "[0].hash")
+        if unq(hraw) == hash { deduped = 1 }
+    }
     if id != "" && len(ars) > 0 {
         // next version = highest ever + 1 (NOT latest+1 — rollback can move latest backward)
-        mrows := sqlite_query(db, "SELECT COALESCE(MAX(version),0) AS m FROM versions WHERE artifact_id = ?", []string{id})
-        mraw, _ := json_get(mrows, "[0].m")
-        ver = parse_int(mraw) + 1
+        if deduped == 1 { ver = ars[0].latest } else {
+            mrows := sqlite_query(db, "SELECT COALESCE(MAX(version),0) AS m FROM versions WHERE artifact_id = ?", []string{id})
+            mraw, _ := json_get(mrows, "[0].m")
+            ver = parse_int(mraw) + 1
+        }
         // carry over existing provenance unless new values are provided
         if p_agent == "" { p_agent = ars[0].agent }
         if p_run == "" { p_run = ars[0].run_id }
@@ -1723,8 +1737,7 @@ func h_publish(req) (res) {
         if query(req, "no_chrome") == "1" { ncp = 1 }
         sqlite_exec(db, "INSERT INTO artifacts(id, owner, name, title, latest, visibility, read_key_hash, created, updated, fresh_ttl, live, csp_mode, csp_policy, no_chrome, meta, agent, run_id, parent_id, tags) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", []string{id, owner, artifact, title, str(ver), vis, rkh, str(n), str(n), str(parse_int(query(req, "fresh"))), str(livep), csp_mode, csp_policy, str(ncp), p_meta, p_agent, p_run, p_parent, p_tags})
     }
-    hash := to_hex(sha256_bytes(bytes(body)))
-    sqlite_exec(db, "INSERT INTO versions(artifact_id, version, title, format, html, hash, created, meta, agent, run_id, parent_id, tags) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", []string{id, str(ver), title, format, body, hash, str(n), p_meta, p_agent, p_run, p_parent, p_tags})
+    if deduped == 0 { sqlite_exec(db, "INSERT INTO versions(artifact_id, version, title, format, html, hash, created, meta, agent, run_id, parent_id, tags) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", []string{id, str(ver), title, format, body, hash, str(n), p_meta, p_agent, p_run, p_parent, p_tags}) }
     audit(db, "publish", owner, id, ver, format, req)
     // Apply the artifact's retention, if it has one. Done here rather than by a sweeper so
     // a timer-driven artifact can never accumulate between sweeps — the growth is exactly
@@ -1733,9 +1746,19 @@ func h_publish(req) (res) {
     kvv, _ := json_get(krows, "[0].keep_versions")
     kv := parse_int(kvv)
     if kv > 0 { prune_versions(db, id, kv) }
+    // Heavy-publisher hint: scripted re-publishes churn versions — past 10 versions in the
+    // last 24h, steer the caller to `data` (re-render, no version)
+    // or `retain` (cap history). The publish still succeeded; this is advisory.
+    hint := ""
+    hverows := sqlite_query(db, "SELECT COUNT(*) AS n FROM versions WHERE artifact_id = ? AND created > ?", []string{id, str(n - 86400)})
+    hveraw, _ := json_get(hverows, "[0].n")
+    hot_n := parse_int(hveraw)
+    if hot_n > 10 { hint = ",\"hint\":\"" + str(hot_n) + " versions in the last 24h — `hart data " + id + " '<json>'` re-renders without minting versions, or `hart retain " + id + " <N>` caps history\"" }
     sqlite_close(db)
     base := pubbase(req)
-    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + owner + "\",\"artifact\":\"" + artifact + "\",\"version\":" + str(ver) + ",\"format\":\"" + format + "\",\"visibility\":\"" + vis + "\",\"csp_mode\":\"" + csp_mode + "\",\"url\":\"" + base + "/a/" + id + "\",\"latest_url\":\"" + base + "/a/" + id + "/latest\",\"pinned_url\":\"" + base + "/a/" + id + "/v" + str(ver) + "\",\"lint\":" + report + "}"
+    ded := ""
+    if deduped == 1 { ded = ",\"deduped\":true" }
+    out := "{\"ok\":true,\"id\":\"" + id + "\",\"owner\":\"" + owner + "\",\"artifact\":\"" + artifact + "\",\"version\":" + str(ver) + ded + ",\"format\":\"" + format + "\",\"visibility\":\"" + vis + "\",\"csp_mode\":\"" + csp_mode + "\",\"url\":\"" + base + "/a/" + id + "\",\"latest_url\":\"" + base + "/a/" + id + "/latest\",\"pinned_url\":\"" + base + "/a/" + id + "/v" + str(ver) + "\",\"lint\":" + report + hint + "}"
     res = ok_json(out)
 }
 

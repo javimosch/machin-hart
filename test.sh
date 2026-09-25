@@ -58,8 +58,19 @@ echo "== publish + versioning =="
 R=$(./hart publish "$P" --owner acme --artifact page --title Q3)
 eq "publish returns version 1" "$(echo "$R" | jget version)" "1"
 eq "publish ok" "$(echo "$R" | jget ok)" "True"
-R2=$(./hart publish "$P" --owner acme --artifact page)
+P2="$TMP/p2.html"; printf '<h1>{{t}}</h1><p>hello v2</p>' > "$P2"
+R2=$(./hart publish "$P2" --owner acme --artifact page)
 eq "re-publish appends version 2" "$(echo "$R2" | jget version)" "2"
+RD=$(./hart publish "$P2" --owner acme --artifact page)
+eq "identical re-publish dedups (stays v2)" "$(echo "$RD" | jget version)" "2"
+has "dedup response flags deduped" "$(echo "$RD" | jget deduped)" "True"
+RF=$(./hart publish "$P2" --owner acme --artifact page --force)
+eq "force bypasses dedup (mints v3)" "$(echo "$RF" | jget version)" "3"
+printf '<h1>hot v1</h1>' > "$TMP/hot.html"
+./hart publish "$TMP/hot.html" --owner acme --artifact hot >/dev/null
+for i in 2 3 4 5 6 7 8 9 10 11 12; do sqlite3 "$HART_DB" "INSERT INTO versions(artifact_id,version,title,format,html,hash,created,meta,agent,run_id,parent_id,tags) VALUES('acme/hot',$i,'','html','<h1>hot</h1>','h$i',strftime('%s','now'),'{}','','','','[]')"; done
+printf '<h1>hot v2</h1>' > "$TMP/hot.html"
+has "heavy publisher gets hint (>10 v/day)" "$(./hart publish "$TMP/hot.html" --owner acme --artifact hot | jget hint)" "retain"
 eq "GET /a latest serves 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/acme/page")" "200"
 eq "pinned /v1 still serves" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/acme/page/v1")" "200"
 has "rollback re-points latest (ok)" "$(./hart rollback acme/page 1)" '"ok":true'
