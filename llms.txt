@@ -11,11 +11,13 @@
 The examples below use the public demo instance at `https://hart.intrane.fr`; replace it with your own `HART_URL` when self-hosting.
 
 - Publish (curl, no binary needed): `curl -X POST 'https://hart.intrane.fr/v1/publish?owner=you&artifact=name' -H 'content-type: text/html' --data-binary @page.html`
+- Or one JSON call: `curl -X POST 'https://hart.intrane.fr/v1/publish' -H 'content-type: application/json' -d '{"owner":"you","artifact":"name","html":"<!doctype html>...","visibility":"unlisted"}'` — any publish param is accepted as a JSON field.
 - Or with the CLI: `HART_URL=https://hart.intrane.fr hart publish page.html --owner you --artifact name`
 - Result: a URL at `https://hart.intrane.fr/a/you/name` (versioned; re-publish to update).
 
 ## Rules
 
+- The body must be the page itself — raw HTML containing `<` markup, or a JSON envelope with an `html`/`content`/`body` field. Bodies that are neither (e.g. form-encoded `owner=x&artifact=y`, bare `{}`) are rejected 422. JSX payloads (`format=jsx`) and `force=1` are exempt.
 - Pages must be SELF-CONTAINED: inline all CSS/JS, `data:` URIs for assets. No external refs, no network (fetch/XHR blocked by CSP). External refs are rejected at publish (pass `--force` to override).
 - JSX: add `--format jsx` (transpiled in-browser, no build step).
 - Markdown -> HTML: `pandoc --embed-resources --standalone --css style.css -f markdown-yaml_metadata_block` avoids YAML parse errors when frontmatter contains colons.

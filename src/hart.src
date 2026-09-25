@@ -9,6 +9,8 @@
 
 type ArtRow struct { id string  owner string  name string  title string  latest int  data string  visibility string  read_key_hash string  created int  updated int  meta string  agent string  run_id string  parent_id string  tags string }
 type VerRow struct { version int  format string  created int  meta string  agent string  run_id string  parent_id string  tags string }
+// PubEnv — the JSON publish envelope agents intuitively POST: {"owner":..,"artifact":..,"html":..}
+type PubEnv struct { owner string  artifact string  id string  title string  format string  visibility string  read_key string  csp_mode string  csp_policy string  agent string  run string  parent string  tags string  html string  content string  body string  unguessable int  force int  fresh int  live int  no_chrome int }
 type HtmlRow struct { html string  format string  title string }
 type SumRow struct { s int }
 type CntRow struct { n int }
@@ -1559,6 +1561,46 @@ func h_domain_rm(req) (res) {
 func h_publish(req) (res) {
     db := opendb()
     if check_token(req) == 0 { sqlite_close(db); return response("401 Unauthorized", "application/json", "{\"ok\":false,\"error\":\"this hart requires a token — hart login <token> (the operator set HART_TOKEN)\"}") }
+    // JSON publish envelope: agents often POST {"owner":..,"artifact":..,"html":..} with the
+    // params inside the body instead of query params + raw HTML. Storing that body verbatim used
+    // to mint an anonymous hex-id artifact whose "page" was the literal JSON — detect the
+    // envelope, fold its fields into req.path, and treat .html/.content/.body as the page.
+    body := req.body
+    if has_prefix(trim(body), "{") {
+        env := parse(body, PubEnv{})
+        b := env.html
+        if b == "" { b = env.content }
+        if b == "" { b = env.body }
+        if b == "" {
+            sqlite_close(db)
+            return response("422 Unprocessable Entity", "application/json", "{\"ok\":false,\"error\":\"JSON body detected but no 'html' field — POST the page as the raw body with params in the query string, or a JSON envelope like {\\\"owner\\\":\\\"me\\\",\\\"artifact\\\":\\\"page\\\",\\\"html\\\":\\\"<!doctype html>...\\\"}\"}")
+        }
+        extra := ""
+        if query(req, "owner") == "" && env.owner != "" { extra = extra + "&owner=" + url_encode(env.owner) }
+        if query(req, "artifact") == "" && env.artifact != "" { extra = extra + "&artifact=" + url_encode(env.artifact) }
+        if query(req, "id") == "" && env.id != "" { extra = extra + "&id=" + url_encode(env.id) }
+        if query(req, "title") == "" && env.title != "" { extra = extra + "&title=" + url_encode(env.title) }
+        if query(req, "format") == "" && env.format != "" { extra = extra + "&format=" + url_encode(env.format) }
+        if query(req, "visibility") == "" && env.visibility != "" { extra = extra + "&visibility=" + url_encode(env.visibility) }
+        if query(req, "read_key") == "" && env.read_key != "" { extra = extra + "&read_key=" + url_encode(env.read_key) }
+        if query(req, "csp_mode") == "" && env.csp_mode != "" { extra = extra + "&csp_mode=" + url_encode(env.csp_mode) }
+        if query(req, "csp_policy") == "" && env.csp_policy != "" { extra = extra + "&csp_policy=" + url_encode(env.csp_policy) }
+        if query(req, "agent") == "" && env.agent != "" { extra = extra + "&agent=" + url_encode(env.agent) }
+        if query(req, "run") == "" && env.run != "" { extra = extra + "&run=" + url_encode(env.run) }
+        if query(req, "parent") == "" && env.parent != "" { extra = extra + "&parent=" + url_encode(env.parent) }
+        if query(req, "tags") == "" && env.tags != "" { extra = extra + "&tags=" + url_encode(env.tags) }
+        if query(req, "meta") == "" {
+            mraw, merr := json_get(body, ".meta")
+            if merr == "" { extra = extra + "&meta=" + url_encode(mraw) }
+        }
+        if query(req, "unguessable") == "" && env.unguessable != 0 { extra = extra + "&unguessable=1" }
+        if query(req, "force") == "" && env.force != 0 { extra = extra + "&force=1" }
+        if query(req, "fresh") == "" && env.fresh != 0 { extra = extra + "&fresh=" + str(env.fresh) }
+        if query(req, "live") == "" && env.live != 0 { extra = extra + "&live=1" }
+        if query(req, "no_chrome") == "" && env.no_chrome != 0 { extra = extra + "&no_chrome=1" }
+        if index(req.path, "?") < 0 { req.path = req.path + "?" + substr(extra, 1, len(extra)) } else { req.path = req.path + extra }
+        body = b
+    }
     raw_owner := query(req, "owner")
     raw_artifact := query(req, "artifact")
     owner := slugify(raw_owner)
@@ -1588,8 +1630,14 @@ func h_publish(req) (res) {
     if perr != "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"" + jesc(perr) + "\"}") }
     p_tags := normalize_tags(p_tags_raw)
     p_meta := as_meta(p_meta_raw)
-    body := req.body
     if body == "" { sqlite_close(db); return response("400 Bad Request", "application/json", "{\"ok\":false,\"error\":\"empty body\"}") }
+    // Guard against params-in-body mistakes: a page body must contain markup. A body with no '<'
+    // is almost always form-encoded params or JSON stored as the artifact (it mints anonymous
+    // hex-id junk). JSX is exempt (compiled payloads), force=1 overrides for raw formats.
+    if index(body, "<") < 0 && format != "jsx" && query(req, "force") != "1" {
+        sqlite_close(db)
+        return response("422 Unprocessable Entity", "application/json", "{\"ok\":false,\"error\":\"body must be the page itself (raw HTML); params go in the query string or a JSON envelope {\\\"html\\\":\\\"...\\\"} — pass force=1 to store non-HTML content\"}")
+    }
     // abuse limits: per-IP submit rate + per-owner storage quota (both customizable);
     // past the rate limit an X-Peage-Wallet header buys the call (peage_overage)
     if rate_ok(db, hart_client_ip(req)) == 0 {
@@ -3033,7 +3081,7 @@ func guide_md(base, authline) (g) {
     g = g + "## Use an existing instance (fastest)\n\n"
     g = g + "```sh\nexport HART_URL=" + base + "\n# publish a finished, self-contained page:\nhart publish page.html --owner you --artifact my-page\n# -> {\"url\":\"" + base + "/a/you/my-page\", ...}\n```\n\n"
     g = g + "No `hart` binary? Every write is just an HTTP POST — you can curl it:\n\n"
-    g = g + "```sh\ncurl -X POST '" + base + "/v1/publish?owner=you&artifact=my-page' \\\n  -H 'content-type: text/html' --data-binary @page.html\n```\n\n"
+    g = g + "```sh\ncurl -X POST '" + base + "/v1/publish?owner=you&artifact=my-page' \\\n  -H 'content-type: text/html' --data-binary @page.html\n\n# or one JSON call — any publish param may be a JSON field:\ncurl -X POST '" + base + "/v1/publish' -H 'content-type: application/json' \\\n  -d '{\"owner\":\"you\",\"artifact\":\"my-page\",\"html\":\"<!doctype html>...\"}'\n```\n\nThe body must be the page itself (raw HTML containing `<`, or a JSON envelope with an `html`/`content`/`body` field). Bodies that are neither — form-encoded params, bare `{}` — are rejected 422. `format=jsx` payloads and `force=1` are exempt.\n\n"
     g = g + "## Self-host in 30s\n\n```sh\ngit clone https://github.com/javimosch/machin-hart && cd machin-hart\n./runtime/fetch.sh          # seed the JSX runtime (react/babel)\n./build.sh                  # needs `machin` on PATH -> ./hart\n./hart serve 8799 &         # free/open by default\n```\nGate publishing with `HART_TOKEN=<secret>`; expose publicly behind any reverse proxy and set `HART_PUBLIC=https://your.domain`.\n\n"
     g = g + "## The publish contract (important)\n\nhart hosts **self-contained** pages — inline ALL CSS/JS, embed images/fonts as `data:` URIs. The daemon wraps your body in a doctype skeleton and serves it under a strict CSP: **no external scripts/styles/fonts, no network** (`fetch`/XHR/WebSocket are blocked). A publish-time linter rejects external refs + network calls (HTTP 422) unless you pass `--force`. Use `--dry-run` to lint without storing.\n\n**Landing pages / sales funnels** that legitimately need Stripe, analytics, web fonts, or YouTube/Loom embeds: publish with `--csp-mode landing` (relaxes the CSP to allow those sources and skips the self-contained linter for that artifact), or `--csp-mode custom --csp-policy '<CSP>'` to serve an exact policy you supply. Default stays `strict` (the full lockdown).\n\n"
     g = g + "## Versioning\n\nRe-publishing the same `--owner/--artifact` appends a version; `latest` tracks newest, old versions are immutably pinned.\n- `" + base + "/a/<owner>/<artifact>` or `/latest` -> newest\n- `.../v<n>` -> a pinned version\n- `hart rollback <id> <v>` re-points latest (non-destructive)\n\n"

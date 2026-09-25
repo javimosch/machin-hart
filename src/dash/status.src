@@ -33,11 +33,12 @@ func dash_hsize(n) (s) {
 }
 
 // fleet_qs — rebuild the filter portion of the /_fleet query string for pagination links.
-func fleet_qs(owner, q, has_domains, limit) (s) {
+func fleet_qs(owner, q, has_domains, limit, anon) (s) {
     s = "limit=" + str(limit)
     if owner != "" { s = s + "&owner=" + url_encode(owner) }
     if q != "" { s = s + "&q=" + url_encode(q) }
     if has_domains == "1" { s = s + "&has_domains=1" }
+    if anon == "1" { s = s + "&anon=1" }
 }
 
 // fleet_owner_qs — rebuild the owner-list filter portion of the /_fleet query string.
@@ -256,9 +257,15 @@ func serve_fleet(req) (res) {
     owner := trim(query(req, "owner"))
     q := trim(query(req, "q"))
     has_domains := query(req, "has_domains")
+    anon := query(req, "anon")
     offset := (page - 1) * limit
 
+    // Anonymous artifacts (owner = "" — publishes with no owner/artifact get random hex ids,
+    // mostly params-in-body mistakes) are junk noise; hidden unless ?anon=1.
+    nanon := dash_count(db, "SELECT COUNT(*) AS n FROM artifacts WHERE owner = ''")
+
     where := "WHERE 1=1"
+    if anon != "1" { where = where + " AND a.owner != ''" }
     args := []string{}
     if owner != "" {
         like := "%" + owner + "%"
@@ -392,7 +399,9 @@ func serve_fleet(req) (res) {
         if a.fresh_ttl > 0 {
             if (n - a.updated) > a.fresh_ttl { stbadge = " " + ui_badge("stale", "red") } else { stbadge = " " + ui_badge("live", "green") }
         }
-        cells := ui_td("<a class=\"text-accent hover:underline\" href=\"" + base + "/a/" + a.id + "\">" + ui_esc(a.id) + "</a>" + stbadge)
+        link_txt := ui_esc(a.id)
+        if title != "" && title != a.id { link_txt = ui_esc(title) + " <span class=\"text-muted\">(" + ui_esc(a.id) + ")</span>" }
+        cells := ui_td("<a class=\"text-accent hover:underline\" href=\"" + base + "/a/" + a.id + "\">" + link_txt + "</a>" + stbadge)
         cells = cells + ui_td(vis_badge(a.visibility))
         dom_html := "<span class=\"text-muted\">—</span>"
         if has(dom_map, a.id) {
@@ -412,9 +421,13 @@ func serve_fleet(req) (res) {
         arows = append(arows, ui_tr(cells))
     }
     // filter form + pagination
-    qs := fleet_qs(owner, q, has_domains, limit)
+    qs := fleet_qs(owner, q, has_domains, limit, anon)
     chk := ""
     if has_domains == "1" { chk = " checked" }
+    achk := ""
+    if anon == "1" { achk = " checked" }
+    anon_note := ""
+    if anon != "1" && nanon > 0 { anon_note = " (" + str(nanon) + " hidden)" }
     opts := ""
     opt_parts := split("10,25,50,100,250", ",")
     for _, opt := range opt_parts {
@@ -422,7 +435,7 @@ func serve_fleet(req) (res) {
         if opt == str(limit) { sel = " selected" }
         opts = opts + "<option value=\"" + opt + "\"" + sel + ">" + opt + "</option>"
     }
-    filter_html := "<form method=\"GET\" action=\"/_fleet\" class=\"mb-4 flex flex-wrap items-end gap-3\"><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">owner</label><input type=\"search\" name=\"owner\" value=\"" + ui_esc(owner) + "\" placeholder=\"owner\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">search</label><input type=\"search\" name=\"q\" value=\"" + ui_esc(q) + "\" placeholder=\"id or title\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">has domain</label><input type=\"checkbox\" name=\"has_domains\" value=\"1\"" + chk + " class=\"h-5 w-5 rounded accent-accent\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">per page</label><select name=\"limit\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\">" + opts + "</select></div><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">Filter</button></form>"
+    filter_html := "<form method=\"GET\" action=\"/_fleet\" class=\"mb-4 flex flex-wrap items-end gap-3\"><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">owner</label><input type=\"search\" name=\"owner\" value=\"" + ui_esc(owner) + "\" placeholder=\"owner\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">search</label><input type=\"search\" name=\"q\" value=\"" + ui_esc(q) + "\" placeholder=\"id or title\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">has domain</label><input type=\"checkbox\" name=\"has_domains\" value=\"1\"" + chk + " class=\"h-5 w-5 rounded accent-accent\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">anonymous" + anon_note + "</label><input type=\"checkbox\" name=\"anon\" value=\"1\"" + achk + " class=\"h-5 w-5 rounded accent-accent\"></div><div class=\"flex flex-col gap-1\"><label class=\"text-xs text-muted\">per page</label><select name=\"limit\" class=\"rounded-lg border border-surface-300 dark:border-surface-700 bg-surface-50 dark:bg-surface-900 px-3 py-2 text-sm\">" + opts + "</select></div><button type=\"submit\" class=\"rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white\">Filter</button></form>"
 
     pager := "<div class=\"mt-4 flex flex-wrap items-center gap-3 text-sm\">"
     if page > 1 {
