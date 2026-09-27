@@ -8,14 +8,14 @@
 <meta name="theme-color" content="#f8f7f3">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Epilogue:wght@400;500;600;700&family=Chivo+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500..800&family=Figtree:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{--paper:#f8f7f3;--paper-2:#efede6;--card:#fffffc;--ink:#15151a;--ink-2:#43434d;--muted:#7a7a85;--line:rgba(21,21,26,.13);--line-2:rgba(21,21,26,.24);
   --pink:#ff48b0;--pink-2:#e0268f;--blue:#0078bf;--blue-2:#005b92;--yellow:#ffe800;
-  --display:'Syne',system-ui,sans-serif;--sans:'Epilogue',system-ui,sans-serif;--mono:'Chivo Mono',ui-monospace,Menlo,monospace;--ease:cubic-bezier(.32,.72,0,1)}
+  --display:'Bricolage Grotesque',system-ui,sans-serif;--sans:'Figtree',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,Menlo,monospace;--ease:cubic-bezier(.32,.72,0,1)}
 *{box-sizing:border-box}
 html{background:var(--paper);scroll-behavior:smooth}
-body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:16.5px;line-height:1.62;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased;overflow-x:hidden}
 body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;opacity:.06;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
 a{color:var(--blue);text-underline-offset:3px}
@@ -24,7 +24,7 @@ code{font-size:.9em;background:var(--paper-2);padding:1px 6px;border-radius:4px}
 .wrap{max-width:1140px;margin:0 auto;padding:0 28px;position:relative;z-index:1}
 
 .top .wrap{display:flex;align-items:center;justify-content:space-between;height:72px}
-.brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);font-family:var(--display);font-weight:800;font-size:25px;letter-spacing:-.02em}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--ink);font-family:var(--display);font-weight:800;font-size:24px;letter-spacing:-.01em}
 .brand .dot{width:22px;height:22px;border-radius:50%;background:var(--pink);box-shadow:5px 3px 0 var(--blue);mix-blend-mode:multiply}
 .top nav{display:flex;gap:4px;font-size:14.5px}
 .top nav a{text-decoration:none;color:var(--ink-2);padding:7px 12px;border-radius:999px;transition:background .3s var(--ease)}
@@ -33,9 +33,8 @@ code{font-size:.9em;background:var(--paper-2);padding:1px 6px;border-radius:4px}
 .hero{display:grid;grid-template-columns:1.05fr .95fr;gap:52px;align-items:center;padding:64px 0 90px}
 .hero>*{min-width:0}
 .eyebrow{font-family:var(--mono);font-size:12.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--blue);margin:0 0 18px}
-h1{font-family:var(--display);font-weight:800;font-size:clamp(40px,5vw,70px);line-height:.98;letter-spacing:-.035em;margin:0 0 22px;position:relative}
-h1 .mis{position:relative;display:inline-block;color:var(--pink)}
-h1 .mis::after{content:attr(data-t);position:absolute;left:3px;top:2px;color:var(--blue);mix-blend-mode:multiply;z-index:-1}
+h1{font-family:var(--display);font-weight:700;font-size:clamp(38px,4.6vw,64px);line-height:1.08;letter-spacing:-.015em;margin:0 0 24px;text-wrap:balance}
+h1 .mis{color:var(--pink);background:linear-gradient(transparent 68%,var(--yellow) 68%,var(--yellow) 92%,transparent 92%);padding:0 .06em;-webkit-box-decoration-break:clone;box-decoration-break:clone}
 .sub{font-size:19px;color:var(--ink-2);margin:0;max-width:30em}
 .badges{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}
 .badge{font-family:var(--mono);font-size:12px;padding:5px 11px;border-radius:999px;border:1px solid var(--line-2);background:var(--card);color:var(--ink-2)}
@@ -59,13 +58,13 @@ h1 .mis::after{content:attr(data-t);position:absolute;left:3px;top:2px;color:var
 .term .c{color:#8e8d98}.term .k{color:var(--pink)}.term .s{color:var(--yellow)}.term .ok{color:#7fd6ff}
 .print{position:relative;margin:-10px 18px 0;background:var(--card);border:1.5px solid var(--ink);border-radius:0 0 12px 12px;padding:16px 18px 18px;box-shadow:6px 6px 0 var(--pink);transform-origin:top center;transition:transform .7s var(--ease),opacity .5s}
 .print.hide{transform:translateY(-24px) scaleY(.85);opacity:0}
-.print .bar{display:flex;align-items:center;justify-content:space-between;gap:10px;font-family:var(--mono);font-size:12px;color:var(--ink-2);border-bottom:1px dashed var(--line-2);padding-bottom:10px;margin-bottom:14px}
+.print .bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px;font-family:var(--mono);font-size:12px;color:var(--ink-2);border-bottom:1px dashed var(--line-2);padding-bottom:10px;margin-bottom:14px}
 .print .bar b{color:var(--blue);font-weight:500}
 .vers{display:flex;gap:6px}
 .vers span{font-family:var(--mono);font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line-2);color:var(--muted);transition:all .4s var(--ease)}
 .vers span.on{background:var(--ink);color:#fff;border-color:var(--ink)}
 .vers span.lt{background:var(--yellow);color:var(--ink);border-color:var(--ink)}
-.page{font-family:var(--display);font-weight:800;font-size:34px;letter-spacing:-.03em;line-height:1.05;min-height:42px}
+.page{font-family:var(--display);font-weight:700;font-size:32px;letter-spacing:-.015em;line-height:1.15;min-height:40px}
 .page .nm{color:var(--pink);transition:color .4s}
 .page.flash .nm{color:var(--blue)}
 .sand{margin-top:10px;font-family:var(--mono);font-size:11px;color:var(--muted)}
@@ -74,7 +73,7 @@ h1 .mis::after{content:attr(data-t);position:absolute;left:3px;top:2px;color:var
 section{padding:96px 0 0}
 .kick{font-family:var(--mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--pink-2);margin:0 0 12px;display:flex;align-items:center;gap:10px}
 .kick::before{content:"";width:14px;height:14px;border-radius:50%;background:var(--pink);box-shadow:3px 2px 0 var(--blue)}
-h2{font-family:var(--display);font-weight:800;font-size:clamp(30px,3.8vw,50px);line-height:1.02;letter-spacing:-.035em;margin:0 0 30px;max-width:17em}
+h2{font-family:var(--display);font-weight:700;font-size:clamp(28px,3.4vw,44px);line-height:1.1;letter-spacing:-.018em;margin:0 0 26px;max-width:18em;text-wrap:balance}
 h2 em{font-style:normal;color:var(--blue)}
 .lead{font-size:20px;color:var(--ink-2);max-width:36em;margin:0 0 30px}
 .lead b{color:var(--ink)}
@@ -82,19 +81,20 @@ h2 em{font-style:normal;color:var(--blue)}
 .card{background:var(--card);border:1.5px solid var(--ink);border-radius:14px;padding:22px 20px 24px;transition:transform .5s var(--ease),box-shadow .4s}
 .card:hover{transform:translate(-3px,-3px);box-shadow:6px 6px 0 var(--yellow)}
 .card .m{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--blue)}
-.card h3{font-family:var(--display);font-weight:700;font-size:21px;letter-spacing:-.02em;margin:12px 0 8px;line-height:1.1}
-.card p{margin:0;color:var(--ink-2);font-size:14.5px}
+.card h3{font-family:var(--display);font-weight:700;font-size:20px;letter-spacing:-.01em;margin:12px 0 8px;line-height:1.2}
+.card p{margin:0;color:var(--ink-2);font-size:15px;line-height:1.6}
 .flow{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.flow>*,.run>*,.pro>*{min-width:0}
 .step{background:var(--card);border:1px solid var(--line-2);border-radius:16px;padding:24px 24px 22px}
 .step .n{font-family:var(--mono);font-size:12px;color:var(--pink-2)}
-.step h3{font-family:var(--display);font-weight:700;font-size:23px;margin:6px 0 6px;letter-spacing:-.02em}
+.step h3{font-family:var(--display);font-weight:700;font-size:22px;margin:6px 0 6px;letter-spacing:-.01em;line-height:1.2}
 .step p{margin:0 0 14px;color:var(--ink-2);font-size:15px}
 pre.code{margin:0;background:var(--ink);color:#ecebe4;border-radius:12px;padding:16px 18px;font-size:13px;line-height:1.75;overflow-x:auto}
 pre.code .c{color:#8e8d98}pre.code .k{color:var(--pink)}pre.code .s{color:var(--yellow)}pre.code .u{color:#7fd6ff}
 .uses{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
 .use{display:flex;flex-direction:column;gap:8px;background:var(--card);border:1px solid var(--line-2);border-radius:16px;padding:22px 22px 20px;text-decoration:none;color:inherit;transition:transform .5s var(--ease),border-color .3s}
 .use:hover{transform:translateY(-3px);border-color:var(--ink)}
-.use .t{font-family:var(--display);font-weight:700;font-size:20px;letter-spacing:-.02em}
+.use .t{font-family:var(--display);font-weight:700;font-size:19px;letter-spacing:-.01em;line-height:1.25}
 .use .d{color:var(--ink-2);font-size:14.5px}
 .use .l{font-family:var(--mono);font-size:12px;color:var(--blue);margin-top:auto}
 .run{display:grid;grid-template-columns:.9fr 1.1fr;gap:28px;align-items:start}
@@ -106,7 +106,7 @@ pre.code .c{color:#8e8d98}pre.code .k{color:var(--pink)}pre.code .s{color:var(--
 .pro .r{padding:36px 30px;background:var(--pink);color:#fff;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;gap:20px}
 .pro .r::before{content:"";position:absolute;right:-40px;top:-40px;width:180px;height:180px;border-radius:50%;background:var(--blue);mix-blend-mode:multiply;opacity:.8}
 .pro .r>*{position:relative}
-.pro .r b{font-family:var(--display);font-size:30px;line-height:1.05;letter-spacing:-.03em}
+.pro .r b{font-family:var(--display);font-weight:800;font-size:28px;line-height:1.15;letter-spacing:-.015em}
 .pro .r .btn{background:#fff;color:var(--ink);align-self:flex-start}
 footer{margin-top:90px;border-top:1.5px solid var(--ink);padding:28px 0 44px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-size:14px;color:var(--muted)}
 footer a{color:var(--ink-2)}
@@ -128,7 +128,7 @@ footer a{color:var(--ink-2)}
   <header class="hero">
     <div>
       <p class="eyebrow rv">Agent-first artifact host</p>
-      <h1 class="rv">Ship an HTML page from your terminal. Get a <span class="mis" data-t="live URL">live URL</span> back.</h1>
+      <h1 class="rv">Ship an HTML page from your terminal. Get a <span class="mis">live URL</span> back.</h1>
       <p class="sub rv">One binary that hosts self-contained HTML &amp; JSX — versioned, sandboxed, and updatable with just data. Built for agents, run by you.</p>
       <div class="badges rv">
         <span class="badge hot"><b>This instance: free &amp; open</b></span>
@@ -158,7 +158,7 @@ footer a{color:var(--ink-2)}
   <section>
     <p class="kick rv">What it is</p>
     <h2 class="rv">Your agent writes great HTML. <em>hart gives it a home.</em></h2>
-    <p class="lead rv">Claude &amp; friends generate great HTML. <b>hart gives it a home</b> — a real, shareable, sandboxed URL — for <b>any</b> terminal agent, not just one vendor's.</p>
+    <p class="lead rv">A real, shareable, sandboxed URL for whatever your agent builds — from <b>any</b> terminal agent, not just one vendor's.</p>
     <div class="grid rv">
       <div class="card"><span class="m">publish</span><h3>HTML or JSX → a URL</h3><p>Pipe a self-contained file; get <code>/a/owner/name</code> back. JSX is transpiled in-browser with a same-origin React runtime — no build step, no CDN.</p></div>
       <div class="card"><span class="m">versioned</span><h3>v1 · v2 · latest</h3><p>Re-publish to append a version; <code>latest</code> always tracks newest, old versions stay immutably pinned, and <code>rollback</code> reverts instantly.</p></div>
@@ -170,7 +170,7 @@ footer a{color:var(--ink-2)}
   <section id="model">
     <p class="kick rv">The template + data model</p>
     <h2 class="rv">Publish a template once. <em>Then push just the data.</em></h2>
-    <p class="lead rv">Publish a <b>template</b> once. Then push <b>just the data</b> — the artifact re-renders. An agent keeps a page live as its source data changes.</p>
+    <p class="lead rv">The artifact re-renders on every push, so an agent can keep a page live as its source data changes — without re-uploading the page.</p>
     <div class="flow rv">
       <div class="step"><span class="n">01 — template (once)</span><h3>Push the shape</h3><p>Use <code>{{placeholders}}</code> or read <code>window.HART_DATA</code> from your script.</p>
 <pre class="code"><span class="c"># a greeting template</span>
@@ -199,7 +199,7 @@ hart <span class="k">data</span> acme/hello '<span class="s">{"name":"Bob"}</spa
     <div class="run rv">
       <div>
         <h2 style="margin-bottom:18px">One binary is the CLI <em>and</em> the host.</h2>
-        <p>One binary is the CLI <em>and</em> the host. Free &amp; open by default; set a token to gate it. Rate-limited so you can leave it open.</p>
+        <p>Free &amp; open by default; set a token to gate it. Rate-limited so you can leave it open.</p>
         <p>Also built in: private &amp; team visibility (read-gated), custom domains, and <a href="/explore">/explore</a> for public artifacts — see <a href="/llms.txt">llms.txt</a>.</p>
       </div>
 <pre class="code"><span class="c"># build &amp; run the host (SQLite store, your box)</span>
