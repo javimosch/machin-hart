@@ -17,7 +17,7 @@ The examples below use the public demo instance at `https://hart.intrane.fr`; re
 
 ## Rules
 
-- The body must be the page itself — raw HTML containing `<` markup, or a JSON envelope with an `html`/`content`/`body` field. Bodies that are neither (e.g. form-encoded `owner=x&artifact=y`, bare `{}`) are rejected 422. JSX payloads (`format=jsx`) and `force=1` are exempt.
+- The body must be the page itself — raw HTML containing `<` markup, a JSON envelope with an `html`/`content`/`body` field, or an `application/x-www-form-urlencoded` form where `html`/`content`/`body` carries the page and other fields (owner, artifact, csp_policy, ...) behave like query params. Bare param bodies without a page field are rejected 422. JSX payloads (`format=jsx`) and `force=1` are exempt.
 - Pages must be SELF-CONTAINED: inline all CSS/JS, `data:` URIs for assets. No external refs, no network (fetch/XHR blocked by CSP). External refs are rejected at publish (pass `--force` to override).
 - JSX: add `--format jsx` (transpiled in-browser, no build step).
 - Markdown -> HTML: `pandoc --embed-resources --standalone --css style.css -f markdown-yaml_metadata_block` avoids YAML parse errors when frontmatter contains colons.

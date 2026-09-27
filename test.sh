@@ -71,6 +71,11 @@ printf '<h1>hot v1</h1>' > "$TMP/hot.html"
 for i in 2 3 4 5 6 7 8 9 10 11 12; do sqlite3 "$HART_DB" "INSERT INTO versions(artifact_id,version,title,format,html,hash,created,meta,agent,run_id,parent_id,tags) VALUES('acme/hot',$i,'','html','<h1>hot</h1>','h$i',strftime('%s','now'),'{}','','','','[]')"; done
 printf '<h1>hot v2</h1>' > "$TMP/hot.html"
 has "heavy publisher gets hint (>10 v/day)" "$(./hart publish "$TMP/hot.html" --owner acme --artifact hot | jget hint)" "retain"
+printf '<h1>form page</h1>' > "$TMP/fpage.html"
+RF2=$(curl -s -X POST "$HART_URL/v1/publish" --data-urlencode owner=acme --data-urlencode artifact=formpage --data-urlencode "title=Form Page" --data-urlencode html@"$TMP/fpage.html")
+eq "form envelope publish ok" "$(echo "$RF2" | jget ok)" "True"
+eq "form envelope folds owner/artifact" "$(echo "$RF2" | jget id)" "acme/formpage"
+eq "form body without html -> 422" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HART_URL/v1/publish" --data-urlencode owner=acme --data-urlencode artifact=nope)" "422"
 eq "GET /a latest serves 200" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/acme/page")" "200"
 eq "pinned /v1 still serves" "$(curl -s -o /dev/null -w '%{http_code}' "$HART_URL/a/acme/page/v1")" "200"
 has "rollback re-points latest (ok)" "$(./hart rollback acme/page 1)" '"ok":true'

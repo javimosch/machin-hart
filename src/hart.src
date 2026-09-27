@@ -1602,6 +1602,37 @@ func h_publish(req) (res) {
         if index(req.path, "?") < 0 { req.path = req.path + "?" + substr(extra, 1, len(extra)) } else { req.path = req.path + extra }
         body = b
     }
+    // Form publish envelope: `curl --data-urlencode`/`-d` sends
+    // application/x-www-form-urlencoded — same fields as the JSON envelope, with
+    // html/content/body carrying the page. Without this the whole form body was either
+    // rejected 422 or glued onto the HTML and stored verbatim.
+    if index(to_lower(header(req, "content-type")), "x-www-form-urlencoded") >= 0 {
+        b := formv(body, "html")
+        if b == "" { b = formv(body, "content") }
+        if b == "" { b = formv(body, "body") }
+        if b == "" {
+            sqlite_close(db)
+            return response("422 Unprocessable Entity", "application/json", "{\"ok\":false,\"error\":\"form body detected but no 'html' field — send html=<url-encoded page>, or POST the page raw with params in the query string\"}")
+        }
+        extra := ""
+        keys := []string{"owner", "artifact", "id", "title", "format", "visibility", "read_key", "csp_mode", "csp_policy", "agent", "run", "parent", "tags", "meta", "fresh"}
+        i := 0
+        for i < len(keys) {
+            if query(req, keys[i]) == "" {
+                fv := formv(body, keys[i])
+                if fv != "" { extra = extra + "&" + keys[i] + "=" + url_encode(fv) }
+            }
+            i = i + 1
+        }
+        flags := []string{"unguessable", "force", "live", "no_chrome"}
+        i = 0
+        for i < len(flags) {
+            if query(req, flags[i]) == "" && formv(body, flags[i]) == "1" { extra = extra + "&" + flags[i] + "=1" }
+            i = i + 1
+        }
+        if index(req.path, "?") < 0 { req.path = req.path + "?" + substr(extra, 1, len(extra)) } else { req.path = req.path + extra }
+        body = b
+    }
     raw_owner := query(req, "owner")
     raw_artifact := query(req, "artifact")
     owner := slugify(raw_owner)
@@ -2874,6 +2905,19 @@ func query_form(req, name) (v) {
     }
 }
 
+// formv — like query_form but for a caller-supplied body, splitting on the FIRST '='
+// so encoded values containing '=' are not truncated (publish form envelopes).
+func formv(body, name) (v) {
+    v = ""
+    parts := split(body, "&")
+    i := 0
+    for i < len(parts) {
+        eq := index(parts[i], "=")
+        if eq > 0 { if url_decode(substr(parts[i], 0, eq)) == name { v = url_decode(substr(parts[i], eq + 1, len(parts[i]))) } }
+        i = i + 1
+    }
+}
+
 // is_version_seg — a trailing path segment that pins a version: "latest" or "v<digits>".
 func is_version_seg(seg) (yes) {
     yes = 0
@@ -3104,7 +3148,7 @@ func guide_md(base, authline) (g) {
     g = g + "## Use an existing instance (fastest)\n\n"
     g = g + "```sh\nexport HART_URL=" + base + "\n# publish a finished, self-contained page:\nhart publish page.html --owner you --artifact my-page\n# -> {\"url\":\"" + base + "/a/you/my-page\", ...}\n```\n\n"
     g = g + "No `hart` binary? Every write is just an HTTP POST — you can curl it:\n\n"
-    g = g + "```sh\ncurl -X POST '" + base + "/v1/publish?owner=you&artifact=my-page' \\\n  -H 'content-type: text/html' --data-binary @page.html\n\n# or one JSON call — any publish param may be a JSON field:\ncurl -X POST '" + base + "/v1/publish' -H 'content-type: application/json' \\\n  -d '{\"owner\":\"you\",\"artifact\":\"my-page\",\"html\":\"<!doctype html>...\"}'\n```\n\nThe body must be the page itself (raw HTML containing `<`, or a JSON envelope with an `html`/`content`/`body` field). Bodies that are neither — form-encoded params, bare `{}` — are rejected 422. `format=jsx` payloads and `force=1` are exempt.\n\n"
+    g = g + "```sh\ncurl -X POST '" + base + "/v1/publish?owner=you&artifact=my-page' \\\n  -H 'content-type: text/html' --data-binary @page.html\n\n# or one JSON call — any publish param may be a JSON field:\ncurl -X POST '" + base + "/v1/publish' -H 'content-type: application/json' \\\n  -d '{\"owner\":\"you\",\"artifact\":\"my-page\",\"html\":\"<!doctype html>...\"}'\n\n# or a form body — html carries the page, other fields behave like query params:\ncurl -X POST '" + base + "/v1/publish' --data-urlencode owner=you --data-urlencode artifact=my-page \\\n  --data-urlencode csp_mode=custom --data-urlencode 'csp_policy=default-src 'none'' \\\n  --data-urlencode html@page.html\n```\n\nThe body must be the page itself (raw HTML containing `<`, a JSON envelope, or a urlencoded form with an `html`/`content`/`body` field). Bodies that are neither — bare params, `{}` — are rejected 422. `format=jsx` payloads and `force=1` are exempt.\n\n"
     g = g + "## Self-host in 30s\n\n```sh\ngit clone https://github.com/javimosch/machin-hart && cd machin-hart\n./runtime/fetch.sh          # seed the JSX runtime (react/babel)\n./build.sh                  # needs `machin` on PATH -> ./hart\n./hart serve 8799 &         # free/open by default\n```\nGate publishing with `HART_TOKEN=<secret>`; expose publicly behind any reverse proxy and set `HART_PUBLIC=https://your.domain`.\n\n"
     g = g + "## The publish contract (important)\n\nhart hosts **self-contained** pages — inline ALL CSS/JS, embed images/fonts as `data:` URIs. The daemon wraps your body in a doctype skeleton and serves it under a strict CSP: **no external scripts/styles/fonts, no network** (`fetch`/XHR/WebSocket are blocked). A publish-time linter rejects external refs + network calls (HTTP 422) unless you pass `--force`. Use `--dry-run` to lint without storing.\n\n**Landing pages / sales funnels** that legitimately need Stripe, analytics, web fonts, or YouTube/Loom embeds: publish with `--csp-mode landing` (relaxes the CSP to allow those sources and skips the self-contained linter for that artifact), or `--csp-mode custom --csp-policy '<CSP>'` to serve an exact policy you supply. Default stays `strict` (the full lockdown).\n\n"
     g = g + "## Versioning\n\nRe-publishing the same `--owner/--artifact` appends a version; `latest` tracks newest, old versions are immutably pinned.\n- `" + base + "/a/<owner>/<artifact>` or `/latest` -> newest\n- `.../v<n>` -> a pinned version\n- `hart rollback <id> <v>` re-points latest (non-destructive)\n\n"
@@ -4217,6 +4261,7 @@ func cmd_publish(a) {
     pmeta := flagv(a, "--meta", "")
     cspmode := flagv(a, "--csp-mode", "")
     csppolicy := flagv(a, "--csp-policy", "")
+    if has_prefix(csppolicy, "@") { csppolicy = read_file(substr(csppolicy, 1, len(csppolicy))); if csppolicy == "" { die(90, "--csp-policy @file empty or unreadable: " + substr(csppolicy, 1, len(csppolicy))) } }
     url := hart_url() + "/v1/publish?format=" + url_encode(format)
     if id != "" { url = url + "&id=" + url_encode(id) }
     if owner != "" { url = url + "&owner=" + url_encode(owner) }
