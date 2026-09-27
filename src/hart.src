@@ -3331,6 +3331,11 @@ func domain_path_allowed(p) (ok) {
     if has_prefix(p, "/a/") { ok = 1 }
     if has_prefix(p, "/_hart/runtime/") { ok = 1 }
     if p == "/_health" { ok = 1 }
+    // /robots.txt and /healthz are conventional infrastructure files a real site
+    // is expected to answer (crawlers, uptime probes) — allow them through; the
+    // serving is handled in hart_route below, not arbitrary file serving.
+    if p == "/robots.txt" { ok = 1 }
+    if p == "/healthz" { ok = 1 }
 }
 
 func hart_route(req) (res) {
@@ -3369,9 +3374,17 @@ func hart_route(req) (res) {
         dhost := header(req, "host")
         if dhost != "" && dhost != canonical_host() {
             dr2 := domain_row(dhost)
-            if dr2.domain != "" && domain_path_allowed(p) == 0 {
-                return response("404 Not Found", "application/json; charset=utf-8",
-                    "{\"ok\":false,\"error\":\"not found on this domain — it serves one published page; hart's own API and manual live at " + pubbase(req) + "\"}")
+            if dr2.domain != "" {
+                // Infrastructure files a mapped page should answer AS ITSELF,
+                // mirroring what the artifact's own deployment would say — a
+                // private portal is Disallow-all by convention, and a mapped
+                // host answering /healthz is normal for uptime checks.
+                if p == "/robots.txt" { return response("200 OK", "text/plain; charset=utf-8", "User-agent: *\nDisallow: /\n") }
+                if p == "/healthz" { return response("200 OK", "application/json; charset=utf-8", "{\"ok\":true}") }
+                if domain_path_allowed(p) == 0 {
+                    return response("404 Not Found", "application/json; charset=utf-8",
+                        "{\"ok\":false,\"error\":\"not found on this domain — it serves one published page; hart's own API and manual live at " + pubbase(req) + "\"}")
+                }
             }
         }
     }
