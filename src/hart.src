@@ -3269,7 +3269,9 @@ func serve_landing() (res) {
     body := read_file(path)
     if body == "" { body = "<!doctype html><meta charset=utf-8><title>hart</title><body style=\"font:16px system-ui;max-width:40em;margin:12vh auto;padding:0 6vw\"><h1>hart</h1><p>The agent-first artifact host. Source: github.com/javimosch/machin-hart</p>" }
     r := ok_html(body)
-    r = with_header(r, "Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:")
+    // The landing is operator-authored (not an artifact), so it may load external fonts,
+    // scripts and images; artifacts keep their strict per-mode CSP (csp_for).
+    r = with_header(r, "Content-Security-Policy", "default-src 'self' https: data:; script-src 'self' 'unsafe-inline' https:; style-src 'self' 'unsafe-inline' https:; img-src 'self' https: data:; font-src 'self' https: data:; connect-src 'self' https:; object-src 'none'; base-uri 'self'")
     res = r
 }
 
